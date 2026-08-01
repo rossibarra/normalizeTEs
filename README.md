@@ -113,3 +113,141 @@ percentiles, interval counts, rejection counts, and overlap among repeated
 control sets. This makes the matching process reproducible and exposes age
 regions where the synonymous candidate pool cannot adequately reproduce the TE
 distribution.
+
+## How to generate age-matched synonymous sets
+
+Assume the starting files are organized as follows:
+
+```text
+project-data/
+├── posterior/
+│   ├── draw_001.trees
+│   ├── draw_002.trees
+│   └── ...
+├── te_positions.txt
+└── syn_positions.txt
+```
+
+Each position file must contain one exact base-pair position per line. Positions
+must use the same coordinate system as the sites in the tree sequences.
+
+### 1. Activate the environment
+
+```bash
+conda activate normalizeTE
+```
+
+### 2. Build the reusable age store
+
+Run this once for a collection of posterior tree sequences:
+
+```bash
+python build_snp_age_store.py \
+  project-data/posterior/*.trees \
+  --numpy-store age_store \
+  --bin-width 1000 \
+  --block-snps 100000
+```
+
+The builder finds all variant positions across the tree sequences, estimates
+their age distributions, converts them to quantized CDFs, and writes the
+position and CDF NumPy arrays under `age_store/`. The output directory must not
+already exist. Use `--missing error` or `--root error` if missing posterior
+sites or mutations above roots should stop the build instead of being recorded
+and skipped.
+
+### 3. Choose the TE subset
+
+Create a file containing the \(X\) TE SNPs to match. For example, this selects a
+reproducible random subset of 5,000 positions from a larger TE list:
+
+```bash
+python - <<'PY'
+from pathlib import Path
+import numpy as np
+
+X = 5_000
+rng = np.random.default_rng(12345)
+positions = np.loadtxt("project-data/te_positions.txt", ndmin=1)
+if X > positions.size:
+    raise ValueError(f"requested {X} TE SNPs, but only {positions.size} are available")
+selected = rng.choice(positions, size=X, replace=False)
+np.savetxt("te_subset.txt", selected, fmt="%.15g")
+PY
+```
+
+Skip this step when `te_positions.txt` already contains exactly the desired
+subset.
+
+### 4. Construct the TE target and matching threshold
+
+```bash
+python te_age_target.py \
+  --store age_store \
+  --te-positions te_subset.txt \
+  --output targets/te_subset \
+  --bootstrap-replicates 10000 \
+  --acceptance-quantile 0.95 \
+  --seed 12345
+```
+
+This command averages the \(X\) TE CDFs, bootstraps the TE SNPs, and stores the
+95th-percentile Wasserstein acceptance threshold. It also divides the target
+distribution at 5% probability increments. Repeated boundaries on the discrete
+age grid are merged, and integer sampling quotas are adjusted to total exactly
+\(X\).
+
+Important outputs under `targets/te_subset/` include:
+
+- `target_cdf.npy`: summed and normalized TE target CDF
+- `bootstrap_wasserstein.npy`: bootstrap distances in generations
+- `interval_boundary_indices.npy`: sampling-interval boundaries
+- `interval_quotas.npy`: number of synonymous SNPs requested per interval
+- `metadata.json`: threshold, parameters, seeds, and provenance
+
+### 5. Generate 100 matched synonymous sets
+
+```bash
+python sample_age_matched_syn.py \
+  --store age_store \
+  --target targets/te_subset \
+  --syn-positions project-data/syn_positions.txt \
+  --output matches/te_subset \
+  --accepted-sets 100 \
+  --max-proposals 100000 \
+  --block-snps 250000 \
+  --seed 67890
+```
+
+The sampler calculates synonymous-candidate weights in large blocks, proposes
+sets without replacement, and evaluates each proposal using its complete
+combined age CDF. A set is retained only when its Wasserstein distance from the
+TE target is at or below the bootstrap threshold. Synonymous SNPs are unique
+within one set but may be reused across different accepted sets.
+
+The principal outputs are:
+
+- `syn_positions.npy`: array of shape `(100, X)` containing matched positions
+- `syn_row_indices.npy`: corresponding rows in the age store
+- `syn_cdf.npy`: combined CDF for every accepted set
+- `wasserstein.npy`: distance of every accepted set from the TE target
+- `interval_assignment.npy`: sampling interval assigned to every selected SNP
+- `diagnostics.csv`: accepted and rejected proposal diagnostics
+- `metadata.json`: run parameters, seeds, threshold, and proposal counts
+
+If fewer than 100 proposals pass before `--max-proposals`, the command stops
+with a diagnostic error rather than silently relaxing the threshold. Increase
+the proposal limit only after inspecting the rejection rate and confirming that
+the synonymous pool has usable probability mass across the target age range.
+
+### HPC and Quobyte notes
+
+- Keep the NumPy store immutable after construction so jobs can read it safely
+  in parallel.
+- Submit independent TE subsets as separate SLURM jobs.
+- Use large `--block-snps` values that fit comfortably in node memory; benchmark
+  values between 250,000 and 1,000,000 on the production system.
+- If node-local scratch is available, stage frequently accessed arrays or
+  boundary blocks under `$SLURM_TMPDIR` and copy only final outputs to Quobyte.
+- Keep the store and result arrays as a small number of large files rather than
+  creating per-SNP files.
