@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import tskit
 
-from build_snp_age_store import build_store, discover_positions
+from build_snp_age_store import build_store, determine_age_grid, discover_positions
 from snp_age_dataset import SNPAgeDataset, validate_store
 
 
@@ -82,3 +82,9 @@ def test_omit_transpose_and_discovery(tmp_path):
     report = validate_store(output, deep=True)
     assert not report.has_transpose
     assert not (output / "cdf_by_age.npy").exists()
+
+
+def test_age_grid_has_at_least_two_points_for_young_intervals(tmp_path):
+    tree = tmp_path / "young.trees"
+    _write_ts(tree, {7.25: [0]})
+    np.testing.assert_array_equal(determine_age_grid([tree], 1_000), [0, 1_000])

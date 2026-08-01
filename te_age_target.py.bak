@@ -18,13 +18,11 @@ import numpy as np
 
 @dataclass(frozen=True)
 class BoundarySet:
-    """Requested quantiles and compressed boundaries on CDF bin edges."""
+    """Requested probabilities and their locations on the stored age grid."""
 
     probabilities: np.ndarray
-    requested_indices: np.ndarray
     indices: np.ndarray
     ages: np.ndarray
-    interval_shares: np.ndarray
 
 
 def load_position_list(path: Path) -> np.ndarray:
@@ -159,13 +157,7 @@ def equal_mass_boundaries(
     *,
     bin_centers: np.ndarray | None = None,
 ) -> BoundarySet:
-    """Locate inverse-CDF edges and compress repeated quantile boundaries.
-
-    For ``B`` CDF values, edge indices range from 0 through B. Edge zero has
-    cumulative mass zero and edge ``i`` has cumulative mass ``cdf[i - 1]``.
-    This convention ensures that interval ``[0, 1)`` contains the youngest
-    age bin instead of accidentally omitting it.
-    """
+    """Locate inverse-CDF boundaries, preserving repeated grid locations."""
     cdf = np.asarray(target_cdf, dtype=np.float64)
     if cdf.ndim != 1 or cdf.size == 0 or not np.all(np.isfinite(cdf)):
         raise ValueError("target CDF must be a nonempty finite one-dimensional array")
@@ -186,15 +178,9 @@ def equal_mass_boundaries(
         or probs[-1] != 1
     ):
         raise ValueError("probabilities must be sorted and span exactly 0 to 1")
-    edge_cdf = np.concatenate(([0.0], cdf))
-    requested_indices = np.searchsorted(edge_cdf, probs, side="left")
-    requested_indices = np.clip(requested_indices, 0, cdf.size).astype(np.int64)
-    requested_indices[0] = 0
-    # The terminal edge spans the complete shared grid. This also lets the
-    # sampler account for candidate mass older than the target's last nonzero
-    # bin, even when the target CDF reaches one early.
-    requested_indices[-1] = cdf.size
-    indices = np.unique(requested_indices)
+    indices = np.searchsorted(cdf, probs, side="left")
+    indices = np.clip(indices, 0, cdf.size - 1).astype(np.int64)
+    indices[0] = 0
     ages = (
         np.arange(cdf.size, dtype=np.float64)
         if bin_centers is None
@@ -202,15 +188,7 @@ def equal_mass_boundaries(
     )
     if ages.size != cdf.size:
         raise ValueError("CDF length must equal age-grid length")
-    # Boundary ages are labels only; sampler-facing boundaries are the exact
-    # edge indices. Interior edge i is labelled by the center of bin i-1.
-    edge_ages = np.concatenate(([ages[0]], ages))
-    shares = np.diff(edge_cdf[indices])
-    shares[np.abs(shares) < 1e-15] = 0.0
-    shares /= shares.sum()
-    return BoundarySet(
-        probs.copy(), requested_indices, indices, edge_ages[indices], shares
-    )
+    return BoundarySet(probs.copy(), indices, ages[indices])
 
 
 def largest_remainder_quotas(
@@ -274,10 +252,9 @@ def build_target(
     )
     target = aggregate_cdf(cdf_rows)
     boundary_set = equal_mass_boundaries(target, bin_centers=ages)
+    interval_probabilities = np.diff(boundary_set.probabilities)
     quotas = largest_remainder_quotas(
-        positions.size,
-        boundary_set.interval_shares,
-        np.random.default_rng(quota_seed),
+        positions.size, interval_probabilities, np.random.default_rng(quota_seed)
     )
     threshold = empirical_threshold(distances, acceptance_quantile)
     uncertainty = quantile_order_statistic_interval(distances, acceptance_quantile)
@@ -315,8 +292,6 @@ def write_target(output_dir: Path, result: dict[str, object], metadata: dict[str
             "bootstrap_wasserstein.npy": result["bootstrap_wasserstein"],
             "interval_boundaries.npy": boundary_set.ages,
             "interval_boundary_indices.npy": boundary_set.indices,
-            "requested_interval_boundary_indices.npy": boundary_set.requested_indices,
-            "interval_shares.npy": boundary_set.interval_shares,
             "interval_quotas.npy": result["interval_quotas"],
         }
         for name, array in arrays.items():
@@ -401,12 +376,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "wasserstein_threshold_generations": result["threshold"],
         "threshold_monte_carlo_95_interval_generations": list(result["threshold_interval"]),
         "boundary_probabilities": boundary_set.probabilities.tolist(),
-        "requested_boundary_edge_indices": boundary_set.requested_indices.tolist(),
-        "compressed_boundary_edge_indices": boundary_set.indices.tolist(),
-        "interval_shares": boundary_set.interval_shares.tolist(),
-        "repeated_requested_boundaries": int(
-            boundary_set.requested_indices.size - boundary_set.indices.size
-        ),
+        "zero_width_intervals": np.flatnonzero(np.diff(boundary_set.indices) == 0).tolist(),
         "seed_entropy": result["seed_entropy"],
         "seed_spawn_keys": result["seed_spawn_keys"],
         "numpy_version": np.__version__,

@@ -16,17 +16,17 @@ The default matching scheme divides the aggregate TE CDF into 20 equal-probabili
 
 ### Code
 
-- `snp_age_distribution.py`: retain the existing small-query and CSV behavior; expose its interval-integration routines for reuse by the builder.
-- `build_snp_age_store.py`: one-time ARG preprocessing command that extracts every variant distribution and writes the NumPy store.
-- `snp_age_dataset.py`: read-only dataset API for schema validation, position lookup, CDF decoding, and block reads.
+- `snp_age_distribution.py`: retain the existing CSV/query behavior, but add all-variant extraction and NumPy-store output.
+- `snp_age_store.py`: store schema, quantization, validation, position lookup, and block readers.
 - `te_age_target.py`: resolve TE positions, construct the target CDF, and bootstrap the Wasserstein threshold.
 - `sample_age_matched_syn.py`: build query-specific interval weights, propose synonymous sets, score them, and retain 100 accepted sets.
-- `tests/test_build_snp_age_store.py`, `tests/test_snp_age_dataset.py`, `tests/test_te_age_target.py`, and `tests/test_sample_age_matched_syn.py`.
+- `tests/test_snp_age_store.py`, `tests/test_te_age_target.py`, and `tests/test_sample_age_matched_syn.py`.
 
 ### CLI sketches
 
 ```bash
-python build_snp_age_store.py posterior/*.trees \
+python snp_age_distribution.py posterior/*.trees \
+  --all-variants \
   --numpy-store age_store \
   --bin-width 1000 \
   --block-snps 100000
@@ -51,11 +51,11 @@ python sample_age_matched_syn.py \
 
 `--syn-positions` may be omitted if the store has a precomputed `is_syn` mask. The first implementation should keep biological classification external to ARG extraction and support both modes.
 
-## Stage 1: build the all-variant age dataset
+## Stage 1: extract all per-variant distributions
 
-### Add `build_snp_age_store.py`
+### Extend `snp_age_distribution.py`
 
-Create a dedicated preprocessing command that enumerates the sorted union of site positions across all input tree sequences and writes their distributions directly into the NumPy store. It should reuse the tested interval-integration functions from `snp_age_distribution.py`, while the existing position-filtered CSV command remains backward compatible. No CSV or other intermediate representation is passed between the programs. For each position and posterior draw:
+Add an `--all-variants` mode that enumerates the sorted union of site positions across all input tree sequences. Existing position-filtered CSV behavior remains backward compatible. For each position and posterior draw:
 
 1. Find the site and marginal tree at that position.
 2. For every retained mutation, use the mutation node time as `below` and its parent-node time as `above`.
@@ -106,7 +106,7 @@ The two CDF orientations deliberately trade disk space for I/O efficiency: `cdf_
 
 ### Construction without excessive RAM
 
-Implement construction interfaces in `build_snp_age_store.py`:
+Implement these interfaces in `snp_age_store.py`:
 
 ```python
 def discover_positions(tree_files: Sequence[Path]) -> np.ndarray: ...
@@ -115,21 +115,9 @@ def build_store(tree_files: Sequence[Path], output_dir: Path, *,
                 bin_width: float, block_snps: int,
                 missing: str, root: str,
                 mutation_weighting: str) -> None: ...
-```
-
-Implement the reusable, read-only interfaces in `snp_age_dataset.py`:
-
-```python
-class SNPAgeDataset:
-    @classmethod
-    def open(cls, store_dir: Path, *, validate: bool = True) -> "SNPAgeDataset": ...
-
-    def resolve_positions(self, query_positions: np.ndarray) -> np.ndarray: ...
-    def read_cdfs(self, row_indices: np.ndarray) -> np.ndarray: ...
-    def read_boundary_cdfs(self, age_indices: np.ndarray,
-                           start: int, stop: int) -> np.ndarray: ...
-
 def validate_store(store_dir: Path, *, deep: bool = False) -> StoreReport: ...
+def resolve_positions(sorted_store_positions: np.ndarray,
+                      query_positions: np.ndarray) -> np.ndarray: ...
 ```
 
 Use `numpy.lib.format.open_memmap` to allocate final arrays. Discover the union of positions and maximum usable upper age first. Process sorted positions in configurable blocks, accumulating only a block-sized floating PDF/CDF buffer. Quantize and flush each block into `cdf_by_snp`. Build `cdf_by_age` in tiled transposition passes so neither full matrix is resident in memory. Write into `output_dir.tmp.<job-id>` and atomically rename it only after validation, preventing interrupted jobs from appearing complete.

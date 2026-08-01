@@ -61,14 +61,41 @@ def test_two_sample_bootstrap_supported():
     assert np.all(values >= 0)
 
 
-def test_boundaries_preserve_repeats_and_span_grid():
+def test_boundaries_compress_repeats_and_span_cdf_edges():
     cdf = np.array([0.0, 0.6, 0.6, 1.0])
     probabilities = np.array([0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
     result = equal_mass_boundaries(
         cdf, probabilities, bin_centers=np.array([0, 1_000, 2_000, 3_000])
     )
-    np.testing.assert_array_equal(result.indices, [0, 1, 1, 1, 3, 3])
-    np.testing.assert_array_equal(result.ages, [0, 1_000, 1_000, 1_000, 3_000, 3_000])
+    np.testing.assert_array_equal(result.requested_indices, [0, 2, 2, 2, 4, 4])
+    np.testing.assert_array_equal(result.indices, [0, 2, 4])
+    np.testing.assert_array_equal(result.ages, [0, 1_000, 3_000])
+    np.testing.assert_allclose(result.interval_shares, [0.6, 0.4])
+
+
+def test_first_bin_mass_is_covered_exactly_once_with_repeated_quantiles():
+    # More than 5% in the first bin makes many requested quantiles share edge 1.
+    cdf = np.array([0.30, 0.50, 0.95, 1.0])
+    result = equal_mass_boundaries(
+        cdf,
+        bin_centers=np.array([0, 1_000, 2_000, 3_000]),
+    )
+    assert result.requested_indices[0] == 0
+    assert result.requested_indices[-1] == len(cdf)
+    assert result.indices[0] == 0
+    assert result.indices[-1] == len(cdf)
+    assert np.count_nonzero(result.requested_indices == 1) > 1
+    np.testing.assert_allclose(result.interval_shares.sum(), 1.0)
+
+    # Each compressed interval is a disjoint slice of the original PDF.
+    pdf = np.diff(np.concatenate(([0.0], cdf)))
+    covered = np.zeros(pdf.size, dtype=int)
+    recovered = []
+    for start, stop in zip(result.indices[:-1], result.indices[1:]):
+        covered[start:stop] += 1
+        recovered.append(pdf[start:stop].sum())
+    np.testing.assert_array_equal(covered, np.ones(pdf.size, dtype=int))
+    np.testing.assert_allclose(recovered, result.interval_shares)
 
 
 def test_largest_remainder_exact_total_and_seeded_ties():
@@ -124,6 +151,7 @@ def test_build_target_with_fake_store_is_reproducible():
     np.testing.assert_array_equal(a["bootstrap_wasserstein"], b["bootstrap_wasserstein"])
     np.testing.assert_array_equal(a["interval_quotas"], b["interval_quotas"])
     assert a["interval_quotas"].sum() == 2
+    assert len(a["interval_quotas"]) == len(a["boundaries"].indices) - 1
 
 
 def test_build_target_rejects_invalid_rows():

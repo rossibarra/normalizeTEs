@@ -57,9 +57,7 @@ def determine_age_grid(tree_files: Sequence[Path], bin_width: float) -> np.ndarr
                 parent = tree.parent(mutation.node)
                 if parent != tskit.NULL:
                     maximum = max(maximum, float(ts.node(parent).time))
-    # Downstream CDF integration requires at least two grid points. This also
-    # keeps a valid zero-age-only fixture from producing a degenerate store.
-    last = max(1, int(math.floor(maximum / bin_width + 0.5)))
+    last = int(math.floor(maximum / bin_width + 0.5))
     return np.arange(last + 1, dtype=np.uint64) * np.uint64(int(bin_width))
 
 
