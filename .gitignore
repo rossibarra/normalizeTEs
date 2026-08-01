@@ -1,0 +1,15 @@
+# Conda and Python
+.conda/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Scientific Python caches
+.matplotlib/
+.pytest_cache/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+
