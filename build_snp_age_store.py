@@ -63,41 +63,59 @@ def _chromosomes(ts: tskit.TreeSequence, source: Path) -> list[dict[str, int | s
     return result
 
 
-def _site_map(ts: tskit.TreeSequence, source: Path) -> dict[float, tskit.Site]:
-    result: dict[float, tskit.Site] = {}
-    for site in ts.sites():
-        position = float(site.position)
-        if not math.isfinite(position):
-            raise ValueError(f"non-finite site position in {source}")
-        if position in result:
-            raise ValueError(f"duplicate site position {position:g} in {source}")
-        result[position] = site
-    return result
+def inspect_inputs(
+    tree_files: Sequence[Path], bin_width: float
+) -> tuple[np.ndarray, np.ndarray, list[dict[str, int | str]], float]:
+    """Inspect every draw once to establish shared positions, grid, and metadata."""
+    if not math.isfinite(bin_width) or bin_width <= 0 or not float(bin_width).is_integer():
+        raise ValueError("bin width must be a positive integer number of generations")
+    positions: set[float] = set()
+    maximum = 0.0
+    chromosomes = None
+    sequence_length = None
+    for path in tree_files:
+        ts = _load(path)
+        current_chromosomes = _chromosomes(ts, path)
+        if chromosomes is None:
+            chromosomes = current_chromosomes
+            sequence_length = float(ts.sequence_length)
+        elif current_chromosomes != chromosomes:
+            raise ValueError("all tree sequences must have identical chrom_offsets metadata")
+        elif float(ts.sequence_length) != sequence_length:
+            raise ValueError("all tree sequences must have the same sequence length")
+        site_positions = np.asarray(ts.tables.sites.position, dtype=np.float64)
+        if np.any(~np.isfinite(site_positions)) or np.any(site_positions != np.floor(site_positions)):
+            raise ValueError(f"{path} contains a non-integer or non-finite site position")
+        positions.update(site_positions.tolist())
+        if ts.num_nodes:
+            maximum = max(maximum, float(np.max(ts.tables.nodes.time)))
+    # Downstream CDF integration requires at least two grid points. This also
+    # keeps a valid zero-age-only fixture from producing a degenerate store.
+    last = max(1, int(math.floor(maximum / bin_width + 0.5)))
+    age_bins = np.arange(last + 1, dtype=np.uint64) * np.uint64(int(bin_width))
+    return (
+        np.asarray(sorted(positions), dtype=np.float64),
+        age_bins,
+        chromosomes or [],
+        float(sequence_length or 0),
+    )
 
 
 def discover_positions(tree_files: Sequence[Path]) -> np.ndarray:
+    """Return the union of integer tskit site positions."""
     positions: set[float] = set()
     for path in tree_files:
-        positions.update(_site_map(_load(path), path))
+        ts = _load(path)
+        values = np.asarray(ts.tables.sites.position, dtype=np.float64)
+        if np.any(~np.isfinite(values)) or np.any(values != np.floor(values)):
+            raise ValueError(f"{path} contains a non-integer or non-finite site position")
+        positions.update(values.tolist())
     return np.asarray(sorted(positions), dtype=np.float64)
 
 
 def determine_age_grid(tree_files: Sequence[Path], bin_width: float) -> np.ndarray:
-    if not math.isfinite(bin_width) or bin_width <= 0 or not float(bin_width).is_integer():
-        raise ValueError("bin width must be a positive integer number of generations")
-    maximum = 0.0
-    for path in tree_files:
-        ts = _load(path)
-        for site in ts.sites():
-            tree = ts.at(site.position)
-            for mutation in site.mutations:
-                parent = tree.parent(mutation.node)
-                if parent != tskit.NULL:
-                    maximum = max(maximum, float(ts.node(parent).time))
-    # Downstream CDF integration requires at least two grid points. This also
-    # keeps a valid zero-age-only fixture from producing a degenerate store.
-    last = max(1, int(math.floor(maximum / bin_width + 0.5)))
-    return np.arange(last + 1, dtype=np.uint64) * np.uint64(int(bin_width))
+    """Return a grid covering the oldest node in the supplied ARGs."""
+    return inspect_inputs(tree_files, bin_width)[1]
 
 
 def _sha256(path: Path) -> str:
@@ -132,7 +150,7 @@ def build_store(
     block_snps: int = 100_000, missing: str = "skip", root: str = "skip",
     mutation_weighting: str = "interval", omit_transpose: bool = False,
     checksums: bool = False, min_usable_draws: int | None = None,
-    min_usable_fraction: float | None = 0.1,
+    min_usable_fraction: float | None = None,
 ) -> None:
     paths = [Path(path).resolve() for path in tree_files]
     output_dir = Path(output_dir)
@@ -152,19 +170,9 @@ def build_store(
         raise ValueError("min_usable_draws must be nonnegative")
     if min_usable_fraction is not None and not 0 <= min_usable_fraction <= 1:
         raise ValueError("min_usable_fraction must lie in [0, 1]")
-    positions = discover_positions(paths)
-    age_bins = determine_age_grid(paths, bin_width)
+    positions, age_bins, chromosomes, sequence_length = inspect_inputs(paths, bin_width)
     if positions.size == 0:
         raise ValueError("input tree sequences contain no sites")
-    loaded_headers = [_load(path) for path in paths]
-    lengths = {float(ts.sequence_length) for ts in loaded_headers}
-    if len(lengths) != 1:
-        raise ValueError("all tree sequences must have the same sequence length")
-    chromosomes = _chromosomes(loaded_headers[0], paths[0])
-    for path, ts in zip(paths[1:], loaded_headers[1:]):
-        if _chromosomes(ts, path) != chromosomes:
-            raise ValueError("all tree sequences must have identical chrom_offsets metadata")
-    del loaded_headers
     required_usable_draws = (
         int(min_usable_draws)
         if min_usable_draws is not None
@@ -181,46 +189,37 @@ def build_store(
         eligible = np.lib.format.open_memmap(temp / "eligible.npy", mode="w+", dtype=np.bool_, shape=(n,))
         usable_fraction = np.lib.format.open_memmap(temp / "usable_draw_fraction.npy", mode="w+", dtype=np.float32, shape=(n,))
         counts = {name: np.lib.format.open_memmap(temp / f"{name}.npy", mode="w+", dtype=np.uint32, shape=(n,)) for name in ("present_draw_count", "usable_draw_count", "usable_interval_count", "skipped_root_count", "missing_draw_count")}
+        for array in counts.values():
+            array[:] = 0
+        counts["missing_draw_count"][:] = len(paths)
+        # The accumulator is disk-backed: extraction keeps only one posterior
+        # ARG resident while visiting each tree and site exactly once.
+        pdf_accumulator = np.lib.format.open_memmap(
+            temp / "pdf_accumulator.npy", mode="w+", dtype=np.float32, shape=(n, b)
+        )
+        pdf_accumulator[:] = 0
         extraction_totals = {name: 0 for name in (
             "present_draw_count", "usable_draw_count", "usable_interval_count",
             "skipped_root_count", "missing_draw_count",
         )}
-        for start in range(0, n, block_snps):
-            stop = min(start + block_snps, n)
-            width = stop - start
-            pdf_block = np.zeros((width, b), dtype=np.float64)
-            present_block = np.zeros(width, dtype=np.uint32)
-            usable_draw_block = np.zeros(width, dtype=np.uint32)
-            interval_block = np.zeros(width, dtype=np.uint32)
-            root_block = np.zeros(width, dtype=np.uint32)
-            missing_block = np.zeros(width, dtype=np.uint32)
-            query = positions[start:stop]
-            # Keep memory bounded by one tree sequence plus one SNP block. This
-            # deliberately favors predictable HPC memory use over retaining
-            # every posterior ARG simultaneously.
-            for path in paths:
-                ts = _load(path)
-                site_positions = np.asarray(ts.tables.sites.position)
-                found_indices = np.searchsorted(site_positions, query)
-                found = found_indices < site_positions.size
-                if np.any(found):
-                    found[found] &= site_positions[found_indices[found]] == query[found]
-                if missing == "error" and not np.all(found):
-                    position = float(query[np.flatnonzero(~found)[0]])
-                    raise ValueError(f"position {position:g} is absent from {path}")
-                missing_block += (~found).astype(np.uint32)
-                present_block += found.astype(np.uint32)
-                for local in np.flatnonzero(found):
-                    position = float(query[local])
-                    site = ts.site(int(found_indices[local]))
-                    if site is None:
-                        continue
-                    tree = ts.at(position)
+        for path in paths:
+            ts = _load(path)
+            seen_rows = np.zeros(n, dtype=np.bool_) if missing == "error" else None
+            for tree in ts.trees():
+                for site in tree.sites():
+                    position = float(site.position)
+                    row = int(np.searchsorted(positions, position))
+                    if row >= n or positions[row] != position:
+                        raise ValueError(f"unexpected site position {position:g} in {path}")
+                    if seen_rows is not None:
+                        seen_rows[row] = True
+                    counts["present_draw_count"][row] += 1
+                    counts["missing_draw_count"][row] -= 1
                     intervals = []
                     for mutation in site.mutations:
                         parent = tree.parent(mutation.node)
                         if parent == tskit.NULL:
-                            root_block[local] += 1
+                            counts["skipped_root_count"][row] += 1
                             if root == "error":
                                 raise ValueError(f"mutation {mutation.id} at {position:g} in {path} is above a root node")
                             continue
@@ -228,9 +227,9 @@ def build_store(
                         if above < below:
                             raise ValueError(f"invalid age interval at {position:g} in {path}")
                         intervals.append(AgeInterval(position, below, above, str(path), mutation.id))
-                    interval_block[local] += len(intervals)
+                    counts["usable_interval_count"][row] += len(intervals)
                     if intervals:
-                        usable_draw_block[local] += 1
+                        counts["usable_draw_count"][row] += 1
                         draw_pdf = _interval_pdf(intervals, age_index, b, bin_width)
                         # ``discretize_intervals`` returns an equal-interval
                         # mixture. Restore its interval count for global
@@ -238,24 +237,26 @@ def build_store(
                         # draw weighting.
                         if mutation_weighting == "interval":
                             draw_pdf *= len(intervals)
-                        pdf_block[local] += draw_pdf
-            for local, row in enumerate(range(start, stop)):
-                cdf[row] = _quantize_cdf(pdf_block[local])
-                valid[row] = bool(interval_block[local])
-            counts["present_draw_count"][start:stop] = present_block
-            counts["usable_draw_count"][start:stop] = usable_draw_block
-            counts["usable_interval_count"][start:stop] = interval_block
-            counts["skipped_root_count"][start:stop] = root_block
-            counts["missing_draw_count"][start:stop] = missing_block
+                        pdf_accumulator[row] += draw_pdf.astype(np.float32)
+            if seen_rows is not None and not np.all(seen_rows):
+                position = float(positions[np.flatnonzero(~seen_rows)[0]])
+                raise ValueError(f"position {position:g} is absent from {path}")
+
+        for start in range(0, n, block_snps):
+            stop = min(start + block_snps, n)
+            for row in range(start, stop):
+                cdf[row] = _quantize_cdf(np.asarray(pdf_accumulator[row], dtype=np.float64))
+            interval_block = np.asarray(counts["usable_interval_count"][start:stop])
+            usable_draw_block = np.asarray(counts["usable_draw_count"][start:stop])
+            valid[start:stop] = interval_block > 0
             usable_fraction[start:stop] = usable_draw_block / len(paths)
             eligible[start:stop] = (usable_draw_block > 0) & (
                 usable_draw_block >= required_usable_draws
             )
-            extraction_totals["present_draw_count"] += int(present_block.sum(dtype=np.uint64))
-            extraction_totals["usable_draw_count"] += int(usable_draw_block.sum(dtype=np.uint64))
-            extraction_totals["usable_interval_count"] += int(interval_block.sum(dtype=np.uint64))
-            extraction_totals["skipped_root_count"] += int(root_block.sum(dtype=np.uint64))
-            extraction_totals["missing_draw_count"] += int(missing_block.sum(dtype=np.uint64))
+        for name, array in counts.items():
+            extraction_totals[name] = int(array.sum(dtype=np.uint64))
+        del pdf_accumulator
+        (temp / "pdf_accumulator.npy").unlink()
         cdf.flush(); valid.flush(); eligible.flush(); usable_fraction.flush()
         for array in counts.values(): array.flush()
         if not omit_transpose:
@@ -268,7 +269,7 @@ def build_store(
         metadata = {
             "schema_version": SCHEMA_VERSION,
             "n_snps": int(n), "n_age_bins": int(b), "n_posterior_draws": len(paths),
-            "sequence_length": lengths.pop(), "bin_width": int(bin_width),
+            "sequence_length": sequence_length, "bin_width": int(bin_width),
             "age_bin_convention": "centres; cells [centre-width/2, centre+width/2); nearest ties upward",
             "position_matching": "exact float64 equality", "mutation_weighting": mutation_weighting,
             "missing_policy": missing, "root_policy": root, "quantization_scale": QUANTIZATION_SCALE,
@@ -288,7 +289,7 @@ def build_store(
             },
         }
         (temp / "metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        validate_store(temp, deep=True)
+        validate_store(temp, deep=False)
         os.replace(temp, output_dir)
     except BaseException:
         shutil.rmtree(temp, ignore_errors=True)

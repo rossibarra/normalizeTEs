@@ -23,6 +23,7 @@ from typing import Any, Sequence
 import numpy as np
 
 from snp_age_dataset import load_native_position_list
+from te_age_target import wasserstein_1
 
 
 class SamplingError(RuntimeError):
@@ -257,14 +258,7 @@ def draw_stratified_set(
             totals[:, block] -= weights_all[local]
             np.maximum(totals[:, block], 0.0, out=totals[:, block])
     return np.asarray(out_rows, dtype=np.int64), np.asarray(assignments,
-                                                             dtype=np.uint8)
-
-
-def wasserstein_1(cdf_a: np.ndarray, cdf_b: np.ndarray,
-                  age_bins: np.ndarray) -> float:
-    age_bins = np.asarray(age_bins, dtype=np.float64)
-    return float(np.sum(np.abs(np.asarray(cdf_a)[:-1] -
-                               np.asarray(cdf_b)[:-1]) * np.diff(age_bins)))
+                                                             dtype=np.uint16)
 
 
 def score_set(store: Any, row_indices: np.ndarray, target_cdf: np.ndarray
@@ -341,7 +335,7 @@ def generate_matches(
             rejection_count += 1
     raise SamplingError(
         f"generated {len(rows_out)} of {accepted_sets} accepted sets after "
-        f"{max_proposals} proposals (last acceptance rate "
+        f"{max_proposals} proposals (overall acceptance rate "
         f"{len(rows_out) / max_proposals:.4g})")
 
 
@@ -423,7 +417,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     target_cdf = np.load(args.target / "target_cdf.npy")
     boundary_path = args.target / "interval_boundary_indices.npy"
     if not boundary_path.exists():
-        boundary_path = args.target / "interval_boundaries.npy"
+        raise FileNotFoundError(
+            f"target is missing required boundary-index array: {boundary_path}"
+        )
     boundaries = np.load(boundary_path)
     quotas = np.load(args.target / "interval_quotas.npy")
     with (args.target / "metadata.json").open() as handle:

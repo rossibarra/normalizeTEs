@@ -35,12 +35,12 @@ def _write_ts(path, sites):
 
 def test_build_union_counts_quantization_and_transpose(tmp_path):
     first, second = tmp_path / "a.trees", tmp_path / "b.trees"
-    _write_ts(first, {10.5: [0], 20.0: [3]})
-    _write_ts(second, {10.5: [0], 30.0: [2]})
+    _write_ts(first, {10.0: [0], 20.0: [3]})
+    _write_ts(second, {10.0: [0], 30.0: [2]})
     output = tmp_path / "store"
     build_store([first, second], output, bin_width=10, block_snps=1)
     dataset = SNPAgeDataset.open(output)
-    assert dataset.positions.tolist() == [10.5, 20.0, 30.0]
+    assert dataset.positions.tolist() == [10.0, 20.0, 30.0]
     assert dataset.valid.tolist() == [True, False, True]
     assert dataset.present_draw_count.tolist() == [2, 1, 1]
     assert dataset.usable_draw_count.tolist() == [2, 0, 1]
@@ -82,8 +82,8 @@ def test_missing_and_root_error_policies(tmp_path):
 
 def test_omit_transpose_and_discovery(tmp_path):
     tree = tmp_path / "a.trees"
-    _write_ts(tree, {7.25: [0]})
-    assert discover_positions([tree]).tolist() == [7.25]
+    _write_ts(tree, {7.0: [0]})
+    assert discover_positions([tree]).tolist() == [7.0]
     output = tmp_path / "store"
     build_store([tree], output, bin_width=10, omit_transpose=True)
     report = validate_store(output, deep=True)
@@ -93,7 +93,7 @@ def test_omit_transpose_and_discovery(tmp_path):
 
 def test_age_grid_has_at_least_two_points_for_young_intervals(tmp_path):
     tree = tmp_path / "young.trees"
-    _write_ts(tree, {7.25: [0]})
+    _write_ts(tree, {7.0: [0]})
     np.testing.assert_array_equal(determine_age_grid([tree], 1_000), [0, 1_000])
 
 
@@ -126,3 +126,38 @@ def test_minimum_usable_fraction_filters_sparse_posterior_coverage(tmp_path):
     assert first.usable_draw_fraction[row] == pytest.approx(0.1)
     assert first.eligible[row]
     assert not second.eligible[row]
+
+
+def test_minimum_usable_draws_python_api(tmp_path):
+    tree = tmp_path / "draw.trees"
+    _write_ts(tree, {10.0: [0]})
+    output = tmp_path / "store"
+    build_store([tree], output, min_usable_draws=1)
+    assert SNPAgeDataset.open(output).eligible.tolist() == [True]
+
+
+def test_builder_loads_each_draw_twice_independent_of_blocks(tmp_path, monkeypatch):
+    import build_snp_age_store as builder
+
+    draws = []
+    for index in range(2):
+        path = tmp_path / f"draw_{index}.trees"
+        _write_ts(path, {10.0: [0], 20.0: [2]})
+        draws.append(path)
+    original = builder._load
+    calls = []
+
+    def counted(path):
+        calls.append(path)
+        return original(path)
+
+    monkeypatch.setattr(builder, "_load", counted)
+    builder.build_store(draws, tmp_path / "store", bin_width=10, block_snps=1)
+    assert len(calls) == 2 * len(draws)
+
+
+def test_builder_rejects_fractional_arg_positions_early(tmp_path):
+    tree = tmp_path / "fractional.trees"
+    _write_ts(tree, {10.5: [0]})
+    with pytest.raises(ValueError, match="non-integer"):
+        build_store([tree], tmp_path / "store")

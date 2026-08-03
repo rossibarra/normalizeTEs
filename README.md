@@ -11,19 +11,19 @@ of millions of synonymous candidates on HPC storage.
 
 All variant distributions from the input ARG posterior are first converted
 to cumulative distribution functions (CDFs) on a common 1,000-generation age
-grid. Positions, age bins, and quantized CDFs will be stored in large NumPy
+grid. Positions, age bins, and quantized CDFs are stored in large NumPy
 arrays rather than CSV files. Separate SNP-major and age-major layouts can be
 used for fast retrieval of selected SNPs and fast blockwise scans of the full
-synonymous candidate pool, respectively. The arrays will be written once and
+synonymous candidate pool, respectively. The arrays are written once and
 read in large contiguous blocks from Quobyte.
 
 ### TE target and bootstrap threshold
 
 For an input set of \(X\) TE positions, the workflow retrieves and averages
 their individual CDFs to obtain the target TE age distribution. It then
-bootstrap the \(X\) TE SNPs with replacement and calculate the one-dimensional
+bootstraps the \(X\) TE SNPs with replacement and calculates the one-dimensional
 Wasserstein distance between each bootstrap CDF and the observed target CDF.
-The upper 95th-percentile bootstrap distance will define the maximum acceptable
+The upper 95th-percentile bootstrap distance defines the maximum acceptable
 mismatch for a synonymous control set. At least 1,000 bootstrap replicates are
 recommended so this tail threshold is reasonably stable.
 
@@ -33,7 +33,7 @@ The target TE distribution is divided at its 5%, 10%, ..., 95% quantiles,
 forming 20 intervals that each contain approximately 5% of its probability.
 For each interval, every synonymous candidate receives a weight equal to the
 probability mass of its own age distribution within that interval. Candidate
-weights will be calculated blockwise so a full 20-million-SNP by 20-interval
+weights are calculated blockwise so a full 20-million-SNP by 20-interval
 matrix is never held in memory.
 
 Each proposed control set normally contains approximately \(X/20\) synonymous
@@ -54,7 +54,7 @@ bootstrap-derived threshold, rather than simply retaining the closest sets,
 avoids requiring synonymous controls to match more closely than ordinary
 sampling variation among the TE SNPs.
 
-Each run will record the input TE positions, accepted synonymous positions,
+Each run records the input TE positions, accepted synonymous positions,
 random seeds, target and matched CDFs, Wasserstein distances, bootstrap
 percentiles, interval counts, rejection counts, and overlap among repeated
 control sets. This makes the matching process reproducible and exposes age
@@ -86,11 +86,22 @@ chr7 802
 
 The chromosome labels must exactly match the `chrom_offsets` table embedded by
 ARGtest in the merged tree-sequence metadata. No reference `.fai` is required.
+ARGtest stores zero-based tskit coordinates internally. The commands convert a
+one-based VCF position `POS` to `chromosome_offset + POS - 1`; users should
+never pre-convert position lists to cumulative or zero-based coordinates.
 
-### 1. Activate the environment
+### 1. Create and activate the environment
 
 ```bash
+conda env create -f environment.yml
 conda activate normalizeTE
+```
+
+The creation command is needed only once. To run this repository's test suite
+without collecting the separately vendored SINGER workflow tests, use:
+
+```bash
+python -m pytest -q tests test_snp_age_distribution.py
 ```
 
 ### 2. Build the reusable age store
@@ -116,6 +127,19 @@ set an absolute count instead, and use `--missing error` or `--root error` if
 missing posterior sites or mutations above roots should stop the build instead
 of being recorded and skipped.
 
+Use `--mutation-weighting draw` to give each usable posterior draw equal total
+weight rather than weighting every mutation interval equally. Optional
+`--omit-transpose` reduces final disk use at the cost of slower candidate
+scans, while `--checksums` records SHA-256 input checksums at additional I/O
+cost. Run `python build_snp_age_store.py --help` for the complete CLI.
+
+`valid` means that at least one usable age interval exists for a SNP.
+`eligible` additionally means that the SNP meets the requested posterior-draw
+coverage threshold. TE and synonymous input positions must resolve to eligible
+rows. During construction, the builder creates a temporary disk-backed
+floating-point accumulator alongside the output directory; allow scratch space
+in addition to the final quantized arrays.
+
 ### 3. Choose the TE subset
 
 Create a file containing the \(X\) TE SNPs to match. For example, this selects a
@@ -128,9 +152,14 @@ import numpy as np
 
 X = 5_000
 rng = np.random.default_rng(12345)
-positions = np.loadtxt("project-data/te_positions.txt", dtype=str, ndmin=2)
-if positions.shape[1] != 2:
-    raise ValueError("expected chromosome and 1-based VCF position columns")
+rows = []
+for raw in Path("project-data/te_positions.txt").read_text().splitlines():
+    fields = raw.split("#", 1)[0].split()
+    if fields:
+        if len(fields) != 2:
+            raise ValueError("expected chromosome and 1-based VCF position columns")
+        rows.append(fields)
+positions = np.asarray(rows, dtype=str)
 if X > positions.shape[0]:
     raise ValueError(f"requested {X} TE SNPs, but only {positions.shape[0]} are available")
 selected = positions[rng.choice(positions.shape[0], size=X, replace=False)]
@@ -140,6 +169,11 @@ PY
 
 Skip this step when `te_positions.txt` already contains exactly the desired
 subset.
+
+The older `simulate_neutral_trees.py` example creates a plain msprime tree
+sequence without ARGtest `chrom_offsets` metadata, so its output is not a valid
+input to this native-coordinate production workflow unless that metadata is
+added first.
 
 ### 4. Construct the TE target and matching threshold
 
@@ -158,6 +192,10 @@ This command averages the \(X\) TE CDFs, bootstraps the TE SNPs, and stores the
 distribution at 5% probability increments. Repeated boundaries on the discrete
 age grid are merged, and integer sampling quotas are adjusted to total exactly
 \(X\).
+
+The default bootstrap compares each resample with the observed TE target.
+`--bootstrap-reference two-sample` instead compares two independent TE
+resamples, and `--bootstrap-batch-size` controls temporary bootstrap memory.
 
 Important outputs under `targets/te_subset/` include:
 
@@ -188,6 +226,9 @@ sets without replacement, and evaluates each proposal using its complete
 combined age CDF. A set is retained only when its Wasserstein distance from the
 TE target is at or below the bootstrap threshold. Synonymous SNPs are unique
 within one set but may be reused across different accepted sets.
+For pre-resolved workflows, `--syn-indices` accepts a NumPy array of store row
+indices and `--syn-mask` accepts a Boolean store-length NumPy mask instead of a
+native-coordinate position file.
 
 The principal outputs are:
 

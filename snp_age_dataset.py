@@ -111,7 +111,9 @@ class SNPAgeDataset:
                 raise ValueError(
                     f"VCF position {position} lies outside {chrom} length {entry['length']}"
                 )
-            output[i] = int(entry["offset"]) + int(position)
+            # ARGtest stores tskit positions as zero-based coordinates, while
+            # user-facing position lists use one-based VCF coordinates.
+            output[i] = int(entry["offset"]) + int(position) - 1
         return output
 
     def resolve_native_positions(
@@ -133,17 +135,17 @@ class SNPAgeDataset:
         for i, choice in enumerate(choices):
             entry = ordered[int(choice)]
             value = globals_[i] - int(entry["offset"])
-            if value != math.floor(value) or not 1 <= value <= int(entry["length"]):
+            if value != math.floor(value) or not 0 <= value < int(entry["length"]):
                 raise ValueError(f"store position {globals_[i]:g} is not a 1-based VCF coordinate")
             names[i] = str(entry["chrom"])
-            native[i] = int(value)
+            native[i] = int(value) + 1
         return names, native
 
     def read_cdfs(self, row_indices: np.ndarray, *, decode: bool = True) -> np.ndarray:
         indices = _checked_indices(row_indices, self.positions.size, "row")
         values = np.asarray(self._cdf_by_snp[indices])
         if decode:
-            return values.astype(np.float32) / np.float32(QUANTIZATION_SCALE)
+            return values.astype(np.float32) / np.float32(self.quantization_scale)
         return values
 
     def read_boundary_cdfs(
@@ -158,7 +160,7 @@ class SNPAgeDataset:
         else:
             values = np.asarray(self._cdf_by_snp[start:stop, ages]).T
         if decode:
-            return values.astype(np.float32) / np.float32(QUANTIZATION_SCALE)
+            return values.astype(np.float32) / np.float32(self.quantization_scale)
         return values
 
 
@@ -266,6 +268,9 @@ def validate_store(store_dir: str | Path, *, deep: bool = False) -> StoreReport:
     if not np.array_equal(arrays["eligible"], expected_eligible):
         raise ValueError("eligible flags are inconsistent with the coverage threshold")
     valid, cdf = arrays["valid"], arrays["cdf_by_snp"]
+    scale = metadata.get("quantization_scale", QUANTIZATION_SCALE)
+    if not isinstance(scale, int) or not 0 < scale <= np.iinfo(np.uint16).max:
+        raise ValueError("metadata quantization_scale must fit in uint16")
     block = max(1, min(100_000, cdf.shape[0]))
     ranges = range(0, cdf.shape[0], block) if deep else ([0] if cdf.shape[0] else [])
     for start in ranges:
@@ -273,8 +278,8 @@ def validate_store(store_dir: str | Path, *, deep: bool = False) -> StoreReport:
         flags = np.asarray(valid[start:min(start + block, cdf.shape[0])])
         if np.any(np.diff(rows.astype(np.int32), axis=1) < 0):
             raise ValueError("CDF rows are not monotone")
-        if np.any(rows[flags, -1] != QUANTIZATION_SCALE):
-            raise ValueError("valid CDF rows must terminate at 65535")
+        if np.any(rows[flags, -1] != scale):
+            raise ValueError(f"valid CDF rows must terminate at {scale}")
         if np.any(rows[~flags] != 0):
             raise ValueError("invalid CDF rows must be zero")
     transpose_path = path / "cdf_by_age.npy"

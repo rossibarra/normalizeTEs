@@ -7,7 +7,7 @@ from snp_age_dataset import SNPAgeDataset, validate_store
 
 
 def _store(path, transpose=True):
-    positions = np.array([1.0, 9.0], dtype=np.float64)
+    positions = np.array([0.0, 8.0], dtype=np.float64)
     bins = np.array([0, 1000, 2000], dtype=np.uint64)
     cdf = np.array([[100, 1000, 65535], [0, 0, 0]], dtype=np.uint16)
     arrays = {
@@ -37,7 +37,7 @@ def test_open_resolve_and_reads(tmp_path):
     path = tmp_path / "store"
     _store(path)
     dataset = SNPAgeDataset.open(path)
-    assert dataset.resolve_positions(np.array([9.0, 1.0])).tolist() == [1, 0]
+    assert dataset.resolve_positions(np.array([8.0, 0.0])).tolist() == [1, 0]
     assert dataset.resolve_native_positions(np.array(["chr1"]), np.array([9])).tolist() == [1]
     names, native = dataset.rows_to_native(np.array([0, 1]))
     assert names.tolist() == ["chr1", "chr1"]
@@ -47,7 +47,7 @@ def test_open_resolve_and_reads(tmp_path):
     with pytest.raises(KeyError, match="not found"):
         dataset.resolve_positions(np.array([2.0]))
     with pytest.raises(ValueError, match="duplicate"):
-        dataset.resolve_positions(np.array([1.0, 1.0]))
+        dataset.resolve_positions(np.array([0.0, 0.0]))
 
 
 def test_boundary_fallback_without_transpose(tmp_path):
@@ -57,9 +57,34 @@ def test_boundary_fallback_without_transpose(tmp_path):
     assert dataset.read_boundary_cdfs(np.array([1]), 0, 2, decode=False).tolist() == [[1000, 0]]
 
 
+def test_native_coordinates_cover_first_and_last_base(tmp_path):
+    path = tmp_path / "store"
+    _store(path)
+    dataset = SNPAgeDataset.open(path)
+    assert dataset.native_to_global(
+        np.array(["chr1", "chr1"]), np.array([1, 100])
+    ).tolist() == [0.0, 99.0]
+    names, positions = dataset.rows_to_native(np.array([0, 1]))
+    assert names.tolist() == ["chr1", "chr1"]
+    assert positions.tolist() == [1, 9]
+
+
 def test_validation_detects_nonmonotone_cdf(tmp_path):
     path = tmp_path / "store"
     _store(path)
     np.save(path / "cdf_by_snp.npy", np.array([[100, 50, 65535], [0, 0, 0]], dtype=np.uint16))
     with pytest.raises(ValueError, match="not monotone"):
         validate_store(path, deep=True)
+
+
+def test_metadata_quantization_scale_is_used_for_decoding(tmp_path):
+    path = tmp_path / "store"
+    _store(path)
+    cdf = np.array([[100, 500, 1000], [0, 0, 0]], dtype=np.uint16)
+    np.save(path / "cdf_by_snp.npy", cdf)
+    np.save(path / "cdf_by_age.npy", cdf.T)
+    metadata = json.loads((path / "metadata.json").read_text())
+    metadata["quantization_scale"] = 1000
+    (path / "metadata.json").write_text(json.dumps(metadata))
+    decoded = SNPAgeDataset.open(path).read_cdfs(np.array([0]))
+    np.testing.assert_allclose(decoded, [[0.1, 0.5, 1.0]])
