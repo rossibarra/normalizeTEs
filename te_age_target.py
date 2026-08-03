@@ -15,6 +15,8 @@ from typing import Sequence
 
 import numpy as np
 
+from snp_age_dataset import load_native_position_list
+
 
 @dataclass(frozen=True)
 class BoundarySet:
@@ -27,34 +29,9 @@ class BoundarySet:
     interval_shares: np.ndarray
 
 
-def load_position_list(path: Path) -> np.ndarray:
-    """Read one finite numeric position per nonempty, non-comment line."""
-    values: list[float] = []
-    with Path(path).open(encoding="utf-8") as handle:
-        for line_number, raw in enumerate(handle, 1):
-            line = raw.split("#", 1)[0].strip()
-            if not line:
-                continue
-            fields = line.replace(",", " ").split()
-            if len(fields) != 1:
-                raise ValueError(
-                    f"{path}:{line_number}: expected one position, got {len(fields)} fields"
-                )
-            try:
-                value = float(fields[0])
-            except ValueError as error:
-                raise ValueError(f"{path}:{line_number}: invalid position {fields[0]!r}") from error
-            if not np.isfinite(value):
-                raise ValueError(f"{path}:{line_number}: position must be finite")
-            values.append(value)
-    if not values:
-        raise ValueError(f"position list is empty: {path}")
-    positions = np.asarray(values, dtype=np.float64)
-    unique, counts = np.unique(positions, return_counts=True)
-    duplicates = unique[counts > 1]
-    if duplicates.size:
-        raise ValueError(f"duplicate TE positions: {_format_values(duplicates)}")
-    return positions
+def load_position_list(path: Path) -> tuple[np.ndarray, np.ndarray]:
+    """Read chromosome plus 1-based VCF position pairs."""
+    return load_native_position_list(path)
 
 
 def aggregate_cdf(cdf_rows: np.ndarray) -> np.ndarray:
@@ -256,8 +233,9 @@ def build_target(
     row_indices = np.asarray(store.resolve_positions(positions))
     if row_indices.shape != positions.shape:
         raise ValueError("dataset returned an unexpected position-index shape")
-    if hasattr(store, "valid"):
-        invalid = ~np.asarray(store.valid[row_indices], dtype=bool)
+    eligibility = getattr(store, "eligible", getattr(store, "valid", None))
+    if eligibility is not None:
+        invalid = ~np.asarray(eligibility[row_indices], dtype=bool)
         if np.any(invalid):
             raise ValueError(f"invalid TE positions: {_format_values(positions[invalid])}")
     cdf_rows = np.asarray(store.read_cdfs(row_indices), dtype=np.float64)
@@ -309,7 +287,7 @@ def write_target(output_dir: Path, result: dict[str, object], metadata: dict[str
         boundary_set = result["boundaries"]
         assert isinstance(boundary_set, BoundarySet)
         arrays = {
-            "te_positions.npy": result["te_positions"],
+            "te_global_positions.npy": result["te_positions"],
             "te_row_indices.npy": result["te_row_indices"],
             "target_cdf.npy": result["target_cdf"],
             "bootstrap_wasserstein.npy": result["bootstrap_wasserstein"],
@@ -319,6 +297,9 @@ def write_target(output_dir: Path, result: dict[str, object], metadata: dict[str
             "interval_shares.npy": boundary_set.interval_shares,
             "interval_quotas.npy": result["interval_quotas"],
         }
+        if "te_chromosomes" in result:
+            arrays["te_chromosomes.npy"] = result["te_chromosomes"]
+            arrays["te_positions.npy"] = result["te_vcf_positions"]
         for name, array in arrays.items():
             np.save(temporary / name, np.asarray(array), allow_pickle=False)
         with (temporary / "metadata.json").open("w", encoding="utf-8") as handle:
@@ -377,8 +358,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Deferred so the math API and tests do not depend on Stage 1 being present.
     from snp_age_dataset import SNPAgeDataset
 
-    positions = load_position_list(args.te_positions)
     store = SNPAgeDataset.open(args.store)
+    chromosomes, vcf_positions = load_position_list(args.te_positions)
+    positions = store.native_to_global(chromosomes, vcf_positions)
     result = build_target(
         store,
         positions,
@@ -388,6 +370,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         batch_size=args.bootstrap_batch_size,
         bootstrap_reference=args.bootstrap_reference,
     )
+    result["te_chromosomes"] = chromosomes
+    result["te_vcf_positions"] = vcf_positions
     boundary_set = result["boundaries"]
     assert isinstance(boundary_set, BoundarySet)
     metadata = {

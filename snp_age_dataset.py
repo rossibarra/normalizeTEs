@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 QUANTIZATION_SCALE = 65535
 
 
@@ -31,12 +32,17 @@ class SNPAgeDataset:
         self.positions = arrays["positions"]
         self.age_bins = arrays["age_bins"]
         self.valid = arrays["valid"]
+        self.eligible = arrays["eligible"]
         self._cdf_by_snp = arrays["cdf_by_snp"]
         self._cdf_by_age = arrays.get("cdf_by_age")
         self.present_draw_count = arrays["present_draw_count"]
+        self.usable_draw_count = arrays["usable_draw_count"]
+        self.usable_draw_fraction = arrays["usable_draw_fraction"]
         self.usable_interval_count = arrays["usable_interval_count"]
         self.skipped_root_count = arrays["skipped_root_count"]
         self.missing_draw_count = arrays["missing_draw_count"]
+        self.chromosomes = tuple(metadata["chromosomes"])
+        self._chromosome_by_name = {str(row["chrom"]): row for row in self.chromosomes}
 
     @classmethod
     def open(cls, store_dir: str | Path, *, validate: bool = True) -> "SNPAgeDataset":
@@ -48,8 +54,8 @@ class SNPAgeDataset:
         except FileNotFoundError as error:
             raise ValueError(f"not a SNP age store (metadata.json missing): {path}") from error
         names = [
-            "positions", "age_bins", "cdf_by_snp", "valid",
-            "present_draw_count", "usable_interval_count",
+            "positions", "age_bins", "cdf_by_snp", "valid", "eligible",
+            "present_draw_count", "usable_draw_count", "usable_draw_fraction", "usable_interval_count",
             "skipped_root_count", "missing_draw_count",
         ]
         arrays = {name: np.load(path / f"{name}.npy", mmap_mode="r") for name in names}
@@ -81,6 +87,58 @@ class SNPAgeDataset:
             raise KeyError(f"positions not found: {_format_values(query[~found])}")
         return indices.astype(np.int64, copy=False)
 
+    def native_to_global(
+        self, chromosomes: np.ndarray, vcf_positions: np.ndarray
+    ) -> np.ndarray:
+        """Convert chromosome plus 1-based VCF coordinates to store coordinates."""
+        chroms = np.asarray(chromosomes, dtype=str)
+        positions = np.asarray(vcf_positions)
+        if chroms.ndim != 1 or positions.ndim != 1 or chroms.shape != positions.shape:
+            raise ValueError("chromosomes and VCF positions must be aligned 1-D arrays")
+        if not np.issubdtype(positions.dtype, np.integer):
+            numeric = positions.astype(np.float64)
+            if np.any(~np.isfinite(numeric)) or np.any(numeric != np.floor(numeric)):
+                raise ValueError("VCF positions must be finite integers")
+            positions = numeric.astype(np.int64)
+        else:
+            positions = positions.astype(np.int64, copy=False)
+        output = np.empty(positions.size, dtype=np.float64)
+        for i, (chrom, position) in enumerate(zip(chroms, positions)):
+            entry = self._chromosome_by_name.get(str(chrom))
+            if entry is None:
+                raise KeyError(f"chromosome not found in ARG metadata: {chrom}")
+            if position < 1 or position > int(entry["length"]):
+                raise ValueError(
+                    f"VCF position {position} lies outside {chrom} length {entry['length']}"
+                )
+            output[i] = int(entry["offset"]) + int(position)
+        return output
+
+    def resolve_native_positions(
+        self, chromosomes: np.ndarray, vcf_positions: np.ndarray
+    ) -> np.ndarray:
+        return self.resolve_positions(self.native_to_global(chromosomes, vcf_positions))
+
+    def rows_to_native(self, row_indices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Return chromosome names and 1-based VCF positions for store rows."""
+        rows = _checked_indices(row_indices, self.positions.size, "row")
+        globals_ = np.asarray(self.positions[rows], dtype=np.float64)
+        names = np.empty(rows.size, dtype=f"U{max(len(str(x['chrom'])) for x in self.chromosomes)}")
+        native = np.empty(rows.size, dtype=np.int64)
+        ordered = sorted(self.chromosomes, key=lambda item: int(item["offset"]))
+        offsets = np.asarray([int(item["offset"]) for item in ordered], dtype=np.float64)
+        choices = np.searchsorted(offsets, globals_, side="right") - 1
+        if np.any(choices < 0):
+            raise ValueError("store position precedes the first chromosome offset")
+        for i, choice in enumerate(choices):
+            entry = ordered[int(choice)]
+            value = globals_[i] - int(entry["offset"])
+            if value != math.floor(value) or not 1 <= value <= int(entry["length"]):
+                raise ValueError(f"store position {globals_[i]:g} is not a 1-based VCF coordinate")
+            names[i] = str(entry["chrom"])
+            native[i] = int(value)
+        return names, native
+
     def read_cdfs(self, row_indices: np.ndarray, *, decode: bool = True) -> np.ndarray:
         indices = _checked_indices(row_indices, self.positions.size, "row")
         values = np.asarray(self._cdf_by_snp[indices])
@@ -103,6 +161,36 @@ class SNPAgeDataset:
             return values.astype(np.float32) / np.float32(QUANTIZATION_SCALE)
         return values
 
+
+def load_native_position_list(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
+    """Read exactly two columns: chromosome and 1-based integer VCF position."""
+    names: list[str] = []
+    positions: list[int] = []
+    with Path(path).open(encoding="utf-8") as handle:
+        for line_number, raw in enumerate(handle, 1):
+            text = raw.split("#", 1)[0].strip()
+            if not text:
+                continue
+            fields = text.split()
+            if len(fields) != 2:
+                raise ValueError(
+                    f"{path}:{line_number}: expected chromosome and 1-based VCF position"
+                )
+            try:
+                position = int(fields[1])
+            except ValueError as error:
+                raise ValueError(f"{path}:{line_number}: VCF position must be an integer") from error
+            if position < 1:
+                raise ValueError(f"{path}:{line_number}: VCF position must be at least 1")
+            names.append(fields[0])
+            positions.append(position)
+    if not names:
+        raise ValueError(f"position list is empty: {path}")
+    pairs = list(zip(names, positions))
+    if len(set(pairs)) != len(pairs):
+        raise ValueError("position list contains duplicate chromosome-position pairs")
+    width = max(len(value) for value in names)
+    return np.asarray(names, dtype=f"U{width}"), np.asarray(positions, dtype=np.int64)
 
 def _checked_indices(values: np.ndarray, size: int, label: str) -> np.ndarray:
     result = np.asarray(values)
@@ -133,7 +221,10 @@ def validate_store(store_dir: str | Path, *, deep: bool = False) -> StoreReport:
         "positions": (np.dtype("float64"), (metadata["n_snps"],)),
         "cdf_by_snp": (np.dtype("uint16"), (metadata["n_snps"], metadata["n_age_bins"])),
         "valid": (np.dtype("bool"), (metadata["n_snps"],)),
+        "eligible": (np.dtype("bool"), (metadata["n_snps"],)),
         "present_draw_count": (np.dtype("uint32"), (metadata["n_snps"],)),
+        "usable_draw_count": (np.dtype("uint32"), (metadata["n_snps"],)),
+        "usable_draw_fraction": (np.dtype("float32"), (metadata["n_snps"],)),
         "usable_interval_count": (np.dtype("uint32"), (metadata["n_snps"],)),
         "skipped_root_count": (np.dtype("uint32"), (metadata["n_snps"],)),
         "missing_draw_count": (np.dtype("uint32"), (metadata["n_snps"],)),
@@ -148,11 +239,16 @@ def validate_store(store_dir: str | Path, *, deep: bool = False) -> StoreReport:
             raise ValueError(f"{name}.npy has dtype/shape {array.dtype}/{array.shape}, expected {dtype}/{shape}")
         arrays[name] = array
     positions, bins = arrays["positions"], arrays["age_bins"]
+    chromosomes = metadata.get("chromosomes")
+    if not isinstance(chromosomes, list) or not chromosomes:
+        raise ValueError("metadata must contain a nonempty chromosomes table")
     if np.any(~np.isfinite(positions)) or np.any(np.diff(positions) <= 0):
         raise ValueError("positions must be finite and strictly increasing")
     if bins.size == 0 or np.any(bins[1:] <= bins[:-1]):
         raise ValueError("age bins must be strictly increasing and nonempty")
     draws = metadata.get("n_posterior_draws")
+    if not isinstance(draws, int) or draws <= 0:
+        raise ValueError("metadata n_posterior_draws must be a positive integer")
     if draws is not None and np.any(
         arrays["present_draw_count"].astype(np.uint64)
         + arrays["missing_draw_count"].astype(np.uint64) != draws
@@ -160,6 +256,15 @@ def validate_store(store_dir: str | Path, *, deep: bool = False) -> StoreReport:
         raise ValueError("present and missing draw counts are inconsistent")
     if np.any(arrays["usable_interval_count"] < arrays["valid"].astype(np.uint32)):
         raise ValueError("valid flags and usable interval counts are inconsistent")
+    if np.any(arrays["usable_draw_count"] > arrays["present_draw_count"]):
+        raise ValueError("usable draw counts exceed present draw counts")
+    expected_fraction = arrays["usable_draw_count"].astype(np.float64) / int(draws)
+    if not np.allclose(arrays["usable_draw_fraction"], expected_fraction):
+        raise ValueError("usable draw fractions are inconsistent")
+    required_draws = int(metadata.get("minimum_usable_draws", 1))
+    expected_eligible = arrays["valid"] & (arrays["usable_draw_count"] >= required_draws)
+    if not np.array_equal(arrays["eligible"], expected_eligible):
+        raise ValueError("eligible flags are inconsistent with the coverage threshold")
     valid, cdf = arrays["valid"], arrays["cdf_by_snp"]
     block = max(1, min(100_000, cdf.shape[0]))
     ranges = range(0, cdf.shape[0], block) if deep else ([0] if cdf.shape[0] else [])

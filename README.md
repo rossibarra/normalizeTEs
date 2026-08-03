@@ -68,15 +68,24 @@ Assume the starting files are organized as follows:
 ```text
 project-data/
 ├── posterior/
-│   ├── draw_001.trees
-│   ├── draw_002.trees
+│   ├── draw_001.tsz
+│   ├── draw_002.tsz
 │   └── ...
 ├── te_positions.txt
 └── syn_positions.txt
 ```
 
-Each position file must contain one exact base-pair position per line. Positions
-must use the same coordinate system as the sites in the tree sequences.
+Each position file must contain exactly two whitespace-separated columns:
+chromosome and 1-based VCF position. Cumulative coordinates are not accepted:
+
+```text
+chr4 100
+chr4 27591
+chr7 802
+```
+
+The chromosome labels must exactly match the `chrom_offsets` table embedded by
+ARGtest in the merged tree-sequence metadata. No reference `.fai` is required.
 
 ### 1. Activate the environment
 
@@ -90,18 +99,22 @@ Run this once for a collection of posterior tree sequences:
 
 ```bash
 python build_snp_age_store.py \
-  project-data/posterior/*.trees \
+  project-data/posterior/*.tsz \
   --numpy-store age_store \
   --bin-width 1000 \
-  --block-snps 100000
+  --block-snps 100000 \
+  --min-usable-fraction 0.1
 ```
 
 The builder finds all variant positions across the tree sequences, estimates
 their age distributions, converts them to quantized CDFs, and writes the
-position and CDF NumPy arrays under `age_store/`. The output directory must not
-already exist. Use `--missing error` or `--root error` if missing posterior
-sites or mutations above roots should stop the build instead of being recorded
-and skipped.
+position and CDF NumPy arrays under `age_store/`. Both tszip-compressed `.tsz`
+and ordinary tskit files are accepted. The output directory must not already
+exist. By default a SNP is eligible only when at least 10% of posterior draws
+provide a usable mutation-node-to-parent interval. Use `--min-usable-draws` to
+set an absolute count instead, and use `--missing error` or `--root error` if
+missing posterior sites or mutations above roots should stop the build instead
+of being recorded and skipped.
 
 ### 3. Choose the TE subset
 
@@ -115,11 +128,13 @@ import numpy as np
 
 X = 5_000
 rng = np.random.default_rng(12345)
-positions = np.loadtxt("project-data/te_positions.txt", ndmin=1)
-if X > positions.size:
-    raise ValueError(f"requested {X} TE SNPs, but only {positions.size} are available")
-selected = rng.choice(positions, size=X, replace=False)
-np.savetxt("te_subset.txt", selected, fmt="%.15g")
+positions = np.loadtxt("project-data/te_positions.txt", dtype=str, ndmin=2)
+if positions.shape[1] != 2:
+    raise ValueError("expected chromosome and 1-based VCF position columns")
+if X > positions.shape[0]:
+    raise ValueError(f"requested {X} TE SNPs, but only {positions.shape[0]} are available")
+selected = positions[rng.choice(positions.shape[0], size=X, replace=False)]
+np.savetxt("te_subset.txt", selected, fmt="%s")
 PY
 ```
 
@@ -146,6 +161,8 @@ age grid are merged, and integer sampling quotas are adjusted to total exactly
 
 Important outputs under `targets/te_subset/` include:
 
+- `te_chromosomes.npy`: chromosome labels for the selected TE SNPs
+- `te_positions.npy`: corresponding 1-based VCF positions
 - `target_cdf.npy`: summed and normalized TE target CDF
 - `bootstrap_wasserstein.npy`: bootstrap distances in generations
 - `interval_boundary_indices.npy`: sampling-interval boundaries
@@ -174,7 +191,8 @@ within one set but may be reused across different accepted sets.
 
 The principal outputs are:
 
-- `syn_positions.npy`: array of shape `(100, X)` containing matched positions
+- `syn_chromosomes.npy`: chromosome labels with shape `(100, X)`
+- `syn_positions.npy`: 1-based VCF positions with shape `(100, X)`
 - `syn_row_indices.npy`: corresponding rows in the age store
 - `syn_cdf.npy`: combined CDF for every accepted set
 - `wasserstein.npy`: distance of every accepted set from the TE target

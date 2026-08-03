@@ -3,6 +3,7 @@ import json
 import numpy as np
 import pytest
 import tskit
+import tszip
 
 from build_snp_age_store import build_store, determine_age_grid, discover_positions
 from snp_age_dataset import SNPAgeDataset, validate_store
@@ -11,6 +12,10 @@ from snp_age_dataset import SNPAgeDataset, validate_store
 def _write_ts(path, sites):
     """sites maps position to mutation node IDs; node 3 is the root."""
     tables = tskit.TableCollection(sequence_length=100)
+    tables.metadata_schema = tskit.MetadataSchema.permissive_json()
+    tables.metadata = {
+        "chrom_offsets": [{"chrom": "chr1", "offset": 0, "length": 100}]
+    }
     tables.nodes.add_row(flags=tskit.NODE_IS_SAMPLE, time=0)  # 0
     tables.nodes.add_row(flags=tskit.NODE_IS_SAMPLE, time=0)  # 1
     tables.nodes.add_row(time=20)                             # 2
@@ -38,6 +43,8 @@ def test_build_union_counts_quantization_and_transpose(tmp_path):
     assert dataset.positions.tolist() == [10.5, 20.0, 30.0]
     assert dataset.valid.tolist() == [True, False, True]
     assert dataset.present_draw_count.tolist() == [2, 1, 1]
+    assert dataset.usable_draw_count.tolist() == [2, 0, 1]
+    assert dataset.eligible.tolist() == [True, False, True]
     assert dataset.missing_draw_count.tolist() == [0, 1, 1]
     assert dataset.skipped_root_count.tolist() == [0, 1, 0]
     raw = dataset.read_cdfs(np.array([0, 1, 2]), decode=False)
@@ -88,3 +95,34 @@ def test_age_grid_has_at_least_two_points_for_young_intervals(tmp_path):
     tree = tmp_path / "young.trees"
     _write_ts(tree, {7.25: [0]})
     np.testing.assert_array_equal(determine_age_grid([tree], 1_000), [0, 1_000])
+
+
+def test_tsz_input_and_minimum_usable_fraction(tmp_path):
+    ordinary = tmp_path / "draw.trees"
+    compressed = tmp_path / "draw.tsz"
+    _write_ts(ordinary, {10.0: [0]})
+    tszip.compress(tskit.load(ordinary), compressed)
+    output = tmp_path / "store"
+    build_store([compressed], output, min_usable_fraction=0.1)
+    dataset = SNPAgeDataset.open(output)
+    assert dataset.eligible.tolist() == [True]
+    assert dataset.usable_draw_fraction.tolist() == [1.0]
+
+
+def test_minimum_usable_fraction_filters_sparse_posterior_coverage(tmp_path):
+    draws = []
+    for index in range(10):
+        tree = tmp_path / f"draw_{index}.trees"
+        _write_ts(tree, {10.0: [0]} if index == 0 else {20.0: [0]})
+        draws.append(tree)
+    ten_percent = tmp_path / "ten_percent"
+    twenty_percent = tmp_path / "twenty_percent"
+    build_store(draws, ten_percent, min_usable_fraction=0.1)
+    build_store(draws, twenty_percent, min_usable_fraction=0.2)
+    first = SNPAgeDataset.open(ten_percent)
+    second = SNPAgeDataset.open(twenty_percent)
+    row = int(first.resolve_positions(np.array([10.0]))[0])
+    assert first.usable_draw_count[row] == 1
+    assert first.usable_draw_fraction[row] == pytest.approx(0.1)
+    assert first.eligible[row]
+    assert not second.eligible[row]

@@ -116,7 +116,7 @@ def test_threshold_and_order_statistic_interval():
 
 def test_position_parser_rejects_duplicates(tmp_path):
     path = tmp_path / "positions.txt"
-    path.write_text("10\n20 # comment\n10.0\n", encoding="utf-8")
+    path.write_text("chr1 10\nchr1 20 # comment\nchr1 10\n", encoding="utf-8")
     with pytest.raises(ValueError, match="duplicate"):
         load_position_list(path)
 

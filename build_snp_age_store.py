@@ -17,13 +17,50 @@ from typing import Sequence
 
 import numpy as np
 import tskit
+import tszip
 
 from snp_age_distribution import AgeInterval, discretize_intervals
 from snp_age_dataset import QUANTIZATION_SCALE, SCHEMA_VERSION, validate_store
 
 
 def _load(path: Path) -> tskit.TreeSequence:
-    return tskit.load(str(path))
+    """Load ordinary tskit files and tszip-compressed ``.tsz`` files."""
+    return tszip.load(str(path))
+
+
+def _chromosomes(ts: tskit.TreeSequence, source: Path) -> list[dict[str, int | str]]:
+    """Return and validate ARGtest's top-level chromosome offset table."""
+    metadata = ts.metadata
+    if not isinstance(metadata, dict) or "chrom_offsets" not in metadata:
+        raise ValueError(
+            f"{source} lacks top-level chrom_offsets metadata required for "
+            "native chromosome coordinates"
+        )
+    raw = metadata["chrom_offsets"]
+    if not isinstance(raw, list) or not raw:
+        raise ValueError(f"{source} has invalid chrom_offsets metadata")
+    result: list[dict[str, int | str]] = []
+    seen: set[str] = set()
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise ValueError(f"{source} has invalid chrom_offsets entry")
+        try:
+            chrom = str(entry["chrom"])
+            offset = int(entry["offset"])
+            length = int(entry["length"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(f"{source} has invalid chrom_offsets entry: {entry!r}") from error
+        if chrom in seen or offset < 0 or length <= 0:
+            raise ValueError(f"{source} has invalid chromosome entry: {entry!r}")
+        if float(offset) != float(entry["offset"]) or float(length) != float(entry["length"]):
+            raise ValueError(f"{source} chromosome offsets and lengths must be integers")
+        if offset + length > ts.sequence_length:
+            raise ValueError(f"{source} chromosome {chrom} extends beyond sequence_length")
+        seen.add(chrom)
+        result.append({"chrom": chrom, "offset": offset, "length": length})
+    if any(result[i]["offset"] >= result[i + 1]["offset"] for i in range(len(result) - 1)):
+        raise ValueError(f"{source} chrom_offsets must be ordered by increasing offset")
+    return result
 
 
 def _site_map(ts: tskit.TreeSequence, source: Path) -> dict[float, tskit.Site]:
@@ -94,7 +131,8 @@ def build_store(
     tree_files: Sequence[Path], output_dir: Path, *, bin_width: float = 1000,
     block_snps: int = 100_000, missing: str = "skip", root: str = "skip",
     mutation_weighting: str = "interval", omit_transpose: bool = False,
-    checksums: bool = False,
+    checksums: bool = False, min_usable_draws: int | None = None,
+    min_usable_fraction: float | None = 0.1,
 ) -> None:
     paths = [Path(path).resolve() for path in tree_files]
     output_dir = Path(output_dir)
@@ -108,13 +146,30 @@ def build_store(
         raise ValueError("mutation weighting must be 'interval' or 'draw'")
     if block_snps <= 0:
         raise ValueError("block-snps must be positive")
+    if min_usable_draws is not None and min_usable_fraction is not None:
+        raise ValueError("specify only one of min_usable_draws and min_usable_fraction")
+    if min_usable_draws is not None and min_usable_draws < 0:
+        raise ValueError("min_usable_draws must be nonnegative")
+    if min_usable_fraction is not None and not 0 <= min_usable_fraction <= 1:
+        raise ValueError("min_usable_fraction must lie in [0, 1]")
     positions = discover_positions(paths)
     age_bins = determine_age_grid(paths, bin_width)
     if positions.size == 0:
         raise ValueError("input tree sequences contain no sites")
-    lengths = {float(_load(path).sequence_length) for path in paths}
+    loaded_headers = [_load(path) for path in paths]
+    lengths = {float(ts.sequence_length) for ts in loaded_headers}
     if len(lengths) != 1:
         raise ValueError("all tree sequences must have the same sequence length")
+    chromosomes = _chromosomes(loaded_headers[0], paths[0])
+    for path, ts in zip(paths[1:], loaded_headers[1:]):
+        if _chromosomes(ts, path) != chromosomes:
+            raise ValueError("all tree sequences must have identical chrom_offsets metadata")
+    del loaded_headers
+    required_usable_draws = (
+        int(min_usable_draws)
+        if min_usable_draws is not None
+        else int(math.ceil((0.1 if min_usable_fraction is None else min_usable_fraction) * len(paths)))
+    )
     age_index = {float(value): i for i, value in enumerate(age_bins)}
     temp = Path(tempfile.mkdtemp(prefix=f"{output_dir.name}.tmp.", dir=output_dir.parent))
     try:
@@ -123,9 +178,11 @@ def build_store(
         n, b = positions.size, age_bins.size
         cdf = np.lib.format.open_memmap(temp / "cdf_by_snp.npy", mode="w+", dtype=np.uint16, shape=(n, b))
         valid = np.lib.format.open_memmap(temp / "valid.npy", mode="w+", dtype=np.bool_, shape=(n,))
-        counts = {name: np.lib.format.open_memmap(temp / f"{name}.npy", mode="w+", dtype=np.uint32, shape=(n,)) for name in ("present_draw_count", "usable_interval_count", "skipped_root_count", "missing_draw_count")}
+        eligible = np.lib.format.open_memmap(temp / "eligible.npy", mode="w+", dtype=np.bool_, shape=(n,))
+        usable_fraction = np.lib.format.open_memmap(temp / "usable_draw_fraction.npy", mode="w+", dtype=np.float32, shape=(n,))
+        counts = {name: np.lib.format.open_memmap(temp / f"{name}.npy", mode="w+", dtype=np.uint32, shape=(n,)) for name in ("present_draw_count", "usable_draw_count", "usable_interval_count", "skipped_root_count", "missing_draw_count")}
         extraction_totals = {name: 0 for name in (
-            "present_draw_count", "usable_interval_count",
+            "present_draw_count", "usable_draw_count", "usable_interval_count",
             "skipped_root_count", "missing_draw_count",
         )}
         for start in range(0, n, block_snps):
@@ -133,6 +190,7 @@ def build_store(
             width = stop - start
             pdf_block = np.zeros((width, b), dtype=np.float64)
             present_block = np.zeros(width, dtype=np.uint32)
+            usable_draw_block = np.zeros(width, dtype=np.uint32)
             interval_block = np.zeros(width, dtype=np.uint32)
             root_block = np.zeros(width, dtype=np.uint32)
             missing_block = np.zeros(width, dtype=np.uint32)
@@ -172,6 +230,7 @@ def build_store(
                         intervals.append(AgeInterval(position, below, above, str(path), mutation.id))
                     interval_block[local] += len(intervals)
                     if intervals:
+                        usable_draw_block[local] += 1
                         draw_pdf = _interval_pdf(intervals, age_index, b, bin_width)
                         # ``discretize_intervals`` returns an equal-interval
                         # mixture. Restore its interval count for global
@@ -184,14 +243,20 @@ def build_store(
                 cdf[row] = _quantize_cdf(pdf_block[local])
                 valid[row] = bool(interval_block[local])
             counts["present_draw_count"][start:stop] = present_block
+            counts["usable_draw_count"][start:stop] = usable_draw_block
             counts["usable_interval_count"][start:stop] = interval_block
             counts["skipped_root_count"][start:stop] = root_block
             counts["missing_draw_count"][start:stop] = missing_block
+            usable_fraction[start:stop] = usable_draw_block / len(paths)
+            eligible[start:stop] = (usable_draw_block > 0) & (
+                usable_draw_block >= required_usable_draws
+            )
             extraction_totals["present_draw_count"] += int(present_block.sum(dtype=np.uint64))
+            extraction_totals["usable_draw_count"] += int(usable_draw_block.sum(dtype=np.uint64))
             extraction_totals["usable_interval_count"] += int(interval_block.sum(dtype=np.uint64))
             extraction_totals["skipped_root_count"] += int(root_block.sum(dtype=np.uint64))
             extraction_totals["missing_draw_count"] += int(missing_block.sum(dtype=np.uint64))
-        cdf.flush(); valid.flush()
+        cdf.flush(); valid.flush(); eligible.flush(); usable_fraction.flush()
         for array in counts.values(): array.flush()
         if not omit_transpose:
             by_age = np.lib.format.open_memmap(temp / "cdf_by_age.npy", mode="w+", dtype=np.uint16, shape=(b, n))
@@ -199,7 +264,7 @@ def build_store(
                 stop = min(start + block_snps, n)
                 by_age[:, start:stop] = cdf[start:stop].T
             by_age.flush()
-        del cdf, valid, counts
+        del cdf, valid, eligible, usable_fraction, counts
         metadata = {
             "schema_version": SCHEMA_VERSION,
             "n_snps": int(n), "n_age_bins": int(b), "n_posterior_draws": len(paths),
@@ -209,6 +274,9 @@ def build_store(
             "missing_policy": missing, "root_policy": root, "quantization_scale": QUANTIZATION_SCALE,
             "quantization_scheme": "round(65535*cdf), monotone, valid terminal=65535",
             "has_cdf_by_age": not omit_transpose,
+            "chromosomes": chromosomes,
+            "minimum_usable_draws": required_usable_draws,
+            "minimum_usable_fraction": min_usable_fraction,
             "creation_command": " ".join(sys.argv),
             "extraction_totals": extraction_totals,
             "inputs": [{"path": str(path), **({"sha256": _sha256(path)} if checksums else {})} for path in paths],
@@ -246,12 +314,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--mutation-weighting", choices=("interval", "draw"), default="interval")
     parser.add_argument("--omit-transpose", action="store_true")
     parser.add_argument("--checksums", action="store_true")
+    coverage = parser.add_mutually_exclusive_group()
+    coverage.add_argument("--min-usable-draws", type=int)
+    coverage.add_argument("--min-usable-fraction", type=float)
     args = parser.parse_args(argv)
     try:
         build_store(_expand(args.trees), args.numpy_store, bin_width=args.bin_width,
                     block_snps=args.block_snps, missing=args.missing, root=args.root,
                     mutation_weighting=args.mutation_weighting,
-                    omit_transpose=args.omit_transpose, checksums=args.checksums)
+                    omit_transpose=args.omit_transpose, checksums=args.checksums,
+                    min_usable_draws=args.min_usable_draws,
+                    min_usable_fraction=(0.1 if args.min_usable_draws is None and
+                                         args.min_usable_fraction is None else
+                                         args.min_usable_fraction))
     except (OSError, ValueError, tskit.FileFormatError) as error:
         parser.error(str(error))
     return 0

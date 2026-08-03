@@ -7,13 +7,16 @@ from snp_age_dataset import SNPAgeDataset, validate_store
 
 
 def _store(path, transpose=True):
-    positions = np.array([1.5, 9.0], dtype=np.float64)
+    positions = np.array([1.0, 9.0], dtype=np.float64)
     bins = np.array([0, 1000, 2000], dtype=np.uint64)
     cdf = np.array([[100, 1000, 65535], [0, 0, 0]], dtype=np.uint16)
     arrays = {
         "positions": positions, "age_bins": bins, "cdf_by_snp": cdf,
         "valid": np.array([True, False]),
+        "eligible": np.array([True, False]),
         "present_draw_count": np.array([2, 1], dtype=np.uint32),
+        "usable_draw_count": np.array([2, 0], dtype=np.uint32),
+        "usable_draw_fraction": np.array([1.0, 0.0], dtype=np.float32),
         "usable_interval_count": np.array([2, 0], dtype=np.uint32),
         "skipped_root_count": np.array([0, 1], dtype=np.uint32),
         "missing_draw_count": np.array([0, 1], dtype=np.uint32),
@@ -24,7 +27,9 @@ def _store(path, transpose=True):
     if transpose:
         np.save(path / "cdf_by_age.npy", cdf.T)
     (path / "metadata.json").write_text(json.dumps({
-        "schema_version": 1, "n_snps": 2, "n_age_bins": 3,
+        "schema_version": 2, "n_snps": 2, "n_age_bins": 3,
+        "n_posterior_draws": 2, "minimum_usable_draws": 1,
+        "chromosomes": [{"chrom": "chr1", "offset": 0, "length": 100}],
     }))
 
 
@@ -32,13 +37,17 @@ def test_open_resolve_and_reads(tmp_path):
     path = tmp_path / "store"
     _store(path)
     dataset = SNPAgeDataset.open(path)
-    assert dataset.resolve_positions(np.array([9.0, 1.5])).tolist() == [1, 0]
+    assert dataset.resolve_positions(np.array([9.0, 1.0])).tolist() == [1, 0]
+    assert dataset.resolve_native_positions(np.array(["chr1"]), np.array([9])).tolist() == [1]
+    names, native = dataset.rows_to_native(np.array([0, 1]))
+    assert names.tolist() == ["chr1", "chr1"]
+    assert native.tolist() == [1, 9]
     assert dataset.read_cdfs(np.array([0]), decode=False).tolist() == [[100, 1000, 65535]]
     assert dataset.read_boundary_cdfs(np.array([0, 2]), 0, 2, decode=False).tolist() == [[100, 0], [65535, 0]]
     with pytest.raises(KeyError, match="not found"):
         dataset.resolve_positions(np.array([2.0]))
     with pytest.raises(ValueError, match="duplicate"):
-        dataset.resolve_positions(np.array([1.5, 1.5]))
+        dataset.resolve_positions(np.array([1.0, 1.0]))
 
 
 def test_boundary_fallback_without_transpose(tmp_path):

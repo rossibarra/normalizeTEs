@@ -6,4 +6,4 @@ dependencies:
   - matplotlib
   - msprime
   - tskit
-
+  - tszip

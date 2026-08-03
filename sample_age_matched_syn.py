@@ -22,6 +22,8 @@ from typing import Any, Sequence
 
 import numpy as np
 
+from snp_age_dataset import load_native_position_list
+
 
 class SamplingError(RuntimeError):
     """Raised when the requested matched sample cannot be constructed."""
@@ -43,6 +45,7 @@ class BlockWeightIndex:
 @dataclass(frozen=True)
 class MatchResult:
     row_indices: np.ndarray
+    chromosomes: np.ndarray
     positions: np.ndarray
     cdfs: np.ndarray
     wasserstein: np.ndarray
@@ -321,8 +324,15 @@ def generate_matches(
             rows_out.append(rows); assign_out.append(assignment)
             cdf_out.append(cdf); w1_out.append(w1); ids_out.append(proposal_id)
             if len(rows_out) == accepted_sets:
-                positions = np.asarray(store.positions)[np.stack(rows_out)]
-                return MatchResult(np.stack(rows_out), positions,
+                stacked_rows = np.stack(rows_out)
+                if hasattr(store, "rows_to_native"):
+                    flat_chroms, flat_positions = store.rows_to_native(stacked_rows.ravel())
+                    chromosomes = flat_chroms.reshape(stacked_rows.shape)
+                    positions = flat_positions.reshape(stacked_rows.shape)
+                else:
+                    chromosomes = np.full(stacked_rows.shape, "", dtype="U1")
+                    positions = np.asarray(store.positions)[stacked_rows]
+                return MatchResult(stacked_rows, chromosomes, positions,
                                    np.asarray(cdf_out, dtype=np.float32),
                                    np.asarray(w1_out), np.stack(assign_out),
                                    np.asarray(ids_out), proposal_id,
@@ -347,6 +357,7 @@ def write_result(output_dir: Path, result: MatchResult,
     tmp.mkdir(parents=True)
     try:
         np.save(tmp / "syn_positions.npy", result.positions)
+        np.save(tmp / "syn_chromosomes.npy", result.chromosomes)
         np.save(tmp / "syn_row_indices.npy", result.row_indices)
         np.save(tmp / "syn_cdf.npy", result.cdfs)
         np.save(tmp / "wasserstein.npy", result.wasserstein)
@@ -379,12 +390,15 @@ def _load_candidates(store: Any, positions_file: Path | None,
             raise ValueError("syn mask must be boolean and match positions shape")
         rows = np.flatnonzero(mask)
     else:
-        positions = np.loadtxt(positions_file, ndmin=1)
-        rows = store.resolve_positions(positions)
+        chromosomes, positions = load_native_position_list(positions_file)
+        rows = store.resolve_native_positions(chromosomes, positions)
     rows = np.asarray(rows, dtype=np.int64)
-    valid = np.asarray(store.valid)[rows]
-    if not np.all(valid):
-        raise ValueError(f"synonymous candidates include {(~valid).sum()} invalid age rows")
+    eligibility = np.asarray(getattr(store, "eligible", store.valid))[rows]
+    if not np.all(eligibility):
+        raise ValueError(
+            f"synonymous candidates include {(~eligibility).sum()} age rows below "
+            "the usable-draw threshold"
+        )
     return rows
 
 
