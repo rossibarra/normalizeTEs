@@ -97,6 +97,15 @@ def test_age_grid_has_at_least_two_points_for_young_intervals(tmp_path):
     np.testing.assert_array_equal(determine_age_grid([tree], 1_000), [0, 1_000])
 
 
+def test_age_grid_ignores_ancient_nodes_not_bounding_mutations(tmp_path):
+    tree = tmp_path / "unused_ancient_node.trees"
+    _write_ts(tree, {7.0: [0]})
+    tables = tskit.load(tree).dump_tables()
+    tables.nodes.add_row(time=1_000_000)
+    tables.tree_sequence().dump(tree)
+    assert determine_age_grid([tree], 10)[-1] == 20
+
+
 def test_tsz_input_and_minimum_usable_fraction(tmp_path):
     ordinary = tmp_path / "draw.trees"
     compressed = tmp_path / "draw.tsz"

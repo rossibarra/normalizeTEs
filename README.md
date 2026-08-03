@@ -84,8 +84,9 @@ chr4 27591
 chr7 802
 ```
 
-The chromosome labels must exactly match the `chrom_offsets` table embedded by
-ARGtest in the merged tree-sequence metadata. No reference `.fai` is required.
+The chromosome labels must exactly match those in the ARG's embedded
+`chrom_offsets` metadata. No reference `.fai` is required, and the ARG does not
+need to have been produced by ARGtest.
 The ARGs used by this workflow store one-based positions internally, matching
 VCF coordinates. The commands convert `POS` to `chromosome_offset + POS`;
 users should never pre-convert position lists to cumulative or zero-based
@@ -139,7 +140,11 @@ cost. Run `python build_snp_age_store.py --help` for the complete CLI.
 coverage threshold. TE and synonymous input positions must resolve to eligible
 rows. During construction, the builder creates a temporary disk-backed
 floating-point accumulator alongside the output directory; allow scratch space
-in addition to the final quantized arrays.
+in addition to the final quantized arrays. Its size is approximately
+`4 * number_of_SNPs * number_of_age_bins` bytes: at 20 million SNPs this is
+about 15 GiB for 200 bins or 75 GiB for 1,000 bins. Each posterior draw sweeps
+this accumulator in genomic order, so node-local scratch is preferable to
+Quobyte when available.
 
 ### 3. Choose the TE subset
 

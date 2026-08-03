@@ -87,8 +87,14 @@ def inspect_inputs(
         if np.any(~np.isfinite(site_positions)) or np.any(site_positions != np.floor(site_positions)):
             raise ValueError(f"{path} contains a non-integer or non-finite site position")
         positions.update(site_positions.tolist())
-        if ts.num_nodes:
-            maximum = max(maximum, float(np.max(ts.tables.nodes.time)))
+        # Traverse marginal trees once so unrelated ancient nodes do not
+        # inflate the shared age grid and its N-SNP by B-bin scratch array.
+        for tree in ts.trees():
+            for site in tree.sites():
+                for mutation in site.mutations:
+                    parent = tree.parent(mutation.node)
+                    if parent != tskit.NULL:
+                        maximum = max(maximum, float(ts.node(parent).time))
     # Downstream CDF integration requires at least two grid points. This also
     # keeps a valid zero-age-only fixture from producing a degenerate store.
     last = max(1, int(math.floor(maximum / bin_width + 0.5)))
@@ -204,13 +210,15 @@ def build_store(
         )}
         for path in paths:
             ts = _load(path)
+            site_positions = np.asarray(ts.tables.sites.position, dtype=np.float64)
+            site_rows = np.searchsorted(positions, site_positions)
+            if np.any(site_rows >= n) or np.any(positions[site_rows] != site_positions):
+                raise ValueError(f"{path} contains a site absent from the shared position index")
             seen_rows = np.zeros(n, dtype=np.bool_) if missing == "error" else None
             for tree in ts.trees():
                 for site in tree.sites():
                     position = float(site.position)
-                    row = int(np.searchsorted(positions, position))
-                    if row >= n or positions[row] != position:
-                        raise ValueError(f"unexpected site position {position:g} in {path}")
+                    row = int(site_rows[site.id])
                     if seen_rows is not None:
                         seen_rows[row] = True
                     counts["present_draw_count"][row] += 1
