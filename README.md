@@ -86,9 +86,10 @@ chr7 802
 
 The chromosome labels must exactly match the `chrom_offsets` table embedded by
 ARGtest in the merged tree-sequence metadata. No reference `.fai` is required.
-ARGtest stores zero-based tskit coordinates internally. The commands convert a
-one-based VCF position `POS` to `chromosome_offset + POS - 1`; users should
-never pre-convert position lists to cumulative or zero-based coordinates.
+The ARGs used by this workflow store one-based positions internally, matching
+VCF coordinates. The commands convert `POS` to `chromosome_offset + POS`;
+users should never pre-convert position lists to cumulative or zero-based
+coordinates.
 
 ### 1. Create and activate the environment
 

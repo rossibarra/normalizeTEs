@@ -111,9 +111,9 @@ class SNPAgeDataset:
                 raise ValueError(
                     f"VCF position {position} lies outside {chrom} length {entry['length']}"
                 )
-            # ARGtest stores tskit positions as zero-based coordinates, while
-            # user-facing position lists use one-based VCF coordinates.
-            output[i] = int(entry["offset"]) + int(position) - 1
+            # These ARGs store native chromosome positions one-based, matching
+            # the user-facing VCF coordinate convention.
+            output[i] = int(entry["offset"]) + int(position)
         return output
 
     def resolve_native_positions(
@@ -135,10 +135,10 @@ class SNPAgeDataset:
         for i, choice in enumerate(choices):
             entry = ordered[int(choice)]
             value = globals_[i] - int(entry["offset"])
-            if value != math.floor(value) or not 0 <= value < int(entry["length"]):
+            if value != math.floor(value) or not 1 <= value <= int(entry["length"]):
                 raise ValueError(f"store position {globals_[i]:g} is not a 1-based VCF coordinate")
             names[i] = str(entry["chrom"])
-            native[i] = int(value) + 1
+            native[i] = int(value)
         return names, native
 
     def read_cdfs(self, row_indices: np.ndarray, *, decode: bool = True) -> np.ndarray:
