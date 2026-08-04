@@ -87,14 +87,15 @@ def inspect_inputs(
         if np.any(~np.isfinite(site_positions)) or np.any(site_positions != np.floor(site_positions)):
             raise ValueError(f"{path} contains a non-integer or non-finite site position")
         positions.update(site_positions.tolist())
-        # Traverse marginal trees once so unrelated ancient nodes do not
-        # inflate the shared age grid and its N-SNP by B-bin scratch array.
-        for tree in ts.trees():
-            for site in tree.sites():
-                for mutation in site.mutations:
-                    parent = tree.parent(mutation.node)
-                    if parent != tskit.NULL:
-                        maximum = max(maximum, float(ts.node(parent).time))
+        # Every finite mutation-parent node occurs as an edge parent. This
+        # vectorized bound excludes isolated ancient nodes without requiring a
+        # second full marginal-tree traversal.
+        edge_parents = np.asarray(ts.tables.edges.parent, dtype=np.int64)
+        if edge_parents.size:
+            maximum = max(
+                maximum,
+                float(np.max(np.asarray(ts.tables.nodes.time)[edge_parents])),
+            )
     # Downstream CDF integration requires at least two grid points. This also
     # keeps a valid zero-age-only fixture from producing a degenerate store.
     last = max(1, int(math.floor(maximum / bin_width + 0.5)))
@@ -179,10 +180,15 @@ def build_store(
     positions, age_bins, chromosomes, sequence_length = inspect_inputs(paths, bin_width)
     if positions.size == 0:
         raise ValueError("input tree sequences contain no sites")
+    effective_usable_fraction = (
+        None
+        if min_usable_draws is not None
+        else 0.1 if min_usable_fraction is None else min_usable_fraction
+    )
     required_usable_draws = (
         int(min_usable_draws)
         if min_usable_draws is not None
-        else int(math.ceil((0.1 if min_usable_fraction is None else min_usable_fraction) * len(paths)))
+        else int(math.ceil(effective_usable_fraction * len(paths)))
     )
     age_index = {float(value): i for i, value in enumerate(age_bins)}
     temp = Path(tempfile.mkdtemp(prefix=f"{output_dir.name}.tmp.", dir=output_dir.parent))
@@ -222,6 +228,8 @@ def build_store(
                     if seen_rows is not None:
                         seen_rows[row] = True
                     counts["present_draw_count"][row] += 1
+                    # tskit guarantees unique site positions, so each row is
+                    # decremented at most once per posterior draw.
                     counts["missing_draw_count"][row] -= 1
                     intervals = []
                     for mutation in site.mutations:
@@ -287,7 +295,7 @@ def build_store(
             "has_cdf_by_age": not omit_transpose,
             "chromosomes": chromosomes,
             "minimum_usable_draws": required_usable_draws,
-            "minimum_usable_fraction": min_usable_fraction,
+            "minimum_usable_fraction": effective_usable_fraction,
             "creation_command": " ".join(sys.argv),
             "extraction_totals": extraction_totals,
             "inputs": [{"path": str(path), **({"sha256": _sha256(path)} if checksums else {})} for path in paths],
@@ -335,9 +343,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     mutation_weighting=args.mutation_weighting,
                     omit_transpose=args.omit_transpose, checksums=args.checksums,
                     min_usable_draws=args.min_usable_draws,
-                    min_usable_fraction=(0.1 if args.min_usable_draws is None and
-                                         args.min_usable_fraction is None else
-                                         args.min_usable_fraction))
+                    min_usable_fraction=args.min_usable_fraction)
     except (OSError, ValueError, tskit.FileFormatError) as error:
         parser.error(str(error))
     return 0

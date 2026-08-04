@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 import tskit
+import tszip
 
 
 @dataclass(frozen=True)
@@ -64,7 +65,7 @@ def collect_intervals(
 
     for tree_file in tree_files:
         tree_file = Path(tree_file)
-        ts = tskit.load(str(tree_file))
+        ts = tszip.load(str(tree_file))
         matched: set[float] = set()
         for site in ts.sites():
             position = float(site.position)
@@ -187,7 +188,7 @@ def _tree_files(patterns: Sequence[str]) -> list[str]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("trees", nargs="+", help=".trees files or glob patterns")
+    parser.add_argument("trees", nargs="+", help=".trees/.tsz files or glob patterns")
     parser.add_argument("--position", "-p", action="append", default=[], help="SNP bp position (repeatable)")
     parser.add_argument("--positions-file", help="one SNP position per line")
     parser.add_argument("--bin-width", type=float, default=1000)

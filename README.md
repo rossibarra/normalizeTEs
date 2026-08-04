@@ -263,3 +263,42 @@ the synonymous pool has usable probability mass across the target age range.
   boundary blocks under `$SLURM_TMPDIR` and copy only final outputs to Quobyte.
 - Keep the store and result arrays as a small number of large files rather than
   creating per-SNP files.
+
+## Documentation for accessory scripts
+
+### `snp_age_distribution.py`
+
+This smaller utility estimates age distributions for a selected set of SNPs
+without building the reusable NumPy store. It accepts ordinary `.trees` files,
+tszip-compressed `.tsz` files, and shell-style input globs. Positions are exact
+numeric coordinates as stored in the tree sequence; unlike the main workflow,
+this accessory command does not accept chromosome-position pairs or translate
+native coordinates using `chrom_offsets`.
+
+For every requested position, each retained mutation contributes a uniform age
+distribution between the mutation node and its parent in the marginal tree.
+The command combines those intervals, integrates them into age bins, normalizes
+the distribution, and writes CSV to standard output:
+
+```bash
+python snp_age_distribution.py posterior/*.tsz \
+  --position 100 \
+  --position 27591 \
+  --bin-width 1000 \
+  > snp_ages.csv
+```
+
+For a longer list, provide one numeric position per line:
+
+```bash
+python snp_age_distribution.py posterior/*.tsz \
+  --positions-file positions.txt \
+  > snp_ages.csv
+```
+
+Use `--intervals` to write the underlying node-to-parent bounds instead of the
+binned distributions. By default, positions absent from a posterior draw and
+mutations above a root are recorded or skipped; `--missing error` and
+`--root error` make either condition fatal. This command is intended for small
+queries and inspection. Use `build_snp_age_store.py` for genome-scale reusable
+data.

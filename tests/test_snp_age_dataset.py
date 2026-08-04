@@ -69,6 +69,25 @@ def test_native_coordinates_cover_first_and_last_base(tmp_path):
     assert positions.tolist() == [1, 9]
 
 
+def test_multichromosome_boundaries_round_trip():
+    dataset = SNPAgeDataset.__new__(SNPAgeDataset)
+    dataset.positions = np.array([1.0, 100.0, 101.0, 200.0])
+    dataset.chromosomes = (
+        {"chrom": "chr1", "offset": 0, "length": 100},
+        {"chrom": "chr2", "offset": 100, "length": 100},
+    )
+    dataset._chromosome_by_name = {
+        entry["chrom"]: entry for entry in dataset.chromosomes
+    }
+    rows = np.arange(4, dtype=np.int64)
+    names, positions = dataset.rows_to_native(rows)
+    assert names.tolist() == ["chr1", "chr1", "chr2", "chr2"]
+    assert positions.tolist() == [1, 100, 1, 100]
+    np.testing.assert_array_equal(
+        dataset.native_to_global(names, positions), dataset.positions
+    )
+
+
 def test_validation_detects_nonmonotone_cdf(tmp_path):
     path = tmp_path / "store"
     _store(path)

@@ -129,7 +129,9 @@ class SNPAgeDataset:
         native = np.empty(rows.size, dtype=np.int64)
         ordered = sorted(self.chromosomes, key=lambda item: int(item["offset"]))
         offsets = np.asarray([int(item["offset"]) for item in ordered], dtype=np.float64)
-        choices = np.searchsorted(offsets, globals_, side="right") - 1
+        # Chromosome coordinates are one-based, so a position equal to the
+        # next offset is the final base of the preceding chromosome.
+        choices = np.searchsorted(offsets, globals_, side="left") - 1
         if np.any(choices < 0):
             raise ValueError("store position precedes the first chromosome offset")
         for i, choice in enumerate(choices):

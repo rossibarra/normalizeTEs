@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 import tskit
+import tszip
 
 from snp_age_distribution import AgeInterval, collect_intervals, discretize_intervals
 
@@ -61,6 +62,16 @@ class DistributionTests(unittest.TestCase):
             self.assertEqual(collect_intervals([filename], [2])[0][2], [])
             with self.assertRaisesRegex(ValueError, "root"):
                 collect_intervals([filename], [2], root="error")
+
+    def test_tsz_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            ordinary = Path(directory) / "example.trees"
+            compressed = Path(directory) / "example.tsz"
+            make_ts(ordinary)
+            tszip.compress(tskit.load(ordinary), compressed)
+            intervals, missing = collect_intervals([compressed], [25])
+            self.assertEqual(len(intervals[25]), 2)
+            self.assertEqual(missing[25], 0)
 
 
 if __name__ == "__main__":

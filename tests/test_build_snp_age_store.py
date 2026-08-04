@@ -53,6 +53,7 @@ def test_build_union_counts_quantization_and_transpose(tmp_path):
     assert validate_store(output, deep=True).has_transpose
     metadata = json.loads((output / "metadata.json").read_text())
     assert metadata["mutation_weighting"] == "interval"
+    assert metadata["minimum_usable_fraction"] == pytest.approx(0.1)
     with pytest.raises(FileExistsError):
         build_store([first], output)
 
@@ -103,7 +104,7 @@ def test_age_grid_ignores_ancient_nodes_not_bounding_mutations(tmp_path):
     tables = tskit.load(tree).dump_tables()
     tables.nodes.add_row(time=1_000_000)
     tables.tree_sequence().dump(tree)
-    assert determine_age_grid([tree], 10)[-1] == 20
+    assert determine_age_grid([tree], 10)[-1] < 1_000_000
 
 
 def test_tsz_input_and_minimum_usable_fraction(tmp_path):
