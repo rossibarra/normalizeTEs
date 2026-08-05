@@ -1,6 +1,13 @@
 # normalizeTE code review
 
-Review date: 2026-08-03. Reviewed at commit `54b3045` plus uncommitted working-tree
+> **Most of the findings below have since been fixed.** For per-finding status, the one
+> retraction (`B2`'s coordinate reading), and the issues introduced by the fixes, see
+> [CODE_REVIEW_ROUND2.md](CODE_REVIEW_ROUND2.md). This document is preserved as the original
+> round-1 record and is not updated in place.
+
+## Round 1 — 2026-08-03
+
+Reviewed at commit `54b3045` plus uncommitted working-tree
 changes (`README.md`, `build_snp_age_store.py`, `sample_age_matched_syn.py`,
 `snp_age_dataset.py`, `te_age_target.py`, `environment.yml`, three test files).
 
@@ -85,6 +92,13 @@ The CLI only works because of the compensating expression at
 or collapse to a single knob (see O-d).
 
 ### B2 — The coordinate interface is mislabeled "1-based VCF", and is lossy by construction
+
+> **Superseded — see [CODE_REVIEW_ROUND2.md](CODE_REVIEW_ROUND2.md) §2.1.** This section
+> inferred from ARGtest's `write_vcf` call that its
+> ARGs carry 0-based coordinates. The maintainer has confirmed ARGtest's ARGs and VCFs are
+> both **1-based**, so the "mislabeled" argument below is wrong and the repo's
+> `offset + POS` / `1 <= POS <= length` handling is correct. The integrality
+> recommendation at the end of this section still stands and was adopted.
 
 **Upstream convention, now confirmed.** ARGtest performs no ±1 conversion anywhere. It
 exports with `ts.write_vcf()` and no `position_transform`, so tskit's default applies:
