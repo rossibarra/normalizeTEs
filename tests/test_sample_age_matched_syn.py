@@ -18,10 +18,17 @@ class FakeStore:
         self.cdf_by_snp = np.asarray(cdfs, dtype=np.float64)
         self.positions = np.arange(len(cdfs), dtype=np.float64) + 100
         self.age_bins = np.arange(self.cdf_by_snp.shape[1], dtype=np.float64) * 1000
-        self.valid = np.ones(len(cdfs), dtype=bool)
+        self.eligible = np.ones(len(cdfs), dtype=bool)
 
     def read_cdfs(self, rows):
         return self.cdf_by_snp[rows]
+
+    def read_boundary_cdfs(self, age_indices, start, stop):
+        return self.cdf_by_snp[start:stop, :][:, age_indices].T
+
+    def rows_to_native(self, rows):
+        rows = np.asarray(rows)
+        return np.full(rows.size, "chr1"), self.positions[rows].astype(np.int64)
 
 
 def make_store():
@@ -85,10 +92,8 @@ def test_zero_mass_and_capacity_failures_are_clear():
                             np.random.default_rng(1))
 
 
-def test_quantized_input_and_atomic_output(tmp_path: Path):
+def test_atomic_output(tmp_path: Path):
     store = make_store()
-    store.cdf_by_snp = np.rint(store.cdf_by_snp * 65535).astype(np.uint16)
-    store.quantization_scale = 65535
     index = build_interval_block_index(store, np.arange(8), np.array([0, 1, 3]), 4)
     result, diagnostics = generate_matches(
         store, index, np.array([1, 1]), np.array([.5, 1, 1]), 1000,
@@ -114,7 +119,7 @@ def test_boundary_reader_covers_first_bin_without_full_cdf_reads():
 
         def read_boundary_cdfs(self, age_indices, start, stop):
             self.boundary_reads.append((tuple(age_indices), start, stop))
-            return self.cdf_by_snp[start:stop, :][:, age_indices].T
+            return super().read_boundary_cdfs(age_indices, start, stop)
 
     store = SpyStore([[.75, 1, 1], [.25, 1, 1], [.5, 1, 1], [.1, 1, 1]])
     # Deliberately unsorted and gapped candidates; construction sorts them and

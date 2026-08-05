@@ -124,18 +124,15 @@ their age distributions, converts them to quantized CDFs, and writes the
 position and CDF NumPy arrays under `age_store/`. Both tszip-compressed `.tsz`
 and ordinary tskit files are accepted. The output directory must not already
 exist. By default a SNP is eligible only when at least 10% of posterior draws
-provide a usable mutation-node-to-parent interval. Use `--min-usable-draws` to
-set an absolute count instead, and use `--missing error` or `--root error` if
-missing posterior sites or mutations above roots should stop the build instead
-of being recorded and skipped.
+provide a usable mutation-node-to-parent interval. Adjust this with
+`--min-usable-fraction`. Use `--missing error` or `--root error` if missing
+posterior sites or mutations above roots should stop the build instead of being
+recorded and skipped.
 
-Use `--mutation-weighting draw` to give each usable posterior draw equal total
-weight rather than weighting every mutation interval equally. Optional
 `--omit-transpose` reduces final disk use at the cost of slower candidate
-scans, while `--checksums` records SHA-256 input checksums at additional I/O
-cost. Run `python build_snp_age_store.py --help` for the complete CLI.
+scans. Run `python build_snp_age_store.py --help` for the complete CLI.
 
-`valid` means that at least one usable age interval exists for a SNP.
+`valid` is derived from whether at least one usable age interval exists.
 `eligible` additionally means that the SNP meets the requested posterior-draw
 coverage threshold. TE and synonymous input positions must resolve to eligible
 rows. During construction, the builder creates a temporary disk-backed
@@ -199,9 +196,8 @@ distribution at 5% probability increments. Repeated boundaries on the discrete
 age grid are merged, and integer sampling quotas are adjusted to total exactly
 \(X\).
 
-The default bootstrap compares each resample with the observed TE target.
-`--bootstrap-reference two-sample` instead compares two independent TE
-resamples, and `--bootstrap-batch-size` controls temporary bootstrap memory.
+Each bootstrap resample is compared with the observed TE target.
+`--bootstrap-batch-size` controls temporary bootstrap memory.
 
 Important outputs under `targets/te_subset/` include:
 
@@ -211,7 +207,7 @@ Important outputs under `targets/te_subset/` include:
 - `bootstrap_wasserstein.npy`: bootstrap distances in generations
 - `interval_boundary_indices.npy`: sampling-interval boundaries
 - `interval_quotas.npy`: number of synonymous SNPs requested per interval
-- `metadata.json`: threshold, parameters, seeds, and provenance
+- `metadata.json`: threshold, parameters, seed, and provenance
 
 ### 5. Generate 100 matched synonymous sets
 
@@ -245,7 +241,7 @@ The principal outputs are:
 - `wasserstein.npy`: distance of every accepted set from the TE target
 - `interval_assignment.npy`: sampling interval assigned to every selected SNP
 - `diagnostics.csv`: accepted and rejected proposal diagnostics
-- `metadata.json`: run parameters, seeds, threshold, and proposal counts
+- `metadata.json`: run parameters, seed, threshold, and proposal counts
 
 If fewer than 100 proposals pass before `--max-proposals`, the command stops
 with a diagnostic error rather than silently relaxing the threshold. Increase

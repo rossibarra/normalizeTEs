@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import glob
-import hashlib
 import json
 import math
 import os
@@ -29,7 +28,7 @@ def _load(path: Path) -> tskit.TreeSequence:
 
 
 def _chromosomes(ts: tskit.TreeSequence, source: Path) -> list[dict[str, int | str]]:
-    """Return and validate ARGtest's top-level chromosome offset table."""
+    """Return and validate the ARG's chromosome offset table."""
     metadata = ts.metadata
     if not isinstance(metadata, dict) or "chrom_offsets" not in metadata:
         raise ValueError(
@@ -108,31 +107,6 @@ def inspect_inputs(
     )
 
 
-def discover_positions(tree_files: Sequence[Path]) -> np.ndarray:
-    """Return the union of integer tskit site positions."""
-    positions: set[float] = set()
-    for path in tree_files:
-        ts = _load(path)
-        values = np.asarray(ts.tables.sites.position, dtype=np.float64)
-        if np.any(~np.isfinite(values)) or np.any(values != np.floor(values)):
-            raise ValueError(f"{path} contains a non-integer or non-finite site position")
-        positions.update(values.tolist())
-    return np.asarray(sorted(positions), dtype=np.float64)
-
-
-def determine_age_grid(tree_files: Sequence[Path], bin_width: float) -> np.ndarray:
-    """Return a grid covering the oldest node in the supplied ARGs."""
-    return inspect_inputs(tree_files, bin_width)[1]
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _quantize_cdf(pdf: np.ndarray) -> np.ndarray:
     if not np.any(pdf):
         return np.zeros(pdf.size, dtype=np.uint16)
@@ -155,9 +129,7 @@ def _interval_pdf(intervals: list[AgeInterval], age_index: dict[float, int], n_b
 def build_store(
     tree_files: Sequence[Path], output_dir: Path, *, bin_width: float = 1000,
     block_snps: int = 100_000, missing: str = "skip", root: str = "skip",
-    mutation_weighting: str = "interval", omit_transpose: bool = False,
-    checksums: bool = False, min_usable_draws: int | None = None,
-    min_usable_fraction: float | None = None,
+    omit_transpose: bool = False, min_usable_fraction: float = 0.1,
 ) -> None:
     paths = [Path(path).resolve() for path in tree_files]
     output_dir = Path(output_dir)
@@ -167,29 +139,14 @@ def build_store(
         raise FileExistsError(f"output already exists: {output_dir}")
     if missing not in {"skip", "error"} or root not in {"skip", "error"}:
         raise ValueError("missing and root policies must be 'skip' or 'error'")
-    if mutation_weighting not in {"interval", "draw"}:
-        raise ValueError("mutation weighting must be 'interval' or 'draw'")
     if block_snps <= 0:
         raise ValueError("block-snps must be positive")
-    if min_usable_draws is not None and min_usable_fraction is not None:
-        raise ValueError("specify only one of min_usable_draws and min_usable_fraction")
-    if min_usable_draws is not None and min_usable_draws < 0:
-        raise ValueError("min_usable_draws must be nonnegative")
-    if min_usable_fraction is not None and not 0 <= min_usable_fraction <= 1:
+    if not 0 <= min_usable_fraction <= 1:
         raise ValueError("min_usable_fraction must lie in [0, 1]")
     positions, age_bins, chromosomes, sequence_length = inspect_inputs(paths, bin_width)
     if positions.size == 0:
         raise ValueError("input tree sequences contain no sites")
-    effective_usable_fraction = (
-        None
-        if min_usable_draws is not None
-        else 0.1 if min_usable_fraction is None else min_usable_fraction
-    )
-    required_usable_draws = (
-        int(min_usable_draws)
-        if min_usable_draws is not None
-        else int(math.ceil(effective_usable_fraction * len(paths)))
-    )
+    required_usable_draws = int(math.ceil(min_usable_fraction * len(paths)))
     age_index = {float(value): i for i, value in enumerate(age_bins)}
     temp = Path(tempfile.mkdtemp(prefix=f"{output_dir.name}.tmp.", dir=output_dir.parent))
     try:
@@ -197,9 +154,7 @@ def build_store(
         np.save(temp / "age_bins.npy", age_bins)
         n, b = positions.size, age_bins.size
         cdf = np.lib.format.open_memmap(temp / "cdf_by_snp.npy", mode="w+", dtype=np.uint16, shape=(n, b))
-        valid = np.lib.format.open_memmap(temp / "valid.npy", mode="w+", dtype=np.bool_, shape=(n,))
         eligible = np.lib.format.open_memmap(temp / "eligible.npy", mode="w+", dtype=np.bool_, shape=(n,))
-        usable_fraction = np.lib.format.open_memmap(temp / "usable_draw_fraction.npy", mode="w+", dtype=np.float32, shape=(n,))
         counts = {name: np.lib.format.open_memmap(temp / f"{name}.npy", mode="w+", dtype=np.uint32, shape=(n,)) for name in ("present_draw_count", "usable_draw_count", "usable_interval_count", "skipped_root_count", "missing_draw_count")}
         for array in counts.values():
             array[:] = 0
@@ -248,11 +203,8 @@ def build_store(
                         counts["usable_draw_count"][row] += 1
                         draw_pdf = _interval_pdf(intervals, age_index, b, bin_width)
                         # ``discretize_intervals`` returns an equal-interval
-                        # mixture. Restore its interval count for global
-                        # interval weighting; leave each draw at unit mass for
-                        # draw weighting.
-                        if mutation_weighting == "interval":
-                            draw_pdf *= len(intervals)
+                        # mixture; restore interval count before pooling draws.
+                        draw_pdf *= len(intervals)
                         pdf_accumulator[row] += draw_pdf.astype(np.float32)
             if seen_rows is not None and not np.all(seen_rows):
                 position = float(positions[np.flatnonzero(~seen_rows)[0]])
@@ -264,8 +216,6 @@ def build_store(
                 cdf[row] = _quantize_cdf(np.asarray(pdf_accumulator[row], dtype=np.float64))
             interval_block = np.asarray(counts["usable_interval_count"][start:stop])
             usable_draw_block = np.asarray(counts["usable_draw_count"][start:stop])
-            valid[start:stop] = interval_block > 0
-            usable_fraction[start:stop] = usable_draw_block / len(paths)
             eligible[start:stop] = (usable_draw_block > 0) & (
                 usable_draw_block >= required_usable_draws
             )
@@ -273,7 +223,7 @@ def build_store(
             extraction_totals[name] = int(array.sum(dtype=np.uint64))
         del pdf_accumulator
         (temp / "pdf_accumulator.npy").unlink()
-        cdf.flush(); valid.flush(); eligible.flush(); usable_fraction.flush()
+        cdf.flush(); eligible.flush()
         for array in counts.values(): array.flush()
         if not omit_transpose:
             by_age = np.lib.format.open_memmap(temp / "cdf_by_age.npy", mode="w+", dtype=np.uint16, shape=(b, n))
@@ -281,7 +231,7 @@ def build_store(
                 stop = min(start + block_snps, n)
                 by_age[:, start:stop] = cdf[start:stop].T
             by_age.flush()
-        del cdf, valid, eligible, usable_fraction, counts
+        del cdf, eligible, counts
         metadata = {
             "schema_version": SCHEMA_VERSION,
             "n_snps": int(n), "n_age_bins": int(b), "n_posterior_draws": len(paths),
@@ -289,16 +239,15 @@ def build_store(
             "age_bin_convention": "centres; cells [centre-width/2, centre+width/2); nearest ties upward",
             "position_matching": "exact float64 equality",
             "position_coordinate_system": "one-based within chromosome; global=offset+POS",
-            "mutation_weighting": mutation_weighting,
-            "missing_policy": missing, "root_policy": root, "quantization_scale": QUANTIZATION_SCALE,
+            "missing_policy": missing, "root_policy": root,
             "quantization_scheme": "round(65535*cdf), monotone, valid terminal=65535",
             "has_cdf_by_age": not omit_transpose,
             "chromosomes": chromosomes,
             "minimum_usable_draws": required_usable_draws,
-            "minimum_usable_fraction": effective_usable_fraction,
+            "minimum_usable_fraction": min_usable_fraction,
             "creation_command": " ".join(sys.argv),
             "extraction_totals": extraction_totals,
-            "inputs": [{"path": str(path), **({"sha256": _sha256(path)} if checksums else {})} for path in paths],
+            "inputs": [{"path": str(path)} for path in paths],
             "arrays": {
                 "positions": {"dtype": "float64", "shape": [int(n)]},
                 "age_bins": {"dtype": "uint64", "shape": [int(b)]},
@@ -307,7 +256,7 @@ def build_store(
             },
         }
         (temp / "metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        validate_store(temp, deep=False)
+        validate_store(temp)
         os.replace(temp, output_dir)
     except BaseException:
         shutil.rmtree(temp, ignore_errors=True)
@@ -318,7 +267,9 @@ def _expand(patterns: Sequence[str]) -> list[Path]:
     result = []
     for pattern in patterns:
         matches = sorted(glob.glob(pattern))
-        result.extend(Path(value) for value in (matches or [pattern]))
+        if not matches:
+            raise FileNotFoundError(f"tree-sequence pattern matched no files: {pattern}")
+        result.extend(Path(value) for value in matches)
     return list(dict.fromkeys(result))
 
 
@@ -330,19 +281,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--block-snps", type=int, default=100_000)
     parser.add_argument("--missing", choices=("skip", "error"), default="skip")
     parser.add_argument("--root", choices=("skip", "error"), default="skip")
-    parser.add_argument("--mutation-weighting", choices=("interval", "draw"), default="interval")
     parser.add_argument("--omit-transpose", action="store_true")
-    parser.add_argument("--checksums", action="store_true")
-    coverage = parser.add_mutually_exclusive_group()
-    coverage.add_argument("--min-usable-draws", type=int)
-    coverage.add_argument("--min-usable-fraction", type=float)
+    parser.add_argument("--min-usable-fraction", type=float, default=0.1)
     args = parser.parse_args(argv)
     try:
         build_store(_expand(args.trees), args.numpy_store, bin_width=args.bin_width,
                     block_snps=args.block_snps, missing=args.missing, root=args.root,
-                    mutation_weighting=args.mutation_weighting,
-                    omit_transpose=args.omit_transpose, checksums=args.checksums,
-                    min_usable_draws=args.min_usable_draws,
+                    omit_transpose=args.omit_transpose,
                     min_usable_fraction=args.min_usable_fraction)
     except (OSError, ValueError, tskit.FileFormatError) as error:
         parser.error(str(error))

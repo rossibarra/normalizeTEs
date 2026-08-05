@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 QUANTIZATION_SCALE = 65535
 
 
@@ -18,7 +18,6 @@ QUANTIZATION_SCALE = 65535
 class StoreReport:
     n_snps: int
     n_age_bins: int
-    n_valid: int
     has_transpose: bool
 
 
@@ -28,34 +27,35 @@ class SNPAgeDataset:
     def __init__(self, store_dir: Path, metadata: dict, arrays: dict[str, np.ndarray]):
         self.store_dir = store_dir
         self.metadata = metadata
-        self.quantization_scale = int(metadata.get("quantization_scale", QUANTIZATION_SCALE))
         self.positions = arrays["positions"]
         self.age_bins = arrays["age_bins"]
-        self.valid = arrays["valid"]
         self.eligible = arrays["eligible"]
         self._cdf_by_snp = arrays["cdf_by_snp"]
         self._cdf_by_age = arrays.get("cdf_by_age")
         self.present_draw_count = arrays["present_draw_count"]
         self.usable_draw_count = arrays["usable_draw_count"]
-        self.usable_draw_fraction = arrays["usable_draw_fraction"]
         self.usable_interval_count = arrays["usable_interval_count"]
         self.skipped_root_count = arrays["skipped_root_count"]
         self.missing_draw_count = arrays["missing_draw_count"]
         self.chromosomes = tuple(metadata["chromosomes"])
         self._chromosome_by_name = {str(row["chrom"]): row for row in self.chromosomes}
 
+    @property
+    def valid(self) -> np.ndarray:
+        """Rows containing at least one usable mutation interval."""
+        return self.usable_interval_count > 0
+
     @classmethod
-    def open(cls, store_dir: str | Path, *, validate: bool = True) -> "SNPAgeDataset":
+    def open(cls, store_dir: str | Path) -> "SNPAgeDataset":
         path = Path(store_dir)
-        if validate:
-            validate_store(path)
+        validate_store(path)
         try:
             metadata = json.loads((path / "metadata.json").read_text(encoding="utf-8"))
         except FileNotFoundError as error:
             raise ValueError(f"not a SNP age store (metadata.json missing): {path}") from error
         names = [
-            "positions", "age_bins", "cdf_by_snp", "valid", "eligible",
-            "present_draw_count", "usable_draw_count", "usable_draw_fraction", "usable_interval_count",
+            "positions", "age_bins", "cdf_by_snp", "eligible",
+            "present_draw_count", "usable_draw_count", "usable_interval_count",
             "skipped_root_count", "missing_draw_count",
         ]
         arrays = {name: np.load(path / f"{name}.npy", mmap_mode="r") for name in names}
@@ -147,7 +147,7 @@ class SNPAgeDataset:
         indices = _checked_indices(row_indices, self.positions.size, "row")
         values = np.asarray(self._cdf_by_snp[indices])
         if decode:
-            return values.astype(np.float32) / np.float32(self.quantization_scale)
+            return values.astype(np.float32) / np.float32(QUANTIZATION_SCALE)
         return values
 
     def read_boundary_cdfs(
@@ -162,7 +162,7 @@ class SNPAgeDataset:
         else:
             values = np.asarray(self._cdf_by_snp[start:stop, ages]).T
         if decode:
-            return values.astype(np.float32) / np.float32(self.quantization_scale)
+            return values.astype(np.float32) / np.float32(QUANTIZATION_SCALE)
         return values
 
 
@@ -224,11 +224,9 @@ def validate_store(store_dir: str | Path, *, deep: bool = False) -> StoreReport:
         "age_bins": (np.dtype("uint64"), (metadata["n_age_bins"],)),
         "positions": (np.dtype("float64"), (metadata["n_snps"],)),
         "cdf_by_snp": (np.dtype("uint16"), (metadata["n_snps"], metadata["n_age_bins"])),
-        "valid": (np.dtype("bool"), (metadata["n_snps"],)),
         "eligible": (np.dtype("bool"), (metadata["n_snps"],)),
         "present_draw_count": (np.dtype("uint32"), (metadata["n_snps"],)),
         "usable_draw_count": (np.dtype("uint32"), (metadata["n_snps"],)),
-        "usable_draw_fraction": (np.dtype("float32"), (metadata["n_snps"],)),
         "usable_interval_count": (np.dtype("uint32"), (metadata["n_snps"],)),
         "skipped_root_count": (np.dtype("uint32"), (metadata["n_snps"],)),
         "missing_draw_count": (np.dtype("uint32"), (metadata["n_snps"],)),
@@ -242,59 +240,55 @@ def validate_store(store_dir: str | Path, *, deep: bool = False) -> StoreReport:
         if array.dtype != dtype or array.shape != shape:
             raise ValueError(f"{name}.npy has dtype/shape {array.dtype}/{array.shape}, expected {dtype}/{shape}")
         arrays[name] = array
-    positions, bins = arrays["positions"], arrays["age_bins"]
     chromosomes = metadata.get("chromosomes")
     if not isinstance(chromosomes, list) or not chromosomes:
         raise ValueError("metadata must contain a nonempty chromosomes table")
-    if np.any(~np.isfinite(positions)) or np.any(np.diff(positions) <= 0):
-        raise ValueError("positions must be finite and strictly increasing")
-    if bins.size == 0 or np.any(bins[1:] <= bins[:-1]):
-        raise ValueError("age bins must be strictly increasing and nonempty")
     draws = metadata.get("n_posterior_draws")
     if not isinstance(draws, int) or draws <= 0:
         raise ValueError("metadata n_posterior_draws must be a positive integer")
-    if draws is not None and np.any(
-        arrays["present_draw_count"].astype(np.uint64)
-        + arrays["missing_draw_count"].astype(np.uint64) != draws
-    ):
-        raise ValueError("present and missing draw counts are inconsistent")
-    if np.any(arrays["usable_interval_count"] < arrays["valid"].astype(np.uint32)):
-        raise ValueError("valid flags and usable interval counts are inconsistent")
-    if np.any(arrays["usable_draw_count"] > arrays["present_draw_count"]):
-        raise ValueError("usable draw counts exceed present draw counts")
-    expected_fraction = arrays["usable_draw_count"].astype(np.float64) / int(draws)
-    if not np.allclose(arrays["usable_draw_fraction"], expected_fraction):
-        raise ValueError("usable draw fractions are inconsistent")
-    required_draws = int(metadata.get("minimum_usable_draws", 1))
-    expected_eligible = arrays["valid"] & (arrays["usable_draw_count"] >= required_draws)
-    if not np.array_equal(arrays["eligible"], expected_eligible):
-        raise ValueError("eligible flags are inconsistent with the coverage threshold")
-    valid, cdf = arrays["valid"], arrays["cdf_by_snp"]
-    scale = metadata.get("quantization_scale", QUANTIZATION_SCALE)
-    if not isinstance(scale, int) or not 0 < scale <= np.iinfo(np.uint16).max:
-        raise ValueError("metadata quantization_scale must fit in uint16")
-    block = max(1, min(100_000, cdf.shape[0]))
-    ranges = range(0, cdf.shape[0], block) if deep else ([0] if cdf.shape[0] else [])
-    for start in ranges:
-        rows = np.asarray(cdf[start:min(start + block, cdf.shape[0])])
-        flags = np.asarray(valid[start:min(start + block, cdf.shape[0])])
-        if np.any(np.diff(rows.astype(np.int32), axis=1) < 0):
-            raise ValueError("CDF rows are not monotone")
-        if np.any(rows[flags, -1] != scale):
-            raise ValueError(f"valid CDF rows must terminate at {scale}")
-        if np.any(rows[~flags] != 0):
-            raise ValueError("invalid CDF rows must be zero")
     transpose_path = path / "cdf_by_age.npy"
     has_transpose = transpose_path.exists()
     if has_transpose:
         transposed = np.load(transpose_path, mmap_mode="r")
+        cdf = arrays["cdf_by_snp"]
         if transposed.dtype != np.uint16 or transposed.shape != cdf.shape[::-1]:
             raise ValueError("cdf_by_age.npy has invalid dtype or shape")
-        if deep:
-            for start in range(0, cdf.shape[0], block):
-                stop = min(start + block, cdf.shape[0])
-                if not np.array_equal(cdf[start:stop], transposed[:, start:stop].T):
-                    raise ValueError("CDF orientations disagree")
-        elif cdf.shape[0] and not np.array_equal(cdf[:block], transposed[:, :block].T):
-            raise ValueError("CDF orientations disagree")
-    return StoreReport(int(cdf.shape[0]), int(cdf.shape[1]), int(np.count_nonzero(valid)), has_transpose)
+    if not deep:
+        return StoreReport(
+            int(metadata["n_snps"]), int(metadata["n_age_bins"]), has_transpose,
+        )
+
+    positions, bins = arrays["positions"], arrays["age_bins"]
+    if np.any(~np.isfinite(positions)) or np.any(np.diff(positions) <= 0):
+        raise ValueError("positions must be finite and strictly increasing")
+    if bins.size == 0 or np.any(bins[1:] <= bins[:-1]):
+        raise ValueError("age bins must be strictly increasing and nonempty")
+    if np.any(
+        arrays["present_draw_count"].astype(np.uint64)
+        + arrays["missing_draw_count"].astype(np.uint64) != draws
+    ):
+        raise ValueError("present and missing draw counts are inconsistent")
+    if np.any(arrays["usable_draw_count"] > arrays["present_draw_count"]):
+        raise ValueError("usable draw counts exceed present draw counts")
+    required_draws = int(metadata.get("minimum_usable_draws", 1))
+    valid = arrays["usable_interval_count"] > 0
+    expected_eligible = valid & (arrays["usable_draw_count"] >= required_draws)
+    if not np.array_equal(arrays["eligible"], expected_eligible):
+        raise ValueError("eligible flags are inconsistent with the coverage threshold")
+    cdf = arrays["cdf_by_snp"]
+    block = max(1, min(100_000, cdf.shape[0]))
+    for start in range(0, cdf.shape[0], block):
+        rows = np.asarray(cdf[start:min(start + block, cdf.shape[0])])
+        flags = np.asarray(valid[start:min(start + block, cdf.shape[0])])
+        if np.any(np.diff(rows.astype(np.int32), axis=1) < 0):
+            raise ValueError("CDF rows are not monotone")
+        if np.any(rows[flags, -1] != QUANTIZATION_SCALE):
+            raise ValueError(f"valid CDF rows must terminate at {QUANTIZATION_SCALE}")
+        if np.any(rows[~flags] != 0):
+            raise ValueError("invalid CDF rows must be zero")
+    if has_transpose:
+        for start in range(0, cdf.shape[0], block):
+            stop = min(start + block, cdf.shape[0])
+            if not np.array_equal(cdf[start:stop], transposed[:, start:stop].T):
+                raise ValueError("CDF orientations disagree")
+    return StoreReport(int(cdf.shape[0]), int(cdf.shape[1]), has_transpose)

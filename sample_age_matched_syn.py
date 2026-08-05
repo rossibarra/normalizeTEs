@@ -22,7 +22,7 @@ from typing import Any, Sequence
 
 import numpy as np
 
-from snp_age_dataset import load_native_position_list
+from snp_age_dataset import SNPAgeDataset, load_native_position_list
 from te_age_target import wasserstein_1
 
 
@@ -56,21 +56,7 @@ class MatchResult:
     rejection_count: int
 
 
-def _decode_cdfs(values: np.ndarray, store: Any) -> np.ndarray:
-    values = np.asarray(values)
-    if np.issubdtype(values.dtype, np.integer):
-        scale = float(getattr(store, "quantization_scale", 65535.0))
-        return values.astype(np.float64) / scale
-    return values.astype(np.float64, copy=False)
-
-
-def _read_cdfs(store: Any, rows: np.ndarray) -> np.ndarray:
-    if hasattr(store, "read_cdfs"):
-        return _decode_cdfs(store.read_cdfs(rows), store)
-    return _decode_cdfs(np.asarray(store.cdf_by_snp)[rows], store)
-
-
-def _boundary_weights(store: Any, rows: np.ndarray,
+def _boundary_weights(store: SNPAgeDataset, rows: np.ndarray,
                       boundary_indices: np.ndarray) -> np.ndarray:
     """Return interval masses for CDF *edge* indices in ``[0, B]``.
 
@@ -88,18 +74,9 @@ def _boundary_weights(store: Any, rows: np.ndarray,
     edge_cdfs = np.zeros((rows.size, bounds.size), dtype=np.float64)
     if positive_edges.size:
         columns = positive_edges - 1
-        if hasattr(store, "read_boundary_cdfs"):
-            slab_start, slab_stop = int(rows[0]), int(rows[-1]) + 1
-            raw = np.asarray(store.read_boundary_cdfs(
-                columns, slab_start, slab_stop))
-            expected = (columns.size, slab_stop - slab_start)
-            if raw.shape != expected:
-                raise ValueError(
-                    "read_boundary_cdfs returned shape "
-                    f"{raw.shape}, expected {expected}")
-            selected = _decode_cdfs(raw[:, rows - slab_start], store).T
-        else:
-            selected = _read_cdfs(store, rows)[:, columns]
+        slab_start, slab_stop = int(rows[0]), int(rows[-1]) + 1
+        raw = np.asarray(store.read_boundary_cdfs(columns, slab_start, slab_stop))
+        selected = raw[:, rows - slab_start].T
         lookup = {int(edge): selected[:, j]
                   for j, edge in enumerate(positive_edges)}
         for j, edge in enumerate(bounds):
@@ -112,7 +89,7 @@ def _boundary_weights(store: Any, rows: np.ndarray,
 
 
 def build_interval_block_index(
-    store: Any,
+    store: SNPAgeDataset,
     syn_indices: np.ndarray,
     boundary_indices: np.ndarray,
     block_snps: int = 250_000,
@@ -157,8 +134,8 @@ def build_interval_block_index(
 
 
 class _BlockCache:
-    def __init__(self, store: Any, index: BlockWeightIndex, size: int = 8):
-        self.store, self.index, self.size = store, index, max(1, size)
+    def __init__(self, store: SNPAgeDataset, index: BlockWeightIndex, size: int = 8):
+        self.store, self.index, self.size = store, index, size
         self.cache: OrderedDict[int, np.ndarray] = OrderedDict()
 
     def get(self, block: int) -> np.ndarray:
@@ -179,22 +156,19 @@ class _BlockCache:
 
 
 def _weighted_choice(weights: np.ndarray, rng: np.random.Generator) -> int:
-    total = float(weights.sum(dtype=np.float64))
+    cumulative = np.cumsum(weights, dtype=np.float64)
+    total = float(cumulative[-1])
     if not np.isfinite(total) or total <= 0:
         raise SamplingError("no positive candidate mass remains")
-    # searchsorted over a cumulative sum avoids normalizing a large vector.
-    return min(int(np.searchsorted(np.cumsum(weights, dtype=np.float64),
-                                   rng.random() * total, side="right")),
-               weights.size - 1)
+    return int(np.searchsorted(cumulative, rng.random() * total, side="right"))
 
 
 def draw_stratified_set(
-    store: Any,
+    store: SNPAgeDataset,
     index: BlockWeightIndex,
     quotas: np.ndarray,
     rng: np.random.Generator,
     cache_blocks: int = 8,
-    interval_rng: np.random.Generator | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Draw one unique candidate set, returning rows and stratum assignments."""
     quotas = np.asarray(quotas, dtype=np.int64)
@@ -215,8 +189,7 @@ def draw_stratified_set(
     out_rows: list[int] = []
     assignments: list[int] = []
     cache = _BlockCache(store, index, cache_blocks)
-    order_rng = rng if interval_rng is None else interval_rng
-    order = order_rng.permutation(index.n_intervals)
+    order = rng.permutation(index.n_intervals)
     for interval in order:
         for _ in range(int(quotas[interval])):
             block = _weighted_choice(totals[interval], rng)
@@ -231,24 +204,7 @@ def draw_stratified_set(
             if used_here:
                 local_weights[np.fromiter(used_here, dtype=np.int64)] = 0.0
             if local_weights.sum() <= 0:
-                # Totals may reach this state after cross-stratum removals.
-                totals[interval, block] = 0.0
-                try:
-                    block = _weighted_choice(totals[interval], rng)
-                except SamplingError as exc:
-                    raise SamplingError(
-                        f"interval {interval} cannot fill quota after uniqueness "
-                        "filtering") from exc
-                start = int(index.block_starts[block])
-                weights_all = cache.get(block)
-                block_rows = index.candidate_rows[
-                    start:(int(index.block_starts[block + 1])
-                           if block + 1 < index.block_starts.size
-                           else index.candidate_rows.size)]
-                local_weights = weights_all[:, interval].copy()
-                used_here = selected_local.get(block)
-                if used_here:
-                    local_weights[np.fromiter(used_here, dtype=np.int64)] = 0.0
+                raise AssertionError("block totals disagree with available SNP mass")
             local = _weighted_choice(local_weights, rng)
             row = int(block_rows[local])
             selected_local.setdefault(block, set()).add(local)
@@ -261,16 +217,15 @@ def draw_stratified_set(
                                                              dtype=np.uint16)
 
 
-def score_set(store: Any, row_indices: np.ndarray, target_cdf: np.ndarray
-              ) -> tuple[np.ndarray, float, float]:
-    aggregate = _read_cdfs(store, row_indices).mean(axis=0, dtype=np.float64)
+def score_set(store: SNPAgeDataset, row_indices: np.ndarray, target_cdf: np.ndarray
+              ) -> tuple[np.ndarray, float]:
+    aggregate = store.read_cdfs(row_indices).mean(axis=0, dtype=np.float64)
     w1 = wasserstein_1(aggregate, target_cdf, np.asarray(store.age_bins))
-    max_cdf = float(np.max(np.abs(aggregate - target_cdf)))
-    return aggregate, w1, max_cdf
+    return aggregate, w1
 
 
 def generate_matches(
-    store: Any,
+    store: SNPAgeDataset,
     index: BlockWeightIndex,
     quotas: np.ndarray,
     target_cdf: np.ndarray,
@@ -278,7 +233,7 @@ def generate_matches(
     *,
     accepted_sets: int = 100,
     max_proposals: int = 100_000,
-    seed: int | Sequence[int] | np.random.SeedSequence = 0,
+    seed: int = 0,
     cache_blocks: int = 8,
 ) -> tuple[MatchResult, list[dict[str, Any]]]:
     """Generate proposals until the requested number pass the full-CDF W1 test."""
@@ -286,46 +241,33 @@ def generate_matches(
         raise ValueError("accepted_sets and max_proposals must be positive")
     if not np.isfinite(threshold) or threshold < 0:
         raise ValueError("threshold must be finite and nonnegative")
-    root_seed = seed if isinstance(seed, np.random.SeedSequence) else np.random.SeedSequence(seed)
-    sampling_seed, ordering_seed = root_seed.spawn(2)
+    rng = np.random.default_rng(seed)
     rows_out, cdf_out, w1_out, assign_out, ids_out = [], [], [], [], []
     diagnostics: list[dict[str, Any]] = []
     rejection_count = 0
     for proposal_id in range(1, max_proposals + 1):
-        # A distinct stream makes a proposal reproducible independent of how many
-        # random numbers earlier proposals consumed.
-        draw_child = sampling_seed.spawn(1)[0]
-        order_child = ordering_seed.spawn(1)[0]
-        rng = np.random.default_rng(draw_child)
-        interval_rng = np.random.default_rng(order_child)
         try:
             rows, assignment = draw_stratified_set(
-                store, index, quotas, rng, cache_blocks, interval_rng)
-            cdf, w1, max_cdf = score_set(store, rows, target_cdf)
+                store, index, quotas, rng, cache_blocks)
+            cdf, w1 = score_set(store, rows, target_cdf)
             accepted = w1 <= threshold
             reason = "accepted" if accepted else "wasserstein_threshold"
         except SamplingError as exc:
             rows = assignment = cdf = None
-            w1 = max_cdf = np.nan
+            w1 = np.nan
             accepted, reason = False, f"sampling: {exc}"
         diagnostics.append({"proposal_id": proposal_id,
-                            "seed_spawn_key": ".".join(map(str, draw_child.spawn_key)),
-                            "interval_seed_spawn_key": ".".join(map(str, order_child.spawn_key)),
                             "accepted": accepted,
                             "wasserstein": w1, "threshold": threshold,
-                            "max_abs_cdf": max_cdf, "reason": reason})
+                            "reason": reason})
         if accepted:
             rows_out.append(rows); assign_out.append(assignment)
             cdf_out.append(cdf); w1_out.append(w1); ids_out.append(proposal_id)
             if len(rows_out) == accepted_sets:
                 stacked_rows = np.stack(rows_out)
-                if hasattr(store, "rows_to_native"):
-                    flat_chroms, flat_positions = store.rows_to_native(stacked_rows.ravel())
-                    chromosomes = flat_chroms.reshape(stacked_rows.shape)
-                    positions = flat_positions.reshape(stacked_rows.shape)
-                else:
-                    chromosomes = np.full(stacked_rows.shape, "", dtype="U1")
-                    positions = np.asarray(store.positions)[stacked_rows]
+                flat_chroms, flat_positions = store.rows_to_native(stacked_rows.ravel())
+                chromosomes = flat_chroms.reshape(stacked_rows.shape)
+                positions = flat_positions.reshape(stacked_rows.shape)
                 return MatchResult(stacked_rows, chromosomes, positions,
                                    np.asarray(cdf_out, dtype=np.float32),
                                    np.asarray(w1_out), np.stack(assign_out),
@@ -346,8 +288,6 @@ def write_result(output_dir: Path, result: MatchResult,
     if output_dir.exists():
         raise FileExistsError(f"output already exists: {output_dir}")
     tmp = output_dir.with_name(f"{output_dir.name}.tmp.{os.getpid()}")
-    if tmp.exists():
-        shutil.rmtree(tmp)
     tmp.mkdir(parents=True)
     try:
         np.save(tmp / "syn_positions.npy", result.positions)
@@ -371,7 +311,7 @@ def write_result(output_dir: Path, result: MatchResult,
         raise
 
 
-def _load_candidates(store: Any, positions_file: Path | None,
+def _load_candidates(store: SNPAgeDataset, positions_file: Path | None,
                      indices_file: Path | None, mask_file: Path | None) -> np.ndarray:
     supplied = sum(x is not None for x in (positions_file, indices_file, mask_file))
     if supplied != 1:
@@ -387,7 +327,7 @@ def _load_candidates(store: Any, positions_file: Path | None,
         chromosomes, positions = load_native_position_list(positions_file)
         rows = store.resolve_native_positions(chromosomes, positions)
     rows = np.asarray(rows, dtype=np.int64)
-    eligibility = np.asarray(getattr(store, "eligible", store.valid))[rows]
+    eligibility = np.asarray(store.eligible)[rows]
     if not np.all(eligibility):
         raise ValueError(
             f"synonymous candidates include {(~eligibility).sum()} age rows below "
@@ -411,7 +351,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args(argv)
 
-    from snp_age_dataset import SNPAgeDataset
     store = SNPAgeDataset.open(args.store)
     candidates = _load_candidates(store, args.syn_positions, args.syn_indices, args.syn_mask)
     target_cdf = np.load(args.target / "target_cdf.npy")
@@ -424,13 +363,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     quotas = np.load(args.target / "interval_quotas.npy")
     with (args.target / "metadata.json").open() as handle:
         target_meta = json.load(handle)
-    threshold_value = target_meta.get(
-        "wasserstein_threshold_generations",
-        target_meta.get("wasserstein_threshold",
-                        target_meta.get("acceptance_threshold")))
-    if threshold_value is None:
-        raise ValueError("target metadata does not contain a Wasserstein threshold")
-    threshold = float(threshold_value)
+    threshold = float(target_meta["wasserstein_threshold_generations"])
     index = build_interval_block_index(store, candidates, boundaries, args.block_snps)
     result, diagnostics = generate_matches(
         store, index, quotas, target_cdf, threshold,

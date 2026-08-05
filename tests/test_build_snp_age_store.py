@@ -5,7 +5,7 @@ import pytest
 import tskit
 import tszip
 
-from build_snp_age_store import build_store, determine_age_grid, discover_positions
+from build_snp_age_store import build_store, inspect_inputs
 from snp_age_dataset import SNPAgeDataset, validate_store
 
 
@@ -52,23 +52,9 @@ def test_build_union_counts_quantization_and_transpose(tmp_path):
     assert np.all(raw[1] == 0)
     assert validate_store(output, deep=True).has_transpose
     metadata = json.loads((output / "metadata.json").read_text())
-    assert metadata["mutation_weighting"] == "interval"
     assert metadata["minimum_usable_fraction"] == pytest.approx(0.1)
     with pytest.raises(FileExistsError):
         build_store([first], output)
-
-
-def test_draw_weighting_differs_from_interval_weighting(tmp_path):
-    first, second = tmp_path / "a.trees", tmp_path / "b.trees"
-    _write_ts(first, {10.0: [0, 2]})
-    _write_ts(second, {10.0: [0]})
-    interval, draw = tmp_path / "interval", tmp_path / "draw"
-    build_store([first, second], interval, bin_width=10, mutation_weighting="interval")
-    build_store([first, second], draw, bin_width=10, mutation_weighting="draw")
-    a = SNPAgeDataset.open(interval).read_cdfs(np.array([0]))[0]
-    b = SNPAgeDataset.open(draw).read_cdfs(np.array([0]))[0]
-    assert not np.array_equal(a, b)
-    assert b[2] > a[2]  # draw weighting gives more weight to the short young interval
 
 
 def test_missing_and_root_error_policies(tmp_path):
@@ -84,7 +70,7 @@ def test_missing_and_root_error_policies(tmp_path):
 def test_omit_transpose_and_discovery(tmp_path):
     tree = tmp_path / "a.trees"
     _write_ts(tree, {7.0: [0]})
-    assert discover_positions([tree]).tolist() == [7.0]
+    assert inspect_inputs([tree], 10)[0].tolist() == [7.0]
     output = tmp_path / "store"
     build_store([tree], output, bin_width=10, omit_transpose=True)
     report = validate_store(output, deep=True)
@@ -95,7 +81,7 @@ def test_omit_transpose_and_discovery(tmp_path):
 def test_age_grid_has_at_least_two_points_for_young_intervals(tmp_path):
     tree = tmp_path / "young.trees"
     _write_ts(tree, {7.0: [0]})
-    np.testing.assert_array_equal(determine_age_grid([tree], 1_000), [0, 1_000])
+    np.testing.assert_array_equal(inspect_inputs([tree], 1_000)[1], [0, 1_000])
 
 
 def test_age_grid_ignores_ancient_nodes_not_bounding_mutations(tmp_path):
@@ -104,7 +90,7 @@ def test_age_grid_ignores_ancient_nodes_not_bounding_mutations(tmp_path):
     tables = tskit.load(tree).dump_tables()
     tables.nodes.add_row(time=1_000_000)
     tables.tree_sequence().dump(tree)
-    assert determine_age_grid([tree], 10)[-1] < 1_000_000
+    assert inspect_inputs([tree], 10)[1][-1] < 1_000_000
 
 
 def test_tsz_input_and_minimum_usable_fraction(tmp_path):
@@ -116,7 +102,6 @@ def test_tsz_input_and_minimum_usable_fraction(tmp_path):
     build_store([compressed], output, min_usable_fraction=0.1)
     dataset = SNPAgeDataset.open(output)
     assert dataset.eligible.tolist() == [True]
-    assert dataset.usable_draw_fraction.tolist() == [1.0]
 
 
 def test_minimum_usable_fraction_filters_sparse_posterior_coverage(tmp_path):
@@ -133,17 +118,9 @@ def test_minimum_usable_fraction_filters_sparse_posterior_coverage(tmp_path):
     second = SNPAgeDataset.open(twenty_percent)
     row = int(first.resolve_positions(np.array([10.0]))[0])
     assert first.usable_draw_count[row] == 1
-    assert first.usable_draw_fraction[row] == pytest.approx(0.1)
+    assert first.usable_draw_count[row] / 10 == pytest.approx(0.1)
     assert first.eligible[row]
     assert not second.eligible[row]
-
-
-def test_minimum_usable_draws_python_api(tmp_path):
-    tree = tmp_path / "draw.trees"
-    _write_ts(tree, {10.0: [0]})
-    output = tmp_path / "store"
-    build_store([tree], output, min_usable_draws=1)
-    assert SNPAgeDataset.open(output).eligible.tolist() == [True]
 
 
 def test_builder_loads_each_draw_twice_independent_of_blocks(tmp_path, monkeypatch):

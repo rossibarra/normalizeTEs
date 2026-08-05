@@ -12,11 +12,9 @@ def _store(path, transpose=True):
     cdf = np.array([[100, 1000, 65535], [0, 0, 0]], dtype=np.uint16)
     arrays = {
         "positions": positions, "age_bins": bins, "cdf_by_snp": cdf,
-        "valid": np.array([True, False]),
         "eligible": np.array([True, False]),
         "present_draw_count": np.array([2, 1], dtype=np.uint32),
         "usable_draw_count": np.array([2, 0], dtype=np.uint32),
-        "usable_draw_fraction": np.array([1.0, 0.0], dtype=np.float32),
         "usable_interval_count": np.array([2, 0], dtype=np.uint32),
         "skipped_root_count": np.array([0, 1], dtype=np.uint32),
         "missing_draw_count": np.array([0, 1], dtype=np.uint32),
@@ -27,7 +25,7 @@ def _store(path, transpose=True):
     if transpose:
         np.save(path / "cdf_by_age.npy", cdf.T)
     (path / "metadata.json").write_text(json.dumps({
-        "schema_version": 2, "n_snps": 2, "n_age_bins": 3,
+        "schema_version": 3, "n_snps": 2, "n_age_bins": 3,
         "n_posterior_draws": 2, "minimum_usable_draws": 1,
         "chromosomes": [{"chrom": "chr1", "offset": 0, "length": 100}],
     }))
@@ -92,18 +90,6 @@ def test_validation_detects_nonmonotone_cdf(tmp_path):
     path = tmp_path / "store"
     _store(path)
     np.save(path / "cdf_by_snp.npy", np.array([[100, 50, 65535], [0, 0, 0]], dtype=np.uint16))
+    SNPAgeDataset.open(path)
     with pytest.raises(ValueError, match="not monotone"):
         validate_store(path, deep=True)
-
-
-def test_metadata_quantization_scale_is_used_for_decoding(tmp_path):
-    path = tmp_path / "store"
-    _store(path)
-    cdf = np.array([[100, 500, 1000], [0, 0, 0]], dtype=np.uint16)
-    np.save(path / "cdf_by_snp.npy", cdf)
-    np.save(path / "cdf_by_age.npy", cdf.T)
-    metadata = json.loads((path / "metadata.json").read_text())
-    metadata["quantization_scale"] = 1000
-    (path / "metadata.json").write_text(json.dumps(metadata))
-    decoded = SNPAgeDataset.open(path).read_cdfs(np.array([0]))
-    np.testing.assert_allclose(decoded, [[0.1, 0.5, 1.0]])
