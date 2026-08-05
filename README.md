@@ -116,7 +116,8 @@ python build_snp_age_store.py \
   --numpy-store age_store \
   --bin-width 1000 \
   --block-snps 100000 \
-  --min-usable-fraction 0.1
+  --min-usable-fraction 0.1 \
+  --scratch-dir "$SLURM_TMPDIR"
 ```
 
 The builder finds all variant positions across the tree sequences, estimates
@@ -136,12 +137,13 @@ scans. Run `python build_snp_age_store.py --help` for the complete CLI.
 `eligible` additionally means that the SNP meets the requested posterior-draw
 coverage threshold. TE and synonymous input positions must resolve to eligible
 rows. During construction, the builder creates a temporary disk-backed
-floating-point accumulator alongside the output directory; allow scratch space
-in addition to the final quantized arrays. Its size is approximately
+floating-point accumulator; allow scratch space in addition to the final
+quantized arrays. Its size is approximately
 `4 * number_of_SNPs * number_of_age_bins` bytes: at 20 million SNPs this is
 about 15 GiB for 200 bins or 75 GiB for 1,000 bins. Each posterior draw sweeps
-this accumulator in genomic order, so node-local scratch is preferable to
-Quobyte when available.
+this accumulator in genomic order. Use `--scratch-dir` to place it on
+node-local storage such as `$SLURM_TMPDIR`; final store files are still
+assembled beside `--numpy-store` for atomic publication.
 
 ### 3. Choose the TE subset
 
@@ -223,9 +225,11 @@ python sample_age_matched_syn.py \
   --seed 67890
 ```
 
-The sampler calculates synonymous-candidate weights in large blocks, proposes
-sets without replacement, and evaluates each proposal using its complete
-combined age CDF. A set is retained only when its Wasserstein distance from the
+The sampler reads synonymous-candidate weights once in large blocks and
+materializes a reusable float32 candidate-by-age-stratum matrix. It proposes
+sets without replacement without rereading those weights from the store, then
+evaluates each proposal using its complete combined age CDF. A set is retained
+only when its Wasserstein distance from the
 TE target is at or below the bootstrap threshold. Synonymous SNPs are unique
 within one set but may be reused across different accepted sets.
 For pre-resolved workflows, `--syn-indices` accepts a NumPy array of store row
@@ -242,6 +246,11 @@ The principal outputs are:
 - `interval_assignment.npy`: sampling interval assigned to every selected SNP
 - `diagnostics.csv`: accepted and rejected proposal diagnostics
 - `metadata.json`: run parameters, seed, threshold, and proposal counts
+
+`metadata.json` also records the weight-matrix shape, dtype, and byte size, plus
+the proposal count, rejection count, and acceptance rate. With 20 age strata,
+the matrix uses about 80 bytes per synonymous candidate (about 1.5 GiB for 20
+million candidates).
 
 If fewer than 100 proposals pass before `--max-proposals`, the command stops
 with a diagnostic error rather than silently relaxing the threshold. Increase

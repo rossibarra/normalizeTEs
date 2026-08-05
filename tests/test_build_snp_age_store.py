@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -148,3 +149,25 @@ def test_builder_rejects_fractional_arg_positions_early(tmp_path):
     _write_ts(tree, {10.5: [0]})
     with pytest.raises(ValueError, match="non-integer"):
         build_store([tree], tmp_path / "store")
+
+
+def test_accumulator_uses_requested_scratch_directory(tmp_path, monkeypatch):
+    import build_snp_age_store as builder
+
+    tree = tmp_path / "draw.trees"
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    _write_ts(tree, {10.0: [0]})
+    original = builder.np.lib.format.open_memmap
+    accumulator_paths = []
+
+    def record_accumulator(filename, *args, **kwargs):
+        if Path(filename).name == "pdf_accumulator.npy":
+            accumulator_paths.append(Path(filename))
+        return original(filename, *args, **kwargs)
+
+    monkeypatch.setattr(builder.np.lib.format, "open_memmap", record_accumulator)
+    build_store([tree], tmp_path / "store", scratch_dir=scratch)
+    assert len(accumulator_paths) == 1
+    assert scratch in accumulator_paths[0].parents
+    assert list(scratch.iterdir()) == []

@@ -130,6 +130,7 @@ def build_store(
     tree_files: Sequence[Path], output_dir: Path, *, bin_width: float = 1000,
     block_snps: int = 100_000, missing: str = "skip", root: str = "skip",
     omit_transpose: bool = False, min_usable_fraction: float = 0.1,
+    scratch_dir: Path | None = None,
 ) -> None:
     paths = [Path(path).resolve() for path in tree_files]
     output_dir = Path(output_dir)
@@ -148,8 +149,16 @@ def build_store(
         raise ValueError("input tree sequences contain no sites")
     required_usable_draws = int(math.ceil(min_usable_fraction * len(paths)))
     age_index = {float(value): i for i, value in enumerate(age_bins)}
-    temp = Path(tempfile.mkdtemp(prefix=f"{output_dir.name}.tmp.", dir=output_dir.parent))
+    scratch_parent = output_dir.parent if scratch_dir is None else Path(scratch_dir)
+    if not scratch_parent.is_dir():
+        raise NotADirectoryError(f"scratch directory does not exist: {scratch_parent}")
+    temp: Path | None = None
+    scratch: Path | None = None
     try:
+        temp = Path(tempfile.mkdtemp(
+            prefix=f"{output_dir.name}.tmp.", dir=output_dir.parent))
+        scratch = Path(tempfile.mkdtemp(
+            prefix=f"{output_dir.name}.accumulator.", dir=scratch_parent))
         np.save(temp / "positions.npy", positions)
         np.save(temp / "age_bins.npy", age_bins)
         n, b = positions.size, age_bins.size
@@ -162,7 +171,7 @@ def build_store(
         # The accumulator is disk-backed: extraction keeps only one posterior
         # ARG resident while visiting each tree and site exactly once.
         pdf_accumulator = np.lib.format.open_memmap(
-            temp / "pdf_accumulator.npy", mode="w+", dtype=np.float32, shape=(n, b)
+            scratch / "pdf_accumulator.npy", mode="w+", dtype=np.float32, shape=(n, b)
         )
         pdf_accumulator[:] = 0
         extraction_totals = {name: 0 for name in (
@@ -222,7 +231,7 @@ def build_store(
         for name, array in counts.items():
             extraction_totals[name] = int(array.sum(dtype=np.uint64))
         del pdf_accumulator
-        (temp / "pdf_accumulator.npy").unlink()
+        shutil.rmtree(scratch)
         cdf.flush(); eligible.flush()
         for array in counts.values(): array.flush()
         if not omit_transpose:
@@ -259,7 +268,10 @@ def build_store(
         validate_store(temp)
         os.replace(temp, output_dir)
     except BaseException:
-        shutil.rmtree(temp, ignore_errors=True)
+        if temp is not None:
+            shutil.rmtree(temp, ignore_errors=True)
+        if scratch is not None:
+            shutil.rmtree(scratch, ignore_errors=True)
         raise
 
 
@@ -283,12 +295,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--root", choices=("skip", "error"), default="skip")
     parser.add_argument("--omit-transpose", action="store_true")
     parser.add_argument("--min-usable-fraction", type=float, default=0.1)
+    parser.add_argument("--scratch-dir", type=Path)
     args = parser.parse_args(argv)
     try:
         build_store(_expand(args.trees), args.numpy_store, bin_width=args.bin_width,
                     block_snps=args.block_snps, missing=args.missing, root=args.root,
                     omit_transpose=args.omit_transpose,
-                    min_usable_fraction=args.min_usable_fraction)
+                    min_usable_fraction=args.min_usable_fraction,
+                    scratch_dir=args.scratch_dir)
     except (OSError, ValueError, tskit.FileFormatError) as error:
         parser.error(str(error))
     return 0

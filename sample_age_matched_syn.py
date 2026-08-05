@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """Generate synonymous SNP sets matched to a target SNP age distribution.
 
-The sampler scans candidate CDFs in blocks and retains only interval totals.  A
-proposal is drawn by hierarchical probability-proportional-to-size sampling:
-first a block, then a SNP within that block.  Selected SNPs are removed from all
-strata for the remainder of that proposal, guaranteeing uniqueness without an
-N-candidates by N-strata weight matrix.
+Candidate weights are read from the age store once and materialized as a
+float32 candidate-by-stratum matrix. Proposals reuse that matrix without
+further boundary-CDF reads.
 """
 
 from __future__ import annotations
@@ -15,7 +13,6 @@ import csv
 import json
 import os
 import shutil
-from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -31,12 +28,10 @@ class SamplingError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class BlockWeightIndex:
+class CandidateWeights:
     candidate_rows: np.ndarray
     boundary_indices: np.ndarray
-    block_starts: np.ndarray
-    block_totals: np.ndarray
-    block_positive_counts: np.ndarray
+    values: np.ndarray
 
     @property
     def n_intervals(self) -> int:
@@ -88,13 +83,13 @@ def _boundary_weights(store: SNPAgeDataset, rows: np.ndarray,
     return weights
 
 
-def build_interval_block_index(
+def build_candidate_weights(
     store: SNPAgeDataset,
     syn_indices: np.ndarray,
     boundary_indices: np.ndarray,
     block_snps: int = 250_000,
-) -> BlockWeightIndex:
-    """Scan candidate rows once and retain only per-block interval summaries."""
+) -> CandidateWeights:
+    """Read candidate interval weights once, using bounded input blocks."""
     rows = np.asarray(syn_indices, dtype=np.int64)
     bounds = np.asarray(boundary_indices, dtype=np.int64)
     if rows.ndim != 1 or rows.size == 0:
@@ -121,98 +116,49 @@ def build_interval_block_index(
         stop = min(start + block_snps, max(start + 1, coordinate_stop))
         start = stop
     starts = np.asarray(starts_list, dtype=np.int64)
-    totals = np.zeros((bounds.size - 1, starts.size), dtype=np.float64)
-    counts = np.zeros_like(totals, dtype=np.int64)
+    weights = np.empty((rows.size, bounds.size - 1), dtype=np.float32)
     for block, start in enumerate(starts):
         stop = (int(starts[block + 1]) if block + 1 < starts.size
                 else rows.size)
-        weights = _boundary_weights(store, rows[start:stop], bounds)
-        totals[:, block] = weights.sum(axis=0, dtype=np.float64)
-        counts[:, block] = np.count_nonzero(weights > 0, axis=0)
-    return BlockWeightIndex(rows.astype(np.int64, copy=False), bounds, starts,
-                            totals, counts)
-
-
-class _BlockCache:
-    def __init__(self, store: SNPAgeDataset, index: BlockWeightIndex, size: int = 8):
-        self.store, self.index, self.size = store, index, size
-        self.cache: OrderedDict[int, np.ndarray] = OrderedDict()
-
-    def get(self, block: int) -> np.ndarray:
-        if block in self.cache:
-            self.cache.move_to_end(block)
-            return self.cache[block]
-        start = int(self.index.block_starts[block])
-        stop = (int(self.index.block_starts[block + 1])
-                if block + 1 < self.index.block_starts.size
-                else self.index.candidate_rows.size)
-        value = _boundary_weights(
-            self.store, self.index.candidate_rows[start:stop],
-            self.index.boundary_indices)
-        self.cache[block] = value
-        if len(self.cache) > self.size:
-            self.cache.popitem(last=False)
-        return value
-
-
-def _weighted_choice(weights: np.ndarray, rng: np.random.Generator) -> int:
-    cumulative = np.cumsum(weights, dtype=np.float64)
-    total = float(cumulative[-1])
-    if not np.isfinite(total) or total <= 0:
-        raise SamplingError("no positive candidate mass remains")
-    return int(np.searchsorted(cumulative, rng.random() * total, side="right"))
+        weights[start:stop] = _boundary_weights(
+            store, rows[start:stop], bounds).astype(np.float32)
+    return CandidateWeights(rows.astype(np.int64, copy=False), bounds, weights)
 
 
 def draw_stratified_set(
-    store: SNPAgeDataset,
-    index: BlockWeightIndex,
+    weights: CandidateWeights,
     quotas: np.ndarray,
     rng: np.random.Generator,
-    cache_blocks: int = 8,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Draw one unique candidate set, returning rows and stratum assignments."""
     quotas = np.asarray(quotas, dtype=np.int64)
-    if quotas.shape != (index.n_intervals,) or np.any(quotas < 0):
+    if quotas.shape != (weights.n_intervals,) or np.any(quotas < 0):
         raise ValueError("quotas must be nonnegative with one value per interval")
-    if quotas.sum() > index.candidate_rows.size:
+    if quotas.sum() > weights.candidate_rows.size:
         raise SamplingError("total quota exceeds the number of unique candidates")
-    for interval, quota in enumerate(quotas):
-        if quota and index.block_totals[interval].sum() <= 0:
-            raise SamplingError(f"interval {interval} has zero candidate mass")
-        if quota > index.block_positive_counts[interval].sum():
-            raise SamplingError(
-                f"interval {interval} quota {quota} exceeds its positive-mass "
-                f"candidate count {index.block_positive_counts[interval].sum()}")
-
-    totals = index.block_totals.copy()
-    selected_local: dict[int, set[int]] = {}
+    selected = np.zeros(weights.candidate_rows.size, dtype=np.bool_)
     out_rows: list[int] = []
     assignments: list[int] = []
-    cache = _BlockCache(store, index, cache_blocks)
-    order = rng.permutation(index.n_intervals)
+    order = rng.permutation(weights.n_intervals)
     for interval in order:
-        for _ in range(int(quotas[interval])):
-            block = _weighted_choice(totals[interval], rng)
-            start = int(index.block_starts[block])
-            weights_all = cache.get(block)
-            local_weights = weights_all[:, interval].copy()
-            block_rows = index.candidate_rows[
-                start:(int(index.block_starts[block + 1])
-                       if block + 1 < index.block_starts.size
-                       else index.candidate_rows.size)]
-            used_here = selected_local.get(block)
-            if used_here:
-                local_weights[np.fromiter(used_here, dtype=np.int64)] = 0.0
-            if local_weights.sum() <= 0:
-                raise AssertionError("block totals disagree with available SNP mass")
-            local = _weighted_choice(local_weights, rng)
-            row = int(block_rows[local])
-            selected_local.setdefault(block, set()).add(local)
-            out_rows.append(row)
-            assignments.append(int(interval))
-            # Remove this SNP's mass from every stratum's block total.
-            totals[:, block] -= weights_all[local]
-            np.maximum(totals[:, block], 0.0, out=totals[:, block])
+        quota = int(quotas[interval])
+        if quota == 0:
+            continue
+        probabilities = weights.values[:, interval].copy()
+        probabilities[selected] = 0.0
+        positive = np.count_nonzero(probabilities > 0)
+        if positive == 0:
+            raise SamplingError(f"interval {interval} has zero candidate mass")
+        if positive < quota:
+            raise SamplingError(
+                f"interval {interval} quota {quota} exceeds its positive-mass "
+                f"candidate count {positive} after earlier selections")
+        probabilities /= probabilities.sum(dtype=np.float64)
+        chosen = rng.choice(probabilities.size, size=quota, replace=False,
+                            p=probabilities)
+        selected[chosen] = True
+        out_rows.extend(weights.candidate_rows[chosen].tolist())
+        assignments.extend([int(interval)] * quota)
     return np.asarray(out_rows, dtype=np.int64), np.asarray(assignments,
                                                              dtype=np.uint16)
 
@@ -226,7 +172,7 @@ def score_set(store: SNPAgeDataset, row_indices: np.ndarray, target_cdf: np.ndar
 
 def generate_matches(
     store: SNPAgeDataset,
-    index: BlockWeightIndex,
+    weights: CandidateWeights,
     quotas: np.ndarray,
     target_cdf: np.ndarray,
     threshold: float,
@@ -234,7 +180,6 @@ def generate_matches(
     accepted_sets: int = 100,
     max_proposals: int = 100_000,
     seed: int = 0,
-    cache_blocks: int = 8,
 ) -> tuple[MatchResult, list[dict[str, Any]]]:
     """Generate proposals until the requested number pass the full-CDF W1 test."""
     if accepted_sets <= 0 or max_proposals <= 0:
@@ -247,8 +192,7 @@ def generate_matches(
     rejection_count = 0
     for proposal_id in range(1, max_proposals + 1):
         try:
-            rows, assignment = draw_stratified_set(
-                store, index, quotas, rng, cache_blocks)
+            rows, assignment = draw_stratified_set(weights, quotas, rng)
             cdf, w1 = score_set(store, rows, target_cdf)
             accepted = w1 <= threshold
             reason = "accepted" if accepted else "wasserstein_threshold"
@@ -303,7 +247,9 @@ def write_result(output_dir: Path, result: MatchResult,
         payload.update({"schema_version": 1, "accepted_sets": int(result.row_indices.shape[0]),
                         "set_size": int(result.row_indices.shape[1]),
                         "proposals": result.attempts,
-                        "rejections": result.rejection_count})
+                        "rejections": result.rejection_count,
+                        "acceptance_rate": float(
+                            result.row_indices.shape[0] / result.attempts)})
         (tmp / "metadata.json").write_text(json.dumps(payload, indent=2) + "\n")
         os.rename(tmp, output_dir)
     except BaseException:
@@ -364,16 +310,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     with (args.target / "metadata.json").open() as handle:
         target_meta = json.load(handle)
     threshold = float(target_meta["wasserstein_threshold_generations"])
-    index = build_interval_block_index(store, candidates, boundaries, args.block_snps)
+    weights = build_candidate_weights(store, candidates, boundaries, args.block_snps)
     result, diagnostics = generate_matches(
-        store, index, quotas, target_cdf, threshold,
+        store, weights, quotas, target_cdf, threshold,
         accepted_sets=args.accepted_sets, max_proposals=args.max_proposals,
         seed=args.seed)
     write_result(args.output, result, diagnostics,
                  {"store": str(args.store), "target": str(args.target),
                   "seed": args.seed, "block_snps": args.block_snps,
                   "threshold": threshold,
-                  "candidate_count": int(candidates.size)})
+                  "candidate_count": int(candidates.size),
+                  "weight_matrix_shape": list(weights.values.shape),
+                  "weight_matrix_dtype": str(weights.values.dtype),
+                  "weight_matrix_bytes": int(weights.values.nbytes),
+                  "acceptance_rate": float(
+                      result.row_indices.shape[0] / result.attempts)})
     return 0
 
 
