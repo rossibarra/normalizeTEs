@@ -7,7 +7,8 @@ made in response to it.
 > 2026-08-04.** `R1 §2.2` (`side="left"`), `R1 §2.3` (multi-chromosome test), `N1a`
 > (vectorised `nodes.time[edges.parent].max()`), `N3`, `N4`, and `D4` are all fixed; 41 tests
 > pass. Resolution detail is at the end of this document. The `O-*` items in §5 remain open by
-> design.
+> design; [CODE_REVIEW_ROUND3.md](CODE_REVIEW_ROUND3.md) follows up on the storage-I/O ones and
+> corrects §3.1's access-pattern claim.
 
 **Reviewed:** commits `0b4efee`, `a8f4fda`, `444d6d3`, plus uncommitted working-tree changes
 to `README.md`, `build_snp_age_store.py`, and `tests/test_build_snp_age_store.py`.
