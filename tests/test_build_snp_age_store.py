@@ -6,24 +6,24 @@ import pytest
 import tskit
 import tszip
 
-from build_snp_age_store import build_store, inspect_inputs
+from build_snp_age_store import build_store, inspect_inputs, load_chrom_offsets
 from snp_age_dataset import SNPAgeDataset, validate_store
 
 
-def _write_ts(path, sites):
+def _write_ts(path, sites, *, sequence_length=100, chrom_offsets=None):
     """sites maps position to mutation node IDs; node 3 is the root."""
-    tables = tskit.TableCollection(sequence_length=100)
+    tables = tskit.TableCollection(sequence_length=sequence_length)
     tables.metadata_schema = tskit.MetadataSchema.permissive_json()
-    tables.metadata = {
-        "chrom_offsets": [{"chrom": "chr1", "offset": 0, "length": 100}]
-    }
+    if chrom_offsets is None:
+        chrom_offsets = [{"chrom": "chr1", "offset": 0, "length": sequence_length}]
+    tables.metadata = {} if chrom_offsets == "omit" else {"chrom_offsets": chrom_offsets}
     tables.nodes.add_row(flags=tskit.NODE_IS_SAMPLE, time=0)  # 0
     tables.nodes.add_row(flags=tskit.NODE_IS_SAMPLE, time=0)  # 1
     tables.nodes.add_row(time=20)                             # 2
     tables.nodes.add_row(time=100)                            # 3
-    tables.edges.add_row(0, 100, parent=2, child=0)
-    tables.edges.add_row(0, 100, parent=3, child=2)
-    tables.edges.add_row(0, 100, parent=3, child=1)
+    tables.edges.add_row(0, sequence_length, parent=2, child=0)
+    tables.edges.add_row(0, sequence_length, parent=3, child=2)
+    tables.edges.add_row(0, sequence_length, parent=3, child=1)
     for position, nodes in sites.items():
         site = tables.sites.add_row(position=position, ancestral_state="0")
         for node in nodes:
@@ -149,6 +149,85 @@ def test_builder_rejects_fractional_arg_positions_early(tmp_path):
     _write_ts(tree, {10.5: [0]})
     with pytest.raises(ValueError, match="non-integer"):
         build_store([tree], tmp_path / "store")
+
+
+def test_chrom_offsets_file_supplies_missing_arg_metadata(tmp_path):
+    tree = tmp_path / "no_metadata.trees"
+    _write_ts(tree, {10.0: [0], 120.0: [0]}, sequence_length=200, chrom_offsets="omit")
+    with pytest.raises(ValueError, match="chrom-offsets"):
+        build_store([tree], tmp_path / "unsupplied", bin_width=10)
+    offsets = tmp_path / "offsets.txt"
+    offsets.write_text("# chrom\tlength\nchr1\t100\nchr2\t100\n", encoding="utf-8")
+    output = tmp_path / "store"
+    build_store([tree], output, bin_width=10, chrom_offsets=offsets)
+    dataset = SNPAgeDataset.open(output)
+    assert dataset.chromosomes == (
+        {"chrom": "chr1", "offset": 0, "length": 100},
+        {"chrom": "chr2", "offset": 100, "length": 100},
+    )
+    names, native = dataset.rows_to_native(np.array([0, 1]))
+    assert names.tolist() == ["chr1", "chr2"]
+    assert native.tolist() == [10, 20]
+    metadata = json.loads((output / "metadata.json").read_text())
+    assert metadata["chromosomes_source"] == str(offsets)
+
+
+def test_chrom_offsets_file_accepts_explicit_three_column_layout(tmp_path):
+    tree = tmp_path / "draw.trees"
+    _write_ts(tree, {10.0: [0]}, sequence_length=200, chrom_offsets="omit")
+    offsets = tmp_path / "offsets.txt"
+    offsets.write_text("chr1 0 90\nchr2 120 80\n", encoding="utf-8")
+    build_store([tree], tmp_path / "store", bin_width=10, chrom_offsets=offsets)
+    dataset = SNPAgeDataset.open(tmp_path / "store")
+    assert [row["offset"] for row in dataset.chromosomes] == [0, 120]
+    assert [row["length"] for row in dataset.chromosomes] == [90, 80]
+
+
+def test_chrom_offsets_file_overrides_arg_metadata_with_warning(tmp_path, capsys):
+    tree = tmp_path / "draw.trees"
+    _write_ts(tree, {10.0: [0]}, sequence_length=200)
+    offsets = tmp_path / "offsets.txt"
+    offsets.write_text("chrA 0 200\n", encoding="utf-8")
+    build_store([tree], tmp_path / "store", bin_width=10, chrom_offsets=offsets)
+    assert "takes precedence" in capsys.readouterr().err
+    dataset = SNPAgeDataset.open(tmp_path / "store")
+    assert dataset.rows_to_native(np.array([0]))[0].tolist() == ["chrA"]
+    metadata = json.loads((tmp_path / "store" / "metadata.json").read_text())
+    assert metadata["chromosomes_source"] == str(offsets)
+
+
+def test_chrom_offsets_file_rejects_malformed_input(tmp_path):
+    tree = tmp_path / "draw.trees"
+    _write_ts(tree, {10.0: [0]}, sequence_length=200, chrom_offsets="omit")
+    offsets = tmp_path / "offsets.txt"
+
+    offsets.write_text("chr1\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="1 columns"):
+        load_chrom_offsets(offsets)
+
+    offsets.write_text("chr1 0 100\nchr2 100\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="same number of columns"):
+        load_chrom_offsets(offsets)
+
+    offsets.write_text("chr1 zero 100\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="must be integers"):
+        load_chrom_offsets(offsets)
+
+    offsets.write_text("# only a comment\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="empty"):
+        load_chrom_offsets(offsets)
+
+    offsets.write_text("chr1 0 150\nchr2 100 100\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="overlap"):
+        build_store([tree], tmp_path / "overlap", bin_width=10, chrom_offsets=offsets)
+
+    offsets.write_text("chr1 0 100\nchr2 100 150\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="beyond sequence_length"):
+        build_store([tree], tmp_path / "long", bin_width=10, chrom_offsets=offsets)
+
+    offsets.write_text("chr1 0 100\nchr1 100 100\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid chromosome entry"):
+        build_store([tree], tmp_path / "duplicate", bin_width=10, chrom_offsets=offsets)
 
 
 def test_accumulator_uses_requested_scratch_directory(tmp_path, monkeypatch):

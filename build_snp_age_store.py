@@ -27,15 +27,30 @@ def _load(path: Path) -> tskit.TreeSequence:
     return tszip.load(str(path))
 
 
-def _chromosomes(ts: tskit.TreeSequence, source: Path) -> list[dict[str, int | str]]:
-    """Return and validate the ARG's chromosome offset table."""
+def _warn_metadata_conflict(
+    ts: tskit.TreeSequence, path: Path,
+    supplied: list[dict[str, int | str]], source: str | Path,
+) -> None:
+    """Report when an offsets file overrides a usable ARG chrom_offsets table."""
     metadata = ts.metadata
     if not isinstance(metadata, dict) or "chrom_offsets" not in metadata:
-        raise ValueError(
-            f"{source} lacks top-level chrom_offsets metadata required for "
-            "native chromosome coordinates"
+        return
+    try:
+        embedded = _chromosome_table(metadata["chrom_offsets"], path, ts.sequence_length)
+    except ValueError:
+        embedded = None
+    if embedded != supplied:
+        print(
+            f"warning: {path} carries chrom_offsets metadata that disagrees with "
+            f"{source}; the supplied offsets file takes precedence",
+            file=sys.stderr,
         )
-    raw = metadata["chrom_offsets"]
+
+
+def _chromosome_table(
+    raw: object, source: str | Path, sequence_length: float, *, disjoint: bool = False
+) -> list[dict[str, int | str]]:
+    """Validate a chromosome offset table from ARG metadata or an offsets file."""
     if not isinstance(raw, list) or not raw:
         raise ValueError(f"{source} has invalid chrom_offsets metadata")
     result: list[dict[str, int | str]] = []
@@ -53,17 +68,77 @@ def _chromosomes(ts: tskit.TreeSequence, source: Path) -> list[dict[str, int | s
             raise ValueError(f"{source} has invalid chromosome entry: {entry!r}")
         if float(offset) != float(entry["offset"]) or float(length) != float(entry["length"]):
             raise ValueError(f"{source} chromosome offsets and lengths must be integers")
-        if offset + length > ts.sequence_length:
+        if offset + length > sequence_length:
             raise ValueError(f"{source} chromosome {chrom} extends beyond sequence_length")
         seen.add(chrom)
         result.append({"chrom": chrom, "offset": offset, "length": length})
     if any(result[i]["offset"] >= result[i + 1]["offset"] for i in range(len(result) - 1)):
         raise ValueError(f"{source} chrom_offsets must be ordered by increasing offset")
+    # User-supplied tables get the stronger check: a typo that lets one
+    # chromosome run into the next would silently mislabel native coordinates.
+    if disjoint and any(
+        int(result[i]["offset"]) + int(result[i]["length"]) > int(result[i + 1]["offset"])
+        for i in range(len(result) - 1)
+    ):
+        raise ValueError(f"{source} chromosome intervals overlap")
     return result
 
 
+def _chromosomes(ts: tskit.TreeSequence, source: Path) -> list[dict[str, int | str]]:
+    """Return and validate the ARG's chromosome offset table."""
+    metadata = ts.metadata
+    if not isinstance(metadata, dict) or "chrom_offsets" not in metadata:
+        raise ValueError(
+            f"{source} lacks top-level chrom_offsets metadata required for "
+            "native chromosome coordinates; supply --chrom-offsets instead"
+        )
+    return _chromosome_table(metadata["chrom_offsets"], source, ts.sequence_length)
+
+
+def load_chrom_offsets(path: str | Path) -> list[dict[str, int | str]]:
+    """Read a chromosome offsets file into an unvalidated chrom_offsets table.
+
+    Accepts two whitespace-separated layouts: ``chrom length``, whose offsets
+    are accumulated in file order, and explicit ``chrom offset length``.
+    """
+    rows: list[tuple[str, list[int]]] = []
+    widths: set[int] = set()
+    with Path(path).open(encoding="utf-8") as handle:
+        for line_number, raw in enumerate(handle, 1):
+            text = raw.split("#", 1)[0].strip()
+            if not text:
+                continue
+            fields = text.split()
+            if len(fields) not in (2, 3):
+                raise ValueError(
+                    f"{path}:{line_number}: expected 'chrom length' or "
+                    f"'chrom offset length', found {len(fields)} columns"
+                )
+            widths.add(len(fields))
+            if len(widths) > 1:
+                raise ValueError(f"{path}: every row must use the same number of columns")
+            try:
+                values = [int(field) for field in fields[1:]]
+            except ValueError as error:
+                raise ValueError(
+                    f"{path}:{line_number}: offsets and lengths must be integers"
+                ) from error
+            rows.append((fields[0], values))
+    if not rows:
+        raise ValueError(f"chromosome offsets file is empty: {path}")
+    table: list[dict[str, int | str]] = []
+    cumulative = 0
+    for chrom, values in rows:
+        offset, length = (cumulative, values[0]) if len(values) == 1 else values
+        table.append({"chrom": chrom, "offset": offset, "length": length})
+        cumulative = offset + length
+    return table
+
+
 def inspect_inputs(
-    tree_files: Sequence[Path], bin_width: float
+    tree_files: Sequence[Path], bin_width: float,
+    chrom_offsets: Sequence[dict[str, int | str]] | None = None,
+    chrom_offsets_source: str | Path = "supplied chromosome offsets",
 ) -> tuple[np.ndarray, np.ndarray, list[dict[str, int | str]], float]:
     """Inspect every draw once to establish shared positions, grid, and metadata."""
     if not math.isfinite(bin_width) or bin_width <= 0 or not float(bin_width).is_integer():
@@ -74,7 +149,16 @@ def inspect_inputs(
     sequence_length = None
     for path in tree_files:
         ts = _load(path)
-        current_chromosomes = _chromosomes(ts, path)
+        if chrom_offsets is None:
+            current_chromosomes = _chromosomes(ts, path)
+        else:
+            # Revalidated per draw so the bound against sequence_length holds
+            # for every input, not just the first.
+            current_chromosomes = _chromosome_table(
+                list(chrom_offsets), chrom_offsets_source, ts.sequence_length, disjoint=True
+            )
+            if chromosomes is None:
+                _warn_metadata_conflict(ts, path, current_chromosomes, chrom_offsets_source)
         if chromosomes is None:
             chromosomes = current_chromosomes
             sequence_length = float(ts.sequence_length)
@@ -130,7 +214,7 @@ def build_store(
     tree_files: Sequence[Path], output_dir: Path, *, bin_width: float = 1000,
     block_snps: int = 100_000, missing: str = "skip", root: str = "skip",
     omit_transpose: bool = False, min_usable_fraction: float = 0.1,
-    scratch_dir: Path | None = None,
+    scratch_dir: Path | None = None, chrom_offsets: Path | None = None,
 ) -> None:
     paths = [Path(path).resolve() for path in tree_files]
     output_dir = Path(output_dir)
@@ -144,7 +228,14 @@ def build_store(
         raise ValueError("block-snps must be positive")
     if not 0 <= min_usable_fraction <= 1:
         raise ValueError("min_usable_fraction must lie in [0, 1]")
-    positions, age_bins, chromosomes, sequence_length = inspect_inputs(paths, bin_width)
+    supplied_offsets = None
+    if chrom_offsets is not None:
+        chrom_offsets = Path(chrom_offsets)
+        supplied_offsets = load_chrom_offsets(chrom_offsets)
+    positions, age_bins, chromosomes, sequence_length = inspect_inputs(
+        paths, bin_width, supplied_offsets,
+        chrom_offsets if chrom_offsets is not None else "supplied chromosome offsets",
+    )
     if positions.size == 0:
         raise ValueError("input tree sequences contain no sites")
     required_usable_draws = int(math.ceil(min_usable_fraction * len(paths)))
@@ -252,6 +343,9 @@ def build_store(
             "quantization_scheme": "round(65535*cdf), monotone, valid terminal=65535",
             "has_cdf_by_age": not omit_transpose,
             "chromosomes": chromosomes,
+            "chromosomes_source": (
+                "arg_metadata" if chrom_offsets is None else str(chrom_offsets)
+            ),
             "minimum_usable_draws": required_usable_draws,
             "minimum_usable_fraction": min_usable_fraction,
             "creation_command": " ".join(sys.argv),
@@ -296,13 +390,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--omit-transpose", action="store_true")
     parser.add_argument("--min-usable-fraction", type=float, default=0.1)
     parser.add_argument("--scratch-dir", type=Path)
+    parser.add_argument(
+        "--chrom-offsets", type=Path,
+        help="chromosome offsets file used instead of the ARG's chrom_offsets metadata",
+    )
     args = parser.parse_args(argv)
     try:
         build_store(_expand(args.trees), args.numpy_store, bin_width=args.bin_width,
                     block_snps=args.block_snps, missing=args.missing, root=args.root,
                     omit_transpose=args.omit_transpose,
                     min_usable_fraction=args.min_usable_fraction,
-                    scratch_dir=args.scratch_dir)
+                    scratch_dir=args.scratch_dir, chrom_offsets=args.chrom_offsets)
     except (OSError, ValueError, tskit.FileFormatError) as error:
         parser.error(str(error))
     return 0

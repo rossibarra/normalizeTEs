@@ -85,7 +85,8 @@ chr7 802
 ```
 
 The chromosome labels must exactly match those in the ARG's embedded
-`chrom_offsets` metadata. No reference `.fai` is required, and the ARG does not
+`chrom_offsets` metadata, or those in the optional chromosome offsets file
+described below. No reference `.fai` is required, and the ARG does not
 need to have been produced by ARGtest.
 The ARGs used by this workflow store one-based positions internally, matching
 VCF coordinates. The commands convert `POS` to `chromosome_offset + POS`;
@@ -131,7 +132,10 @@ posterior sites or mutations above roots should stop the build instead of being
 recorded and skipped.
 
 `--omit-transpose` reduces final disk use at the cost of slower candidate
-scans. Run `python build_snp_age_store.py --help` for the complete CLI.
+scans. `--chrom-offsets` supplies the chromosome offset table from a file when
+the tree sequences do not carry usable `chrom_offsets` metadata; see
+[Optional chromosome offsets file](#optional-chromosome-offsets-file). Run
+`python build_snp_age_store.py --help` for the complete CLI.
 
 `valid` is derived from whether at least one usable age interval exists.
 `eligible` additionally means that the SNP meets the requested posterior-draw
@@ -144,6 +148,70 @@ about 15 GiB for 200 bins or 75 GiB for 1,000 bins. Each posterior draw sweeps
 this accumulator in genomic order. Use `--scratch-dir` to place it on
 node-local storage such as `$SLURM_TMPDIR`; final store files are still
 assembled beside `--numpy-store` for atomic publication.
+
+### Optional chromosome offsets file
+
+By default the builder reads the chromosome offset table from each tree
+sequence's top-level `chrom_offsets` metadata and fails if it is absent. Pass
+`--chrom-offsets FILE` to supply that table externally instead, which makes
+tree sequences without the metadata — for example plain msprime or SINGER
+output — usable in the native-coordinate workflow:
+
+```bash
+python build_snp_age_store.py \
+  project-data/posterior/*.tsz \
+  --numpy-store age_store \
+  --chrom-offsets project-data/chrom_offsets.txt
+```
+
+The file is whitespace-separated (spaces or tabs). Blank lines are ignored, and
+`#` starts a comment that runs to the end of the line. Every non-blank row
+names one chromosome, and all rows must use the same number of columns. Two
+layouts are accepted.
+
+**Two columns — chromosome and length.** Offsets are accumulated in file order,
+starting at 0, so the row order must match the order in which the chromosomes
+were concatenated into the ARG:
+
+```text
+# chrom  length
+chr1     308452471
+chr2     243675191
+chr3     238017767
+```
+
+This is the first two columns of a reference `.fai` index, so it can be
+produced with `cut -f1,2 reference.fa.fai`. Do not pass a raw `.fai` file: its
+third column is a byte offset into the FASTA file, not a genome offset.
+
+**Three columns — chromosome, offset, and length.** Use this when the ARG's
+chromosomes are not laid out back to back, or to state the layout explicitly:
+
+```text
+# chrom  offset      length
+chr1     0           308452471
+chr2     308452471   243675191
+chr3     552127662   238017767
+```
+
+`offset` is the cumulative coordinate of the base immediately before the
+chromosome's first base, matching the `chrom_offsets` metadata convention: a
+1-based VCF position `POS` on that chromosome maps to store coordinate
+`offset + POS`. The first chromosome therefore normally has offset 0.
+
+The table must satisfy the same rules as embedded metadata: chromosome names
+are unique, offsets and lengths are integers with `offset >= 0` and
+`length > 0`, rows are sorted by strictly increasing offset, and no chromosome
+extends past the tree sequences' `sequence_length`. A supplied table must also
+be non-overlapping (`offset + length <= next offset`), which catches transposed
+or stale lengths that would otherwise mislabel native coordinates.
+
+The chromosome labels in this file are the labels your TE and synonymous
+position files must use. When a tree sequence carries `chrom_offsets` metadata
+that disagrees with the file, the file wins and the builder writes a warning to
+standard error. The resolved table is copied into the store's `metadata.json`
+as `chromosomes`, with `chromosomes_source` recording either `arg_metadata` or
+the offsets-file path, so later steps need no coordinate arguments.
 
 ### 3. Choose the TE subset
 
@@ -176,9 +244,9 @@ Skip this step when `te_positions.txt` already contains exactly the desired
 subset.
 
 The older `simulate_neutral_trees.py` example creates a plain msprime tree
-sequence without ARGtest `chrom_offsets` metadata, so its output is not a valid
-input to this native-coordinate production workflow unless that metadata is
-added first.
+sequence without ARGtest `chrom_offsets` metadata. Its output can still be used
+in this native-coordinate production workflow by building the store with
+`--chrom-offsets`, or by adding the metadata to the tree sequence first.
 
 ### 4. Construct the TE target and matching threshold
 
