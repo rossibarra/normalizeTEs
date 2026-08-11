@@ -10,6 +10,7 @@ stable-sorted into the final ragged NumPy arrays.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import glob
 import json
 import math
@@ -585,6 +586,9 @@ def build_interval_store(
             "n_snps": int(n_snps),
             "n_intervals": n_intervals,
             "n_posterior_draws": len(paths),
+            "catalog_sha256": hashlib.sha256(
+                memoryview(np.ascontiguousarray(positions)).cast("B")
+            ).hexdigest(),
             "sequence_length": sequence_length,
             "maximum_above": maximum_above,
             "maximum_parent_time": maximum_above,

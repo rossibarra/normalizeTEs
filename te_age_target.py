@@ -14,7 +14,9 @@ from typing import Sequence
 
 import numpy as np
 
-from snp_age_dataset import SNPAgeDataset, load_native_position_list
+from snp_age_dataset import load_native_position_list
+from snp_age_store import is_interval_store, open_snp_age_store, store_schema
+from snp_position_resolution import resolve_native_position_requests
 
 
 @dataclass(frozen=True)
@@ -38,6 +40,8 @@ class TargetResult:
     interval_quotas: np.ndarray
     threshold: float
     seed: int | None
+    age_bins: np.ndarray | None = None
+    boundary_ages: np.ndarray | None = None
 
 
 def aggregate_cdf(cdf_rows: np.ndarray) -> np.ndarray:
@@ -145,8 +149,39 @@ def largest_remainder_quotas(
     return quotas
 
 
+def _analysis_cdfs(
+    store: object, rows: np.ndarray, *, bin_width: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return legacy-compatible CDF rows and their age-bin centers."""
+    if is_interval_store(store):
+        if bin_width <= 0:
+            raise ValueError("bin_width must be positive")
+        maximum = float(getattr(store, "metadata")["maximum_above"])
+        last = max(1, int(np.floor(maximum / bin_width + 0.5)))
+        centers = np.arange(last + 1, dtype=np.uint64) * np.uint64(bin_width)
+        right_edges = centers.astype(np.float64) + bin_width / 2
+        cdfs = store.cdf_at(rows, right_edges, side="left", weighting="interval")
+        return np.asarray(cdfs, dtype=np.float64), centers
+    return (
+        np.asarray(store.read_cdfs(rows), dtype=np.float64),
+        np.asarray(store.age_bins),
+    )
+
+
+def analysis_grid_edges(age_bins: np.ndarray) -> np.ndarray:
+    """Return physical half-open cell edges for a uniform center grid."""
+    centers = np.asarray(age_bins, dtype=np.float64)
+    if centers.ndim != 1 or centers.size < 2 or np.any(np.diff(centers) <= 0):
+        raise ValueError("age bins must be a strictly increasing 1-D array")
+    widths = np.diff(centers)
+    if not np.allclose(widths, widths[0], rtol=0, atol=0):
+        raise ValueError("analysis age bins must be uniformly spaced")
+    half = widths[0] / 2
+    return np.concatenate(([centers[0] - half], centers + half))
+
+
 def build_target(
-    store: SNPAgeDataset,
+    store: object,
     te_positions: np.ndarray,
     te_chromosomes: np.ndarray,
     te_vcf_positions: np.ndarray,
@@ -155,17 +190,25 @@ def build_target(
     acceptance_quantile: float,
     seed: int | None,
     batch_size: int = 256,
+    row_indices: np.ndarray | None = None,
+    bin_width: int = 1_000,
 ) -> TargetResult:
     """Resolve positions and calculate all in-memory Stage 2 products."""
     positions = np.asarray(te_positions, dtype=np.float64)
     if np.unique(positions).size != positions.size:
         raise ValueError("TE positions contain duplicates")
-    row_indices = np.asarray(store.resolve_positions(positions))
-    invalid = ~np.asarray(store.eligible[row_indices], dtype=bool)
+    rows = (
+        np.asarray(store.resolve_positions(positions), dtype=np.int64)
+        if row_indices is None else np.asarray(row_indices, dtype=np.int64)
+    )
+    if rows.shape != positions.shape:
+        raise ValueError("row_indices must align with TE positions")
+    if np.any(rows < 0) or np.any(rows >= np.asarray(store.positions).size):
+        raise ValueError("row_indices contain an out-of-range value")
+    invalid = ~np.asarray(store.eligible[rows], dtype=bool)
     if np.any(invalid):
         raise ValueError(f"invalid TE positions: {_format_values(positions[invalid])}")
-    cdf_rows = np.asarray(store.read_cdfs(row_indices), dtype=np.float64)
-    ages = np.asarray(store.age_bins)
+    cdf_rows, ages = _analysis_cdfs(store, rows, bin_width=bin_width)
     rng = np.random.default_rng(seed)
     distances = bootstrap_wasserstein(
         cdf_rows,
@@ -182,7 +225,8 @@ def build_target(
     threshold = empirical_threshold(distances, acceptance_quantile)
     return TargetResult(
         positions, np.asarray(te_chromosomes), np.asarray(te_vcf_positions),
-        row_indices, target, distances, boundary_set, quotas, threshold, seed,
+        rows, target, distances, boundary_set, quotas, threshold, seed,
+        ages, analysis_grid_edges(ages)[boundary_set.indices],
     )
 
 
@@ -207,6 +251,10 @@ def write_target(output_dir: Path, result: TargetResult, metadata: dict[str, obj
             "interval_shares.npy": boundary_set.interval_shares,
             "interval_quotas.npy": result.interval_quotas,
         }
+        if result.age_bins is not None:
+            arrays["age_bins.npy"] = result.age_bins
+        if result.boundary_ages is not None:
+            arrays["interval_boundary_ages.npy"] = result.boundary_ages
         for name, array in arrays.items():
             np.save(temporary / name, np.asarray(array), allow_pickle=False)
         with (temporary / "metadata.json").open("w", encoding="utf-8") as handle:
@@ -232,35 +280,63 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--bootstrap-batch-size", type=int, default=256)
     parser.add_argument("--acceptance-quantile", type=float, default=0.95)
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--bin-width", type=int, default=1_000)
+    parser.add_argument(
+        "--missing-position-policy", choices=("error", "drop"), default="error"
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    store = SNPAgeDataset.open(args.store)
+    store = open_snp_age_store(args.store)
     chromosomes, vcf_positions = load_native_position_list(args.te_positions)
-    positions = store.native_to_global(chromosomes, vcf_positions)
+    resolution = resolve_native_position_requests(
+        store,
+        chromosomes,
+        vcf_positions,
+        policy=args.missing_position_policy,
+        label="TE positions",
+    )
+    positions = resolution.included_global_positions
+    included_chromosomes = resolution.included_chromosomes
+    included_vcf_positions = resolution.included_native_positions
+    assert included_chromosomes is not None and included_vcf_positions is not None
     result = build_target(
         store,
         positions,
-        chromosomes,
-        vcf_positions,
+        included_chromosomes,
+        included_vcf_positions,
         n_replicates=args.bootstrap_replicates,
         acceptance_quantile=args.acceptance_quantile,
         seed=args.seed,
         batch_size=args.bootstrap_batch_size,
+        row_indices=resolution.included_rows,
+        bin_width=args.bin_width,
     )
     boundary_set = result.boundaries
     metadata = {
-        "schema_version": 1,
+        "schema_version": 2,
         "source_store": str(args.store.resolve()),
+        "source_store_schema": store_schema(store),
+        "source_catalog_sha256": getattr(store, "metadata", {}).get("catalog_sha256"),
         "te_position_source": str(args.te_positions.resolve()),
         "n_te_snps": int(positions.size),
+        "effective_te_set_size": int(positions.size),
+        "position_resolution": resolution.summary(),
+        "excluded_positions": resolution.excluded_coordinates(),
+        "missing_position_policy": args.missing_position_policy,
+        "bin_width": int(np.diff(result.age_bins[:2])[0]),
+        "cdf_evaluation": (
+            "P(X < right_cell_edge); equal interval weighting"
+            if is_interval_store(store) else "stored dense CDF"
+        ),
         "bootstrap_replicates": args.bootstrap_replicates,
         "acceptance_quantile": args.acceptance_quantile,
         "wasserstein_threshold_generations": result.threshold,
         "boundary_probabilities": np.linspace(0.0, 1.0, 21).tolist(),
         "compressed_boundary_edge_indices": boundary_set.indices.tolist(),
+        "compressed_boundary_ages": result.boundary_ages.tolist(),
         "interval_shares": boundary_set.interval_shares.tolist(),
         "seed": args.seed,
         "numpy_version": np.__version__,

@@ -102,6 +102,37 @@ def test_cdf_side_semantics_cell_masses_and_weighting(tmp_path):
     np.testing.assert_array_equal(strict, [[0, 0, 1]])
 
 
+@pytest.mark.parametrize("strategy", ["gather", "coalesced", "scan"])
+def test_boundary_access_strategies_preserve_scattered_order(tmp_path, strategy):
+    store = SNPAgeIntervalDataset.open(_store(tmp_path / "store"))
+    rows = np.array([2, 0])
+    expected = store.cdf_at(rows, np.array([5.0, 15.0]), side="left")
+    actual = store.boundary_cdfs(
+        rows, np.array([5.0, 15.0]), side="left",
+        access_strategy=strategy, block_rows=2, coalesce_gap=1)
+    np.testing.assert_allclose(actual, expected)
+
+
+def test_aggregate_cdf_is_blockwise_mean_and_cache_is_gated(tmp_path):
+    store = SNPAgeIntervalDataset.open(_store(tmp_path / "store"))
+    rows = np.array([2, 0])
+    points = np.array([5.0, 15.0])
+    expected = store.cdf_at(rows, points).mean(axis=0)
+    np.testing.assert_allclose(
+        store.aggregate_cdf_at(rows, points, block_rows=1), expected)
+    with pytest.raises(NotImplementedError, match="Gate 3"):
+        store.boundary_cdfs(rows, points, access_strategy="cache")
+
+
+def test_regular_grid_aggregate_matches_rowwise_cdf(tmp_path):
+    store = SNPAgeIntervalDataset.open(_store(tmp_path / "store"))
+    rows = np.array([2, 0])
+    points = np.arange(-5.0, 40.0, 2.5)
+    expected = store.cdf_at(rows, points, side="left").mean(axis=0)
+    actual = store.aggregate_cdf_at(rows, points, side="left")
+    np.testing.assert_allclose(actual, expected, atol=1e-14)
+
+
 def test_native_coordinates_preserve_one_base_gap(tmp_path):
     store = SNPAgeIntervalDataset.open(_store(tmp_path / "store"))
     assert store.native_to_global(np.array(["chr1", "chr2"]), np.array([100, 1])).tolist() == [100, 102]

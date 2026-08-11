@@ -273,8 +273,149 @@ class SNPAgeIntervalDataset:
                 output[i] = np.mean([values[draws == draw].mean(axis=0) for draw in unique], axis=0)
         return output
 
-    def boundary_cdfs(self, row_indices: np.ndarray, boundaries: np.ndarray, **kwargs) -> np.ndarray:
-        return self.cdf_at(row_indices, boundaries, **kwargs)
+    def boundary_cdfs(
+        self,
+        row_indices: np.ndarray,
+        boundaries: np.ndarray,
+        *,
+        access_strategy: str = "gather",
+        block_rows: int = 100_000,
+        coalesce_gap: int = 64,
+        **kwargs,
+    ) -> np.ndarray:
+        """Evaluate boundary CDFs using an explicit row-access strategy.
+
+        ``scan`` intentionally reads complete contiguous row blocks, while
+        ``coalesced`` fills short gaps between requested rows. ``cache`` is
+        reserved for the candidate-cache layout to be selected at Gate 3.
+        """
+        rows = _checked_indices(row_indices, self.positions.size, "row")
+        if rows.size == 0:
+            return np.empty((0, np.asarray(boundaries).size), dtype=np.float64)
+        if np.unique(rows).size != rows.size:
+            raise ValueError("row indices contain duplicates")
+        if access_strategy not in {"gather", "coalesced", "scan", "cache"}:
+            raise ValueError("unknown interval access strategy")
+        if block_rows <= 0 or coalesce_gap < 0:
+            raise ValueError("block_rows must be positive and coalesce_gap nonnegative")
+        if access_strategy == "cache":
+            raise NotImplementedError(
+                "candidate cache requires the Gate 3 layout/throughput decision"
+            )
+        if access_strategy == "gather":
+            return self.cdf_at(rows, boundaries, **kwargs)
+
+        order = np.argsort(rows, kind="stable")
+        sorted_rows = rows[order]
+        sorted_output = np.empty(
+            (rows.size, np.asarray(boundaries).size), dtype=np.float64
+        )
+        if access_strategy == "coalesced":
+            start = 0
+            while start < sorted_rows.size:
+                stop = start + 1
+                while (
+                    stop < sorted_rows.size
+                    and sorted_rows[stop] - sorted_rows[stop - 1] <= coalesce_gap + 1
+                    and sorted_rows[stop] - sorted_rows[start] < block_rows
+                ):
+                    stop += 1
+                slab = np.arange(sorted_rows[start], sorted_rows[stop - 1] + 1)
+                values = self.cdf_at(slab, boundaries, **kwargs)
+                sorted_output[start:stop] = values[sorted_rows[start:stop] - slab[0]]
+                start = stop
+        else:
+            cursor = 0
+            for slab_start in range(0, self.positions.size, block_rows):
+                slab_stop = min(slab_start + block_rows, self.positions.size)
+                selected_stop = np.searchsorted(sorted_rows, slab_stop, side="left")
+                if selected_stop > cursor:
+                    # Evaluate the complete slab to force sequential endpoint reads.
+                    slab = np.arange(slab_start, slab_stop)
+                    values = self.cdf_at(slab, boundaries, **kwargs)
+                    selected = sorted_rows[cursor:selected_stop]
+                    sorted_output[cursor:selected_stop] = values[selected - slab_start]
+                cursor = selected_stop
+                if cursor == sorted_rows.size:
+                    break
+        output = np.empty_like(sorted_output)
+        output[order] = sorted_output
+        return output
+
+    def aggregate_cdf_at(
+        self,
+        row_indices: np.ndarray,
+        points: np.ndarray,
+        *,
+        side: str = "right",
+        weighting: str = "interval",
+        block_rows: int = 512,
+    ) -> np.ndarray:
+        """Return the mean SNP CDF without retaining a SNP-by-grid matrix."""
+        rows = _checked_indices(row_indices, self.positions.size, "row")
+        if rows.size == 0 or block_rows <= 0:
+            raise ValueError("rows must be nonempty and block_rows positive")
+        query = np.asarray(points, dtype=np.float64)
+        if query.ndim != 1 or np.any(~np.isfinite(query)):
+            raise ValueError("points must be a one-dimensional finite array")
+        widths = np.diff(query)
+        if (
+            weighting == "interval" and query.size >= 2
+            and np.all(widths > 0)
+            and np.allclose(widths, widths[0], rtol=0, atol=0)
+        ):
+            return self._aggregate_uniform_interval_cdf(rows, query)
+        total = np.zeros(query.size, dtype=np.float64)
+        for start in range(0, rows.size, block_rows):
+            block = self.cdf_at(
+                rows[start:start + block_rows], query, side=side, weighting=weighting
+            )
+            if np.any(~np.isfinite(block)):
+                raise ValueError("aggregate rows include a SNP without usable intervals")
+            total += block.sum(axis=0, dtype=np.float64)
+        return total / rows.size
+
+    def _aggregate_uniform_interval_cdf(
+        self, rows: np.ndarray, points: np.ndarray
+    ) -> np.ndarray:
+        """Aggregate positive-width uniform intervals on a regular grid in O(I+B)."""
+        batch = self.intervals(rows)
+        counts = np.diff(batch.offsets).astype(np.int64, copy=False)
+        if np.any(counts == 0):
+            raise ValueError("aggregate rows include a SNP without usable intervals")
+        per_interval = np.repeat(1.0 / (rows.size * counts), counts)
+        lower = np.asarray(batch.below, dtype=np.float64)
+        upper = np.asarray(batch.above, dtype=np.float64)
+        if np.any(upper <= lower):
+            raise ValueError("aggregate rows include a nonpositive interval")
+
+        n_points = points.size
+        origin = float(points[0])
+        step = float(points[1] - points[0])
+        linear_start = np.clip(
+            np.ceil((lower - origin) / step).astype(np.int64), 0, n_points)
+        full_start = np.clip(
+            np.ceil((upper - origin) / step).astype(np.int64), 0, n_points)
+        active = linear_start < full_start
+
+        slope_delta = np.zeros(n_points + 1, dtype=np.float64)
+        intercept_delta = np.zeros(n_points + 1, dtype=np.float64)
+        full_delta = np.zeros(n_points + 1, dtype=np.float64)
+        inverse_width = per_interval / (upper - lower)
+        slopes = step * inverse_width
+        intercepts = (origin - lower) * inverse_width
+        np.add.at(slope_delta, linear_start[active], slopes[active])
+        np.add.at(slope_delta, full_start[active], -slopes[active])
+        np.add.at(intercept_delta, linear_start[active], intercepts[active])
+        np.add.at(intercept_delta, full_start[active], -intercepts[active])
+        begins_full = full_start < n_points
+        np.add.at(full_delta, full_start[begins_full], per_interval[begins_full])
+        result = (
+            np.cumsum(slope_delta[:-1]) * np.arange(n_points)
+            + np.cumsum(intercept_delta[:-1])
+            + np.cumsum(full_delta[:-1])
+        )
+        return np.clip(result, 0.0, 1.0)
 
     def cell_masses(
         self, row_indices: np.ndarray, edges: np.ndarray, *, weighting: str = "interval"

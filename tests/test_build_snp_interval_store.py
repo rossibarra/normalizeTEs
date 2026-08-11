@@ -132,6 +132,7 @@ def test_build_union_ragged_records_counts_status_and_metadata(tmp_path):
     np.testing.assert_allclose(batch.below, [20, 0, 0, 20])
     np.testing.assert_allclose(batch.above, [100, 20, 20, 100])
     metadata = json.loads((output / "metadata.json").read_text())
+    assert len(metadata["catalog_sha256"]) == 64
     assert metadata["endpoint_dtype"] == "float32"
     assert metadata["maximum_above"] == 100
     assert metadata["minimum_usable_draws"] == 1

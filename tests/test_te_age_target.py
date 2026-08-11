@@ -11,6 +11,7 @@ from te_age_target import (
     wasserstein_1,
     write_target,
 )
+from snp_interval_dataset import INTERVAL_SCHEMA_VERSION, interval_cdf
 from snp_age_dataset import load_native_position_list
 
 
@@ -157,5 +158,34 @@ def test_atomic_write_refuses_overwrite(tmp_path):
     output = tmp_path / "target"
     write_target(output, result, {"schema_version": 1})
     assert (output / "target_cdf.npy").exists()
+    assert (output / "age_bins.npy").exists()
+    assert (output / "interval_boundary_ages.npy").exists()
     with pytest.raises(FileExistsError):
         write_target(output, result, {"schema_version": 1})
+
+
+class FakeIntervalStore:
+    metadata = {"schema_version": INTERVAL_SCHEMA_VERSION, "maximum_above": 2_500.0}
+    positions = np.array([10.0, 20.0])
+    eligible = np.array([True, True])
+    below = np.array([[0.0], [1_500.0]])
+    above = np.array([[1_000.0], [2_500.0]])
+
+    def cdf_at(self, rows, points, **kwargs):
+        return np.vstack([
+            interval_cdf(self.below[row], self.above[row], points, side=kwargs["side"]).mean(axis=0)
+            for row in rows
+        ])
+
+
+def test_interval_target_uses_right_cell_edges_and_persists_physical_boundaries(tmp_path):
+    result = build_target(
+        FakeIntervalStore(), np.array([10.0, 20.0]),
+        np.array(["chr1", "chr1"]), np.array([10, 20]),
+        row_indices=np.array([0, 1]), n_replicates=10,
+        acceptance_quantile=.95, seed=2, bin_width=1_000)
+    np.testing.assert_array_equal(result.age_bins, [0, 1_000, 2_000, 3_000])
+    # The first row has half its uniform interval mass below the 500 edge.
+    assert result.target_cdf[0] == pytest.approx(.25)
+    edges = np.array([-500, 500, 1_500, 2_500, 3_500], dtype=float)
+    np.testing.assert_array_equal(result.boundary_ages, edges[result.boundaries.indices])

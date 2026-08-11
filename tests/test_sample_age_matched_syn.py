@@ -9,9 +9,12 @@ from sample_age_matched_syn import (
     build_candidate_weights,
     draw_stratified_set,
     generate_matches,
+    _load_candidates,
+    score_set,
     wasserstein_1,
     write_result,
 )
+from snp_interval_dataset import INTERVAL_SCHEMA_VERSION, interval_cdf
 
 
 class FakeStore:
@@ -140,3 +143,54 @@ def test_boundary_reader_covers_first_bin_without_full_cdf_reads():
     assert store.full_reads == 0
     assert store.boundary_reads
     assert len(store.boundary_reads) == reads_after_build
+
+
+class FakeIntervalStore:
+    metadata = {"schema_version": INTERVAL_SCHEMA_VERSION}
+    positions = np.arange(3, dtype=float)
+    eligible = np.ones(3, dtype=bool)
+    intervals = [(0.0, 1_000.0), (1_000.0, 2_000.0), (2_000.0, 3_000.0)]
+
+    def boundary_cdfs(self, rows, points, **kwargs):
+        return np.vstack([
+            interval_cdf(np.array([self.intervals[r][0]]),
+                         np.array([self.intervals[r][1]]), points,
+                         side=kwargs["side"])[0]
+            for r in rows
+        ])
+
+    def aggregate_cdf_at(self, rows, points, **kwargs):
+        return self.boundary_cdfs(rows, points, **kwargs).mean(axis=0)
+
+    def rows_to_native(self, rows):
+        rows = np.asarray(rows)
+        return np.full(rows.size, "chr1"), rows + 1
+
+
+def test_interval_weights_use_physical_edges_and_scoring_uses_target_grid():
+    store = FakeIntervalStore()
+    bounds = np.array([0, 1, 3])
+    ages = np.array([-500.0, 500.0, 2_500.0])
+    weights = build_candidate_weights(
+        store, np.array([2, 0, 1]), bounds, block_snps=2,
+        boundary_ages=ages, access_strategy="gather")
+    np.testing.assert_allclose(weights.values[:, 0], [.5, 0, 0])
+    np.testing.assert_allclose(weights.values[:, 1], [.5, 1, .5])
+    grid = np.array([0, 1_000, 2_000, 3_000], dtype=float)
+    target = np.array([.25, .75, 1, 1])
+    aggregate, distance = score_set(store, np.array([0, 1]), target, grid)
+    np.testing.assert_allclose(aggregate, target)
+    assert distance == pytest.approx(0)
+
+
+def test_index_candidates_drop_ineligible_and_report_exact_coordinate(tmp_path):
+    store = make_store()
+    store.eligible[1] = False
+    path = tmp_path / "indices.npy"
+    np.save(path, np.array([2, 1, 3], dtype=np.int64))
+    rows, metadata = _load_candidates(store, None, path, None, policy="drop")
+    np.testing.assert_array_equal(rows, [2, 3])
+    assert metadata["position_resolution"]["ineligible_count"] == 1
+    assert metadata["excluded_positions"] == [{
+        "request_index": 1, "global_position": 101, "chromosome": "chr1",
+        "native_position": 101, "reason": "ineligible"}]
