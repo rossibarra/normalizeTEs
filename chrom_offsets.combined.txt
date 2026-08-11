@@ -1,0 +1,24 @@
+# Chromosome offsets for the SINGER "combined" ARGs at
+#   /quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.*.tsz
+#
+# The ten chromosomes were concatenated with a 1 bp gap between each, so the
+# naive two-column (chrom, length) form is wrong for chr2-chr10 by 1..9 bp.
+# Verified empirically against run.combined.100.tsz: these offsets raise the
+# fraction of combined.all.chr.low.snp.pos.txt positions that resolve to real
+# sites from 2-8% to 73-84% on chr2-chr10.
+#
+# sum(length)     = 2,131,846,805
+# last offset+len = 2,131,846,814
+# sequence_length = 2,131,846,815
+#
+# chrom	offset	length
+1	0	308452471
+2	308452472	243675191
+3	552127664	238017767
+4	790145432	250330460
+5	1040475893	226353449
+6	1266829343	181357234
+7	1448186578	185808916
+8	1633995495	182411202
+9	1816406698	163004744
+10	1979411443	152435371
