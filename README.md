@@ -159,18 +159,33 @@ the union of the input draws without materializing a dense SNP-by-age matrix.
 TE and synonymous lists are downstream selections and do not filter the
 store. For approximately 25--30 million SNPs and 75 TSZ draws like the
 measured combined SINGER files, the conservative default request is one CPU,
-48 GB RAM, 16 hours, and at least 32 GiB free in node-local `$TMPDIR`:
+48 GB RAM, 16 hours, and at least 32 GiB free in node-local `$TMPDIR`. Submit
+the following from the repository root as, for example,
+`sbatch build_interval_store.sbatch`:
 
 ```bash
-HPC_CPUS=1 HPC_MEM=48G HPC_TIME=16:00:00 ~/.claude/bin/hpc_run \
-  'python build_snp_interval_store.py project-data/posterior/*.tsz \
-    --interval-store age_interval_store \
-    --chrom-offsets project-data/chrom_offsets.txt \
-    --interval-dtype float32 \
-    --min-usable-fraction 0.1 \
-    --num-buckets 100 \
-    --bucket-memory-gb 2 \
-    --scratch-dir "$TMPDIR"'
+#!/bin/bash -l
+#SBATCH --account=jrigrp
+#SBATCH --partition=low
+#SBATCH --job-name=snp-interval-store
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=48G
+#SBATCH --time=16:00:00
+
+set -euo pipefail
+module load conda
+conda activate normalizeTE
+
+python build_snp_interval_store.py project-data/posterior/*.tsz \
+  --interval-store age_interval_store \
+  --chrom-offsets project-data/chrom_offsets.txt \
+  --interval-dtype float32 \
+  --min-usable-fraction 0.1 \
+  --num-buckets 100 \
+  --bucket-memory-gb 2 \
+  --scratch-dir "${TMPDIR:?SLURM did not set TMPDIR}"
 ```
 
 The measured projection is approximately 17.1 GiB for the final 75-draw
@@ -185,12 +200,25 @@ audit. A four-CPU audit of 10,000 mutations took 40m29s end to end and used
 19.9 GB peak RSS:
 
 ```bash
-HPC_CPUS=4 HPC_MEM=48G HPC_TIME=01:00:00 ~/.claude/bin/hpc_run \
-  'python benchmark_interval_store_gate2.py project-data/posterior/draw.tsz \
-    --output results/interval-gate2.json \
-    --audit-size 10000 \
-    --audit-workers "$SLURM_CPUS_PER_TASK" \
-    --scratch-dir "$TMPDIR"'
+#!/bin/bash -l
+#SBATCH --account=jrigrp
+#SBATCH --partition=low
+#SBATCH --job-name=interval-audit
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=48G
+#SBATCH --time=01:00:00
+
+set -euo pipefail
+module load conda
+conda activate normalizeTE
+
+python benchmark_interval_store_gate2.py project-data/posterior/draw.tsz \
+  --output "results/interval-gate2-${SLURM_JOB_ID}.json" \
+  --audit-size 10000 \
+  --audit-workers "$SLURM_CPUS_PER_TASK" \
+  --scratch-dir "${TMPDIR:?SLURM did not set TMPDIR}"
 ```
 
 Interval-store TE target construction uses a temporary float32 TE-by-age CDF
@@ -202,15 +230,42 @@ slope/intercept difference accumulators in O(interval records + output cells),
 not interval-records times age-bins:
 
 ```bash
-HPC_CPUS=4 HPC_MEM=16G HPC_TIME=08:00:00 ~/.claude/bin/hpc_run \
-  'OPENBLAS_NUM_THREADS="$SLURM_CPUS_PER_TASK" \
-   OMP_NUM_THREADS="$SLURM_CPUS_PER_TASK" \
-   python te_age_target.py \
-     --store age_interval_store \
-     --te-positions te_positions.txt \
-     --output te_age_target \
-     --scratch-dir "$TMPDIR"'
+#!/bin/bash -l
+#SBATCH --account=jrigrp
+#SBATCH --partition=low
+#SBATCH --job-name=te-age-target
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16G
+#SBATCH --time=08:00:00
+
+set -euo pipefail
+module load conda
+conda activate normalizeTE
+export OPENBLAS_NUM_THREADS="$SLURM_CPUS_PER_TASK"
+export OMP_NUM_THREADS="$SLURM_CPUS_PER_TASK"
+
+python te_age_target.py \
+  --store age_interval_store \
+  --te-positions te_positions.txt \
+  --output te_age_target \
+  --scratch-dir "${TMPDIR:?SLURM did not set TMPDIR}"
 ```
+
+For an interactive allocation, request the same resources with `srun` and run
+the corresponding script body after the shell starts. For example, the store
+build allocation is:
+
+```bash
+srun --account=jrigrp --partition=low \
+  --nodes=1 --ntasks=1 --cpus-per-task=1 \
+  --mem=48G --time=16:00:00 --pty bash -l
+```
+
+Inside that allocated shell, load `normalizeTE` and run the builder command
+above. `$TMPDIR` is created for the job on `/local/scratch`; do not substitute
+`$SLURM_TMPDIR`.
 
 Synonymous matching defaults to `--candidate-access gather`. For repeated or
 explicitly cached access, select `--candidate-access cache` and provide
