@@ -75,6 +75,26 @@ def test_ordinary_tree_records_selective_access_unavailable(tmp_path):
     assert report["scalar_parent_audit"]["passed"]
 
 
+def test_fractional_edges_use_structured_lookup(tmp_path):
+    ordinary = tmp_path / "fractional.trees"
+    tables = tskit.TableCollection(sequence_length=100)
+    tables.nodes.add_row(flags=tskit.NODE_IS_SAMPLE, time=0)
+    tables.nodes.add_row(time=10)
+    tables.edges.add_row(0.5, 100, parent=1, child=0)
+    site = tables.sites.add_row(10, "0")
+    tables.mutations.add_row(site=site, node=0, derived_state="1")
+    tables.sort()
+    tables.tree_sequence().dump(ordinary)
+    report = gate2.benchmark_gate2(
+        ordinary, num_buckets=2, audit_size=1,
+        precision_sample_size=1, precision_points=3,
+        fallback_node_sample=1)
+    lookup = report["composite_parent_lookup"]
+    assert lookup["algorithm"] == "structured_child_float64_left"
+    assert not lookup["integral_edge_coordinates"]
+    assert report["scalar_parent_audit"]["passed"]
+
+
 def test_atomic_json_refuses_overwrite_and_leaves_valid_document(tmp_path):
     output = tmp_path / "gate2.json"
     gate2.write_json_atomic(output, {"gate": 2, "passed": True})
@@ -82,4 +102,3 @@ def test_atomic_json_refuses_overwrite_and_leaves_valid_document(tmp_path):
     with pytest.raises(FileExistsError):
         gate2.write_json_atomic(output, {"gate": 2})
     assert not list(tmp_path.glob(".gate2.json.tmp.*"))
-

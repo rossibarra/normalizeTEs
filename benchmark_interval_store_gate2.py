@@ -113,39 +113,63 @@ def _load_tree_sequence(path: Path) -> tskit.TreeSequence:
 def _parent_lookup_phases(
     ts: tskit.TreeSequence,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, object]]:
-    """Run the production composite lookup once and report each phase."""
+    """Run the applicable production parent lookup once and report each phase."""
     tables = ts.tables
     edge_child = np.asarray(tables.edges.child, dtype=np.int64)
     edge_parent = np.asarray(tables.edges.parent, dtype=np.int64)
-    edge_left = _integral_int64(np.asarray(tables.edges.left), "edge left coordinates")
-    edge_right = _integral_int64(np.asarray(tables.edges.right), "edge right coordinates")
+    edge_left_raw = np.asarray(tables.edges.left, dtype=np.float64)
+    edge_right_raw = np.asarray(tables.edges.right, dtype=np.float64)
+    if np.any(~np.isfinite(edge_left_raw)) or np.any(~np.isfinite(edge_right_raw)):
+        raise ValueError("edge coordinates must be finite")
     mutation_site = np.asarray(tables.mutations.site, dtype=np.int64)
     mutation_node = np.asarray(tables.mutations.node, dtype=np.int64)
     site_position = _integral_int64(np.asarray(tables.sites.position), "site positions")
     mutation_position = site_position[mutation_site]
-    sequence_length = int(ts.sequence_length)
-    if float(sequence_length) != float(ts.sequence_length):
-        raise ValueError("composite lookup requires an integral sequence length")
-    stride = sequence_length + 1
-    if ts.num_nodes and (ts.num_nodes - 1) > np.iinfo(np.int64).max // stride:
-        raise OverflowError("composite edge key exceeds int64")
+    integral_edges = bool(
+        np.all(edge_left_raw == np.floor(edge_left_raw))
+        and np.all(edge_right_raw == np.floor(edge_right_raw)))
+    phases: dict[str, object] = {
+        "algorithm": "int64_composite" if integral_edges else "structured_child_float64_left",
+        "integral_edge_coordinates": integral_edges,
+    }
 
-    phases: dict[str, object] = {}
+    if integral_edges:
+        edge_left = edge_left_raw.astype(np.int64, copy=False)
+        edge_right = edge_right_raw.astype(np.int64, copy=False)
+        sequence_length = int(ts.sequence_length)
+        if float(sequence_length) != float(ts.sequence_length):
+            raise ValueError("composite lookup requires an integral sequence length")
+        stride = sequence_length + 1
+        if ts.num_nodes and (ts.num_nodes - 1) > np.iinfo(np.int64).max // stride:
+            raise OverflowError("composite edge key exceeds int64")
 
-    def construct_keys() -> tuple[np.ndarray, np.ndarray]:
-        return (
-            edge_child * np.int64(stride) + edge_left,
-            mutation_node * np.int64(stride) + mutation_position,
-        )
+        def construct_keys() -> tuple[np.ndarray, np.ndarray]:
+            return (
+                edge_child * np.int64(stride) + edge_left,
+                mutation_node * np.int64(stride) + mutation_position,
+            )
+    else:
+        edge_left = edge_left_raw
+        edge_right = edge_right_raw
+        key_dtype = np.dtype([("child", "<i8"), ("left", "<f8")])
+
+        def construct_keys() -> tuple[np.ndarray, np.ndarray]:
+            edge_keys = np.empty(edge_child.size, dtype=key_dtype)
+            edge_keys["child"] = edge_child
+            edge_keys["left"] = edge_left
+            query_keys = np.empty(mutation_node.size, dtype=key_dtype)
+            query_keys["child"] = mutation_node
+            query_keys["left"] = mutation_position
+            return edge_keys, query_keys
 
     (edge_key, query_key), phases["key_construction"] = _measure(construct_keys)
-    if edge_key.dtype != np.int64 or query_key.dtype != np.int64:
+    if integral_edges and (edge_key.dtype != np.int64 or query_key.dtype != np.int64):
         raise AssertionError("composite keys must be int64")
     phases["key_construction"]["retained_array_bytes"] = int(edge_key.nbytes + query_key.nbytes)
 
-    order, phases["stable_edge_sort"] = _measure(
-        lambda: np.argsort(edge_key, kind="stable")
-    )
+    order, phases["stable_edge_sort"] = _measure(lambda: np.argsort(
+        edge_key, kind="stable",
+        **({"order": ("child", "left")} if not integral_edges else {})))
     phases["stable_edge_sort"]["retained_array_bytes"] = int(order.nbytes)
 
     def reorder() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -163,7 +187,7 @@ def _parent_lookup_phases(
         covered = (
             (index >= 0)
             & (child_sorted[safe] == mutation_node)
-            & (mutation_position < right_sorted[safe])
+            & (mutation_position.astype(np.float64) < right_sorted[safe])
         )
         result = np.full(mutation_node.size, tskit.NULL, dtype=np.int64)
         result[covered] = parent_sorted[safe[covered]]
