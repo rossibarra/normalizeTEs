@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import shutil
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -43,6 +46,76 @@ class IntervalBatch:
     below: np.ndarray
     above: np.ndarray
     draw_id: np.ndarray
+
+
+class CandidateIntervalCache:
+    """Compact scratch cache containing intervals for selected source rows."""
+
+    def __init__(self, path: Path, metadata: dict, arrays: dict[str, np.ndarray]):
+        self.path = path
+        self.metadata = metadata
+        self.source_rows = arrays["source_rows"]
+        self.offsets = arrays["offsets"]
+        self._below = arrays["below"]
+        self._above = arrays["above"]
+        self._draw_id = arrays["draw_id"]
+
+    @classmethod
+    def open(cls, path: str | Path) -> "CandidateIntervalCache":
+        cache = Path(path)
+        try:
+            metadata = json.loads((cache / "metadata.json").read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError) as error:
+            raise ValueError(f"invalid candidate interval cache: {cache}") from error
+        if metadata.get("schema_version") != "snp-age-candidate-cache-v1":
+            raise ValueError("unsupported candidate cache schema")
+        names = ("source_rows", "offsets", "below", "above", "draw_id")
+        try:
+            arrays = {name: np.load(cache / f"{name}.npy", mmap_mode="r") for name in names}
+        except (OSError, ValueError) as error:
+            raise ValueError(f"cannot read candidate cache arrays in {cache}") from error
+        n_rows = int(metadata["n_rows"])
+        n_intervals = int(metadata["n_intervals"])
+        endpoint_dtype = np.dtype(metadata["endpoint_dtype"])
+        draw_dtype = np.dtype(metadata["draw_id_dtype"])
+        expected = {
+            "source_rows": (np.dtype("int64"), (n_rows,)),
+            "offsets": (np.dtype("uint64"), (n_rows + 1,)),
+            "below": (endpoint_dtype, (n_intervals,)),
+            "above": (endpoint_dtype, (n_intervals,)),
+            "draw_id": (draw_dtype, (n_intervals,)),
+        }
+        for name, (dtype, shape) in expected.items():
+            if arrays[name].dtype != dtype or arrays[name].shape != shape:
+                raise ValueError(f"candidate cache {name} has the wrong dtype or shape")
+        rows = arrays["source_rows"]
+        offsets = arrays["offsets"]
+        if np.any(rows[1:] <= rows[:-1]):
+            raise ValueError("candidate cache source rows are not strictly increasing")
+        if int(offsets[0]) != 0 or int(offsets[-1]) != n_intervals or np.any(offsets[1:] < offsets[:-1]):
+            raise ValueError("candidate cache offsets are invalid")
+        return cls(cache, metadata, arrays)
+
+    def intervals(self, source_rows: np.ndarray) -> IntervalBatch:
+        rows = np.asarray(source_rows)
+        if rows.ndim != 1 or not np.issubdtype(rows.dtype, np.integer):
+            raise ValueError("source rows must be a one-dimensional integer array")
+        rows = rows.astype(np.int64, copy=False)
+        if np.unique(rows).size != rows.size:
+            raise ValueError("source rows contain duplicates")
+        local = np.searchsorted(self.source_rows, rows)
+        found = local < self.source_rows.size
+        valid = np.flatnonzero(found)
+        found[valid] = self.source_rows[local[valid]] == rows[valid]
+        if not np.all(found):
+            raise KeyError(f"source rows not present in candidate cache: {_format_values(rows[~found])}")
+        return _copy_ragged_rows(rows, local, self.offsets, self._below, self._above, self._draw_id)
+
+    def cdf_at(
+        self, source_rows: np.ndarray, points: np.ndarray, *, side: str = "right",
+        weighting: str = "interval",
+    ) -> np.ndarray:
+        return _batch_cdf(self.intervals(source_rows), points, side=side, weighting=weighting)
 
 
 def pack_status(status: np.ndarray) -> np.ndarray:
@@ -220,24 +293,9 @@ class SNPAgeIntervalDataset:
 
     def intervals(self, row_indices: np.ndarray) -> IntervalBatch:
         rows = _checked_indices(row_indices, self.positions.size, "row")
-        lengths = np.asarray(self.offsets[rows + 1] - self.offsets[rows], dtype=np.uint64)
-        local_offsets = np.empty(rows.size + 1, dtype=np.uint64)
-        local_offsets[0] = 0
-        np.cumsum(lengths, out=local_offsets[1:])
-        total = int(local_offsets[-1])
-        below = np.empty(total, dtype=self._below.dtype)
-        above = np.empty(total, dtype=self._above.dtype)
-        draw_id = np.empty(total, dtype=self._draw_id.dtype)
-        cursor = 0
-        for row, length in zip(rows, lengths):
-            count = int(length)
-            start = int(self.offsets[row])
-            stop = start + count
-            below[cursor:cursor + count] = self._below[start:stop]
-            above[cursor:cursor + count] = self._above[start:stop]
-            draw_id[cursor:cursor + count] = self._draw_id[start:stop]
-            cursor += count
-        return IntervalBatch(rows.copy(), local_offsets, below, above, draw_id)
+        return _copy_ragged_rows(
+            rows, rows, self.offsets, self._below, self._above, self._draw_id
+        )
 
     def mean_ages(self, row_indices: np.ndarray, *, weighting: str = "interval") -> np.ndarray:
         batch = self.intervals(row_indices)
@@ -258,20 +316,7 @@ class SNPAgeIntervalDataset:
             raise ValueError("points must be a one-dimensional finite array")
         if weighting not in {"interval", "draw"}:
             raise ValueError("weighting must be 'interval' or 'draw'")
-        batch = self.intervals(row_indices)
-        output = np.full((batch.rows.size, query.size), np.nan, dtype=np.float64)
-        for i in range(batch.rows.size):
-            start, stop = map(int, batch.offsets[i:i + 2])
-            if start == stop:
-                continue
-            values = interval_cdf(batch.below[start:stop], batch.above[start:stop], query, side=side)
-            if weighting == "interval":
-                output[i] = values.mean(axis=0)
-            else:
-                draws = batch.draw_id[start:stop]
-                unique = np.unique(draws)
-                output[i] = np.mean([values[draws == draw].mean(axis=0) for draw in unique], axis=0)
-        return output
+        return _batch_cdf(self.intervals(row_indices), query, side=side, weighting=weighting)
 
     def boundary_cdfs(
         self,
@@ -281,13 +326,14 @@ class SNPAgeIntervalDataset:
         access_strategy: str = "gather",
         block_rows: int = 100_000,
         coalesce_gap: int = 64,
+        cache: CandidateIntervalCache | str | Path | None = None,
         **kwargs,
     ) -> np.ndarray:
         """Evaluate boundary CDFs using an explicit row-access strategy.
 
         ``scan`` intentionally reads complete contiguous row blocks, while
-        ``coalesced`` fills short gaps between requested rows. ``cache`` is
-        reserved for the candidate-cache layout to be selected at Gate 3.
+        ``coalesced`` fills short gaps between requested rows. ``cache`` reads
+        a compact scratch cache built by :meth:`build_candidate_cache`.
         """
         rows = _checked_indices(row_indices, self.positions.size, "row")
         if rows.size == 0:
@@ -299,9 +345,18 @@ class SNPAgeIntervalDataset:
         if block_rows <= 0 or coalesce_gap < 0:
             raise ValueError("block_rows must be positive and coalesce_gap nonnegative")
         if access_strategy == "cache":
-            raise NotImplementedError(
-                "candidate cache requires the Gate 3 layout/throughput decision"
-            )
+            if cache is None:
+                raise ValueError("cache strategy requires a candidate cache")
+            candidate_cache = cache if isinstance(cache, CandidateIntervalCache) else CandidateIntervalCache.open(cache)
+            expected_store = str(Path(self.store_dir).resolve())
+            if candidate_cache.metadata.get("source_store") != expected_store:
+                raise ValueError("candidate cache belongs to a different interval store")
+            if (
+                int(candidate_cache.metadata.get("n_source_snps", -1)) != self.positions.size
+                or int(candidate_cache.metadata.get("n_source_intervals", -1)) != self.n_intervals
+            ):
+                raise ValueError("candidate cache source dimensions are stale")
+            return candidate_cache.cdf_at(rows, boundaries, **kwargs)
         if access_strategy == "gather":
             return self.cdf_at(rows, boundaries, **kwargs)
 
@@ -320,27 +375,154 @@ class SNPAgeIntervalDataset:
                     and sorted_rows[stop] - sorted_rows[start] < block_rows
                 ):
                     stop += 1
-                slab = np.arange(sorted_rows[start], sorted_rows[stop - 1] + 1)
-                values = self.cdf_at(slab, boundaries, **kwargs)
-                sorted_output[start:stop] = values[sorted_rows[start:stop] - slab[0]]
+                slab_start = int(sorted_rows[start])
+                slab_stop = int(sorted_rows[stop - 1]) + 1
+                interval_start = int(self.offsets[slab_start])
+                interval_stop = int(self.offsets[slab_stop])
+                slab_below = np.array(self._below[interval_start:interval_stop], copy=True)
+                slab_above = np.array(self._above[interval_start:interval_stop], copy=True)
+                slab_draw = np.array(self._draw_id[interval_start:interval_stop], copy=True)
+                local_offsets = np.asarray(
+                    self.offsets[slab_start:slab_stop + 1] - interval_start,
+                    dtype=np.uint64,
+                )
+                selected = sorted_rows[start:stop]
+                batch = _copy_ragged_rows(
+                    selected,
+                    selected - slab_start,
+                    local_offsets,
+                    slab_below,
+                    slab_above,
+                    slab_draw,
+                )
+                sorted_output[start:stop] = _batch_cdf(
+                    batch, boundaries, side=kwargs.get("side", "right"),
+                    weighting=kwargs.get("weighting", "interval"),
+                )
                 start = stop
         else:
             cursor = 0
             for slab_start in range(0, self.positions.size, block_rows):
                 slab_stop = min(slab_start + block_rows, self.positions.size)
                 selected_stop = np.searchsorted(sorted_rows, slab_stop, side="left")
+                interval_start = int(self.offsets[slab_start])
+                interval_stop = int(self.offsets[slab_stop])
+                # Force a complete sequential endpoint scan. Candidate CDFs
+                # are then evaluated from the in-memory slab only.
+                slab_below = np.array(self._below[interval_start:interval_stop], copy=True)
+                slab_above = np.array(self._above[interval_start:interval_stop], copy=True)
+                slab_draw = np.array(self._draw_id[interval_start:interval_stop], copy=True)
                 if selected_stop > cursor:
-                    # Evaluate the complete slab to force sequential endpoint reads.
-                    slab = np.arange(slab_start, slab_stop)
-                    values = self.cdf_at(slab, boundaries, **kwargs)
                     selected = sorted_rows[cursor:selected_stop]
-                    sorted_output[cursor:selected_stop] = values[selected - slab_start]
+                    local_offsets = np.asarray(
+                        self.offsets[slab_start:slab_stop + 1] - interval_start,
+                        dtype=np.uint64,
+                    )
+                    batch = _copy_ragged_rows(
+                        selected,
+                        selected - slab_start,
+                        local_offsets,
+                        slab_below,
+                        slab_above,
+                        slab_draw,
+                    )
+                    sorted_output[cursor:selected_stop] = _batch_cdf(
+                        batch, boundaries, side=kwargs.get("side", "right"),
+                        weighting=kwargs.get("weighting", "interval"),
+                    )
                 cursor = selected_stop
-                if cursor == sorted_rows.size:
-                    break
         output = np.empty_like(sorted_output)
         output[order] = sorted_output
         return output
+
+    def build_candidate_cache(
+        self, row_indices: np.ndarray, cache_dir: str | Path, *, block_rows: int = 100_000
+    ) -> CandidateIntervalCache:
+        """Sequentially scan the store and atomically publish a candidate cache.
+
+        ``cache_dir`` must not already exist. Candidate source rows are stored
+        sorted; cache reads restore any requested ordering.
+        """
+        rows = _checked_indices(row_indices, self.positions.size, "row")
+        if rows.size == 0 or np.unique(rows).size != rows.size:
+            raise ValueError("candidate rows must be nonempty and unique")
+        if block_rows <= 0:
+            raise ValueError("block_rows must be positive")
+        rows = np.sort(rows)
+        destination = Path(cache_dir)
+        if destination.exists():
+            raise FileExistsError(f"candidate cache already exists: {destination}")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.parent / f".{destination.name}.tmp-{uuid.uuid4().hex}"
+        temporary.mkdir()
+        try:
+            lengths = np.asarray(self.offsets[rows + 1] - self.offsets[rows], dtype=np.uint64)
+            cache_offsets = np.empty(rows.size + 1, dtype=np.uint64)
+            cache_offsets[0] = 0
+            np.cumsum(lengths, out=cache_offsets[1:])
+            n_intervals = int(cache_offsets[-1])
+            np.save(temporary / "source_rows.npy", rows)
+            np.save(temporary / "offsets.npy", cache_offsets)
+            below = np.lib.format.open_memmap(
+                temporary / "below.npy", mode="w+", dtype=self._below.dtype, shape=(n_intervals,)
+            )
+            above = np.lib.format.open_memmap(
+                temporary / "above.npy", mode="w+", dtype=self._above.dtype, shape=(n_intervals,)
+            )
+            draw_id = np.lib.format.open_memmap(
+                temporary / "draw_id.npy", mode="w+", dtype=self._draw_id.dtype, shape=(n_intervals,)
+            )
+            write_cursor = 0
+            for row_start in range(0, self.positions.size, block_rows):
+                row_stop = min(row_start + block_rows, self.positions.size)
+                interval_start = int(self.offsets[row_start])
+                interval_stop = int(self.offsets[row_stop])
+                # Copies intentionally force sequential reads even in blocks
+                # containing no candidates; this is the strategy being tested.
+                source_below = np.array(self._below[interval_start:interval_stop], copy=True)
+                source_above = np.array(self._above[interval_start:interval_stop], copy=True)
+                source_draw = np.array(self._draw_id[interval_start:interval_stop], copy=True)
+                first = np.searchsorted(rows, row_start, side="left")
+                last = np.searchsorted(rows, row_stop, side="left")
+                if first == last or interval_start == interval_stop:
+                    continue
+                selected = rows[first:last]
+                local_starts = np.asarray(self.offsets[selected] - interval_start, dtype=np.int64)
+                local_stops = np.asarray(self.offsets[selected + 1] - interval_start, dtype=np.int64)
+                changes = np.zeros(source_below.size + 1, dtype=np.int32)
+                np.add.at(changes, local_starts, 1)
+                np.add.at(changes, local_stops, -1)
+                mask = np.cumsum(changes[:-1]) > 0
+                count = int(mask.sum())
+                below[write_cursor:write_cursor + count] = source_below[mask]
+                above[write_cursor:write_cursor + count] = source_above[mask]
+                draw_id[write_cursor:write_cursor + count] = source_draw[mask]
+                write_cursor += count
+            if write_cursor != n_intervals:
+                raise RuntimeError("candidate cache interval count mismatch")
+            below.flush(); above.flush(); draw_id.flush()
+            del below, above, draw_id
+            metadata = {
+                "schema_version": "snp-age-candidate-cache-v1",
+                "source_store": str(Path(self.store_dir).resolve()),
+                "n_source_snps": int(self.positions.size),
+                "n_source_intervals": self.n_intervals,
+                "n_rows": int(rows.size),
+                "n_intervals": n_intervals,
+                "endpoint_dtype": self._below.dtype.name,
+                "draw_id_dtype": self._draw_id.dtype.name,
+                "build_strategy": "full-sequential-scan",
+                "block_rows": int(block_rows),
+            }
+            (temporary / "metadata.json").write_text(
+                json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            CandidateIntervalCache.open(temporary)
+            os.replace(temporary, destination)
+            return CandidateIntervalCache.open(destination)
+        except BaseException:
+            shutil.rmtree(temporary, ignore_errors=True)
+            raise
 
     def aggregate_cdf_at(
         self,
@@ -440,6 +622,60 @@ class SNPAgeIntervalDataset:
             if rows is None else _checked_indices(rows, self.positions.size, "row")
         )
         return _decode_selected_status(np.asarray(self._status[draw_rows]), snp_rows)
+
+
+def _copy_ragged_rows(
+    output_rows: np.ndarray,
+    local_rows: np.ndarray,
+    offsets: np.ndarray,
+    below_source: np.ndarray,
+    above_source: np.ndarray,
+    draw_source: np.ndarray,
+) -> IntervalBatch:
+    lengths = np.asarray(offsets[local_rows + 1] - offsets[local_rows], dtype=np.uint64)
+    local_offsets = np.empty(local_rows.size + 1, dtype=np.uint64)
+    local_offsets[0] = 0
+    np.cumsum(lengths, out=local_offsets[1:])
+    total = int(local_offsets[-1])
+    below = np.empty(total, dtype=below_source.dtype)
+    above = np.empty(total, dtype=above_source.dtype)
+    draw_id = np.empty(total, dtype=draw_source.dtype)
+    cursor = 0
+    for row, length in zip(local_rows, lengths):
+        count = int(length)
+        start = int(offsets[row])
+        stop = start + count
+        below[cursor:cursor + count] = below_source[start:stop]
+        above[cursor:cursor + count] = above_source[start:stop]
+        draw_id[cursor:cursor + count] = draw_source[start:stop]
+        cursor += count
+    return IntervalBatch(output_rows.copy(), local_offsets, below, above, draw_id)
+
+
+def _batch_cdf(
+    batch: IntervalBatch, points: np.ndarray, *, side: str, weighting: str
+) -> np.ndarray:
+    query = np.asarray(points)
+    if query.ndim != 1 or np.any(~np.isfinite(query)):
+        raise ValueError("points must be a one-dimensional finite array")
+    if weighting not in {"interval", "draw"}:
+        raise ValueError("weighting must be 'interval' or 'draw'")
+    output = np.full((batch.rows.size, query.size), np.nan, dtype=np.float64)
+    for i in range(batch.rows.size):
+        start, stop = map(int, batch.offsets[i:i + 2])
+        if start == stop:
+            continue
+        values = interval_cdf(
+            batch.below[start:stop], batch.above[start:stop], query, side=side
+        )
+        if weighting == "interval":
+            output[i] = values.mean(axis=0)
+        else:
+            draws = batch.draw_id[start:stop]
+            output[i] = np.mean(
+                [values[draws == draw].mean(axis=0) for draw in np.unique(draws)], axis=0
+            )
+    return output
 
 
 def _weighted_reduce(values: np.ndarray, draws: np.ndarray, weighting: str) -> float:

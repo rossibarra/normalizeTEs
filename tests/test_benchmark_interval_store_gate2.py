@@ -75,6 +75,55 @@ def test_ordinary_tree_records_selective_access_unavailable(tmp_path):
     assert report["scalar_parent_audit"]["passed"]
 
 
+def test_scalar_audit_one_and_two_workers_select_same_mutations(tmp_path):
+    ordinary = tmp_path / "draw.trees"
+    _write_fixture(ordinary)
+    ts = tskit.load(ordinary)
+    parents, mutation_position, _, _ = gate2._parent_lookup_phases(ts)
+
+    serial = gate2._scalar_parent_audit(
+        ts, parents, mutation_position, sample_size=5, seed=19, workers=1
+    )
+    parallel = gate2._scalar_parent_audit(
+        ts, parents, mutation_position, sample_size=5, seed=19, workers=2
+    )
+
+    assert serial["passed"] and parallel["passed"]
+    assert serial["selected_mutation_ids_sha256"] == parallel[
+        "selected_mutation_ids_sha256"
+    ]
+    assert serial["strata"] == parallel["strata"]
+    assert serial["actual_sample_size"] == parallel["actual_sample_size"] == 5
+    assert serial["checked_count"] == parallel["checked_count"] == 5
+    assert serial["mismatch_count"] == parallel["mismatch_count"] == 0
+    assert serial["requested_workers"] == serial["used_workers"] == 1
+    assert parallel["requested_workers"] == parallel["used_workers"] == 2
+    assert parallel["execution_mode"] == "linux_fork_shared_read_only"
+    assert len(parallel["worker_timing"]["seconds"]) == 2
+
+
+def test_audit_workers_are_validated(tmp_path):
+    ordinary = tmp_path / "draw.trees"
+    _write_fixture(ordinary)
+    with pytest.raises(ValueError, match="audit_workers"):
+        gate2.benchmark_gate2(
+            ordinary, num_buckets=2, audit_size=2, audit_workers=0,
+            precision_sample_size=2, precision_points=3,
+        )
+
+
+def test_parallel_audit_has_clear_non_linux_error(tmp_path, monkeypatch):
+    ordinary = tmp_path / "draw.trees"
+    _write_fixture(ordinary)
+    ts = tskit.load(ordinary)
+    parents, mutation_position, _, _ = gate2._parent_lookup_phases(ts)
+    monkeypatch.setattr(gate2.sys, "platform", "darwin")
+    with pytest.raises(RuntimeError, match="requires Linux fork"):
+        gate2._scalar_parent_audit(
+            ts, parents, mutation_position, sample_size=5, seed=19, workers=2
+        )
+
+
 def test_fractional_edges_use_structured_lookup(tmp_path):
     ordinary = tmp_path / "fractional.trees"
     tables = tskit.TableCollection(sequence_length=100)

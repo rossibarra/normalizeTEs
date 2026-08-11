@@ -12,6 +12,7 @@ import argparse
 import gc
 import hashlib
 import json
+import multiprocessing
 import os
 import platform
 import resource
@@ -35,6 +36,16 @@ from snp_interval_dataset import interval_cdf
 
 
 T = TypeVar("T")
+
+
+# The scalar audit uses these globals only in forked worker processes.  Fork
+# lets workers share the already-loaded tree sequence and large lookup arrays
+# copy-on-write instead of serializing one copy per process.  Workers treat all
+# four objects as strictly read-only.
+_AUDIT_TS: tskit.TreeSequence | None = None
+_AUDIT_PARENTS: np.ndarray | None = None
+_AUDIT_MUTATION_POSITION: np.ndarray | None = None
+_AUDIT_MUTATION_NODE: np.ndarray | None = None
 
 
 def _rss_bytes() -> int:
@@ -421,44 +432,175 @@ def _stratified_audit_indices(
     return chosen, {"predicted_usable": usable_take, "predicted_root": root_take}
 
 
-def _scalar_parent_audit(
-    ts: tskit.TreeSequence, parents: np.ndarray, mutation_position: np.ndarray,
-    *, sample_size: int, seed: int,
-) -> dict[str, object]:
-    selected, strata = _stratified_audit_indices(parents, sample_size, seed)
-    mutation_node = np.asarray(ts.tables.mutations.node, dtype=np.int64)
-
-    def audit() -> list[dict[str, int | float]]:
-        mismatches: list[dict[str, int | float]] = []
-        for mutation_id in selected:
-            i = int(mutation_id)
-            expected = int(ts.at(float(mutation_position[i])).parent(int(mutation_node[i])))
-            actual = int(parents[i])
-            if expected != actual and len(mismatches) < 20:
-                mismatches.append({
+def _audit_selected_mutations(selected: np.ndarray) -> dict[str, object]:
+    """Audit one deterministic slice using inherited read-only worker state."""
+    if (_AUDIT_TS is None or _AUDIT_PARENTS is None
+            or _AUDIT_MUTATION_POSITION is None
+            or _AUDIT_MUTATION_NODE is None):
+        raise RuntimeError("scalar parent audit worker state is not initialized")
+    started = time.perf_counter()
+    mismatch_count = 0
+    first_mismatches: list[dict[str, int | float]] = []
+    for mutation_id in selected:
+        i = int(mutation_id)
+        expected = int(
+            _AUDIT_TS.at(float(_AUDIT_MUTATION_POSITION[i])).parent(
+                int(_AUDIT_MUTATION_NODE[i])
+            )
+        )
+        actual = int(_AUDIT_PARENTS[i])
+        if expected != actual:
+            mismatch_count += 1
+            if len(first_mismatches) < 20:
+                first_mismatches.append({
                     "mutation_id": i,
-                    "position": int(mutation_position[i]),
-                    "node": int(mutation_node[i]),
+                    "position": int(_AUDIT_MUTATION_POSITION[i]),
+                    "node": int(_AUDIT_MUTATION_NODE[i]),
                     "vector_parent": actual,
                     "scalar_parent": expected,
                 })
-        return mismatches
+    return {
+        "checked_count": int(selected.size),
+        "seconds": time.perf_counter() - started,
+        "mismatch_count": mismatch_count,
+        "first_mismatches": first_mismatches,
+    }
 
-    mismatches, measurement = _measure(audit)
+
+def _parallel_scalar_audit(
+    ts: tskit.TreeSequence,
+    parents: np.ndarray,
+    mutation_position: np.ndarray,
+    mutation_node: np.ndarray,
+    selected: np.ndarray,
+    workers: int,
+) -> tuple[list[dict[str, object]], dict[str, int | float | bool]]:
+    """Fork workers without starting the RSS-sampling thread before fork."""
+    if not sys.platform.startswith("linux"):
+        raise RuntimeError(
+            "--audit-workers greater than 1 requires Linux fork so the loaded "
+            "tree sequence can be shared read-only"
+        )
+    if "fork" not in multiprocessing.get_all_start_methods():
+        raise RuntimeError(
+            "--audit-workers greater than 1 requires the multiprocessing fork "
+            "start method"
+        )
+
+    global _AUDIT_TS, _AUDIT_PARENTS, _AUDIT_MUTATION_POSITION, _AUDIT_MUTATION_NODE
+    _AUDIT_TS = ts
+    _AUDIT_PARENTS = parents
+    _AUDIT_MUTATION_POSITION = mutation_position
+    _AUDIT_MUTATION_NODE = mutation_node
+    chunks = [chunk for chunk in np.array_split(selected, workers) if chunk.size]
+    rss_start = _rss_bytes()
+    started = time.perf_counter()
+    try:
+        context = multiprocessing.get_context("fork")
+        # Do not wrap pool creation in _measure(): its sampler thread would
+        # make fork unsafe. RUSAGE_CHILDREN captures completed-worker memory.
+        with context.Pool(processes=len(chunks)) as pool:
+            results = pool.map(_audit_selected_mutations, chunks)
+    except Exception as error:
+        raise RuntimeError(
+            f"multiprocess scalar parent audit failed with {workers} workers: {error}"
+        ) from error
+    finally:
+        _AUDIT_TS = None
+        _AUDIT_PARENTS = None
+        _AUDIT_MUTATION_POSITION = None
+        _AUDIT_MUTATION_NODE = None
+    elapsed = time.perf_counter() - started
+    rss_end = _rss_bytes()
+    children = resource.getrusage(resource.RUSAGE_CHILDREN)
+    child_scale = 1 if sys.platform == "darwin" else 1024
+    measurement: dict[str, int | float | bool] = {
+        "seconds": elapsed,
+        "rss_start_bytes": rss_start,
+        "rss_end_bytes": rss_end,
+        # No sampling thread is used across fork. Be explicit that this is an
+        # endpoint maximum, not a sampled parent-process peak.
+        "rss_peak_bytes": max(rss_start, rss_end),
+        "rss_peak_increment_bytes": max(0, rss_end - rss_start),
+        "rss_peak_sampled": False,
+        "children_maxrss_bytes": int(children.ru_maxrss * child_scale),
+    }
+    return results, measurement
+
+
+def _scalar_parent_audit(
+    ts: tskit.TreeSequence, parents: np.ndarray, mutation_position: np.ndarray,
+    *, sample_size: int, seed: int, workers: int = 1,
+) -> dict[str, object]:
+    selected, strata = _stratified_audit_indices(parents, sample_size, seed)
+    mutation_node = np.asarray(ts.tables.mutations.node, dtype=np.int64)
+    if workers <= 0:
+        raise ValueError("audit_workers must be positive")
+    used_workers = min(workers, max(1, int(selected.size)))
+
+    global _AUDIT_TS, _AUDIT_PARENTS, _AUDIT_MUTATION_POSITION, _AUDIT_MUTATION_NODE
+    if used_workers == 1:
+        _AUDIT_TS = ts
+        _AUDIT_PARENTS = parents
+        _AUDIT_MUTATION_POSITION = mutation_position
+        _AUDIT_MUTATION_NODE = mutation_node
+        try:
+            result, measurement = _measure(
+                lambda: _audit_selected_mutations(selected)
+            )
+        finally:
+            _AUDIT_TS = None
+            _AUDIT_PARENTS = None
+            _AUDIT_MUTATION_POSITION = None
+            _AUDIT_MUTATION_NODE = None
+        worker_results = [result]
+        measurement["rss_peak_sampled"] = True
+        execution_mode = "serial"
+    else:
+        worker_results, measurement = _parallel_scalar_audit(
+            ts, parents, mutation_position, mutation_node, selected, used_workers
+        )
+        execution_mode = "linux_fork_shared_read_only"
+
+    mismatch_count = sum(int(result["mismatch_count"]) for result in worker_results)
+    mismatches = [
+        mismatch
+        for result in worker_results
+        for mismatch in result["first_mismatches"]
+    ][:20]
+    checked_count = sum(int(result["checked_count"]) for result in worker_results)
+    worker_seconds = [float(result["seconds"]) for result in worker_results]
     return {
         "seed": seed,
         "requested_sample_size": sample_size,
         "actual_sample_size": int(selected.size),
+        "selected_mutation_ids_sha256": _array_digest(selected.astype(np.int64)),
         "strata": strata,
+        "requested_workers": workers,
+        "used_workers": used_workers,
+        "worker_fallback": (
+            None if used_workers == workers else
+            "used one worker per selected mutation because the sample is smaller "
+            "than the requested worker count"
+        ),
+        "execution_mode": execution_mode,
         "timing_and_rss": measurement,
-        "mismatch_count": len(mismatches),
+        "worker_timing": {
+            "seconds": worker_seconds,
+            "seconds_sum": float(sum(worker_seconds)),
+            "seconds_max": max(worker_seconds, default=0.0),
+        },
+        "checked_count": checked_count,
+        "mismatch_count": mismatch_count,
         "first_mismatches": mismatches,
-        "passed": len(mismatches) == 0 and selected.size == min(sample_size, parents.size),
+        "passed": mismatch_count == 0
+        and checked_count == selected.size == min(sample_size, parents.size),
     }
 
 
 def benchmark_gate2(
     tree_file: Path, *, num_buckets: int = 100, audit_size: int = 10_000,
+    audit_workers: int = 1,
     precision_sample_size: int = 10_000, precision_points: int = 21,
     fallback_node_sample: int = 10_000, scratch_dir: Path | None = None,
     seed: int = 1729,
@@ -466,6 +608,8 @@ def benchmark_gate2(
     path = Path(tree_file).resolve()
     if not path.is_file():
         raise FileNotFoundError(path)
+    if audit_workers <= 0:
+        raise ValueError("audit_workers must be positive")
     if (num_buckets <= 0 or audit_size <= 0 or precision_sample_size <= 0
             or precision_points < 2 or fallback_node_sample <= 0):
         raise ValueError("bucket/sample sizes must be positive and precision_points >= 2")
@@ -522,6 +666,7 @@ def benchmark_gate2(
     )
     audit = _scalar_parent_audit(
         ts, parents, mutation_position, sample_size=audit_size, seed=seed,
+        workers=audit_workers,
     )
     if not audit["passed"]:
         raise ValueError(f"scalar parent audit failed: {audit['mismatch_count']} mismatches")
@@ -536,6 +681,7 @@ def benchmark_gate2(
         "configuration": {
             "num_buckets": num_buckets,
             "audit_size": audit_size,
+            "audit_workers": audit_workers,
             "precision_sample_size": precision_sample_size,
             "precision_points": precision_points,
             "fallback_node_sample": fallback_node_sample,
@@ -588,6 +734,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--num-buckets", type=int, default=100)
     parser.add_argument("--audit-size", type=int, default=10_000)
+    parser.add_argument(
+        "--audit-workers", type=int, default=1,
+        help="scalar parent-audit processes (Linux fork required above 1)",
+    )
     parser.add_argument("--precision-sample-size", type=int, default=10_000)
     parser.add_argument("--precision-points", type=int, default=21)
     parser.add_argument("--fallback-node-sample", type=int, default=10_000)
@@ -601,6 +751,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     report = benchmark_gate2(
         args.tree, num_buckets=args.num_buckets,
         audit_size=args.audit_size,
+        audit_workers=args.audit_workers,
         precision_sample_size=args.precision_sample_size,
         precision_points=args.precision_points,
         fallback_node_sample=args.fallback_node_sample,

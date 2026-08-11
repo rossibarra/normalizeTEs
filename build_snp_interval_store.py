@@ -27,7 +27,6 @@ import tszip
 
 from build_snp_age_store import (
     _chromosome_table,
-    _warn_metadata_conflict,
     load_chrom_offsets,
 )
 
@@ -42,6 +41,48 @@ UINT32_MAX = np.iinfo(np.uint32).max
 def _load(path: Path) -> tskit.TreeSequence:
     """Load ordinary tskit files and tszip-compressed ``.tsz`` files."""
     return tszip.load(str(path))
+
+
+def _selective_tsz_catalog(
+    path: Path,
+) -> tuple[np.ndarray, object, float]:
+    """Read decoded site positions and top-level metadata from a TSZ archive.
+
+    TSZ stores site positions as indices into a shared coordinate dictionary;
+    returning ``sites/position`` directly would therefore be incorrect.
+    """
+    from tskit.metadata import parse_metadata_schema
+    from tszip.compression import load_zarr
+
+    with load_zarr(path) as root:
+        coordinates = np.asarray(root["coordinates"][:])
+        encoded_positions = np.asarray(root["sites/position"][:], dtype=np.int64)
+        if np.any(encoded_positions < 0) or np.any(encoded_positions >= coordinates.size):
+            raise ValueError(f"{path} contains an invalid encoded site position")
+        positions = np.asarray(coordinates[encoded_positions], dtype=np.float64)
+        sequence_length = float(root.attrs["sequence_length"])
+        schema_text = np.asarray(
+            root["metadata_schema"][:], dtype=np.uint8
+        ).tobytes().decode("utf-8")
+        metadata_bytes = np.asarray(
+            root["metadata"][:], dtype=np.uint8
+        ).tobytes()
+        metadata = parse_metadata_schema(schema_text).decode_row(metadata_bytes)
+    return positions, metadata, sequence_length
+
+
+def _catalog_header(path: Path) -> tuple[np.ndarray, object, float, str]:
+    """Return catalog fields, using selective TSZ access when possible."""
+    if path.suffix.lower() == ".tsz":
+        positions, metadata, sequence_length = _selective_tsz_catalog(path)
+        return positions, metadata, sequence_length, "selective_tsz_zarr"
+    ts = _load(path)
+    return (
+        np.asarray(ts.tables.sites.position, dtype=np.float64),
+        ts.metadata,
+        float(ts.sequence_length),
+        "full_tree_sequence_fallback",
+    )
 
 
 def pack_status_row(values: np.ndarray) -> np.ndarray:
@@ -254,14 +295,15 @@ def audit_mutation_parent_lookup(
 
 def _inspect_inputs(
     paths: Sequence[Path], chrom_offsets: Path | None
-) -> tuple[np.ndarray, list[dict[str, int | str]], float]:
+) -> tuple[np.ndarray, list[dict[str, int | str]], float, list[str]]:
     supplied = load_chrom_offsets(chrom_offsets) if chrom_offsets is not None else None
     positions = np.empty(0, dtype=np.float64)
     chromosomes: list[dict[str, int | str]] | None = None
     sequence_length: float | None = None
+    access_methods: list[str] = []
     for path in paths:
-        ts = _load(path)
-        current_positions = np.asarray(ts.tables.sites.position, dtype=np.float64)
+        current_positions, metadata, current_sequence_length, method = _catalog_header(path)
+        access_methods.append(method)
         _integral_int64(current_positions, f"{path} site positions")
         if current_positions.size and np.any(current_positions[1:] <= current_positions[:-1]):
             raise ValueError(f"{path} site positions must be strictly increasing")
@@ -271,30 +313,40 @@ def _inspect_inputs(
             else np.union1d(positions, current_positions)
         )
         if supplied is None:
-            metadata = ts.metadata
             if not isinstance(metadata, dict) or "chrom_offsets" not in metadata:
                 raise ValueError(
                     f"{path} lacks top-level chrom_offsets metadata; "
                     "supply --chrom-offsets"
                 )
             current_chromosomes = _chromosome_table(
-                metadata["chrom_offsets"], path, ts.sequence_length, disjoint=True
+                metadata["chrom_offsets"], path, current_sequence_length, disjoint=True
             )
         else:
             current_chromosomes = _chromosome_table(
                 list(supplied), chrom_offsets or "supplied chromosome offsets",
-                ts.sequence_length, disjoint=True,
+                current_sequence_length, disjoint=True,
             )
-            if chromosomes is None:
-                _warn_metadata_conflict(ts, path, current_chromosomes, chrom_offsets or "")
+            if chromosomes is None and isinstance(metadata, dict) and "chrom_offsets" in metadata:
+                try:
+                    embedded = _chromosome_table(
+                        metadata["chrom_offsets"], path, current_sequence_length
+                    )
+                except ValueError:
+                    embedded = None
+                if embedded != current_chromosomes:
+                    print(
+                        f"warning: {path} carries chrom_offsets metadata that disagrees "
+                        f"with {chrom_offsets}; the supplied offsets file takes precedence",
+                        file=sys.stderr,
+                    )
         if chromosomes is None:
             chromosomes = current_chromosomes
-            sequence_length = float(ts.sequence_length)
+            sequence_length = current_sequence_length
         elif current_chromosomes != chromosomes:
             raise ValueError("all tree sequences must have identical chromosome offsets")
-        elif float(ts.sequence_length) != sequence_length:
+        elif current_sequence_length != sequence_length:
             raise ValueError("all tree sequences must have the same sequence length")
-    return positions, chromosomes or [], float(sequence_length or 0)
+    return positions, chromosomes or [], float(sequence_length or 0), access_methods
 
 
 def _add_row_counts(target: np.ndarray, rows: np.ndarray, n_snps: int) -> None:
@@ -421,7 +473,9 @@ def build_interval_store(
     scratch: Path | None = None
     handles: list[object] = []
     try:
-        positions, chromosomes, sequence_length = _inspect_inputs(paths, chrom_offsets)
+        positions, chromosomes, sequence_length, catalog_access = _inspect_inputs(
+            paths, chrom_offsets
+        )
         if positions.size == 0:
             raise ValueError("input tree sequences contain no sites")
         n_snps = positions.size
@@ -598,6 +652,7 @@ def build_interval_store(
             "status_encoding": "draw-major, four two-bit values per uint8; 0=absent, 1=present-no-usable-interval, 2=usable",
             "position_coordinate_system": "one-based within chromosome; global=offset+POS",
             "position_matching": "exact integral float64 equality",
+            "catalog_access_methods": catalog_access,
             "chromosomes": chromosomes,
             "chromosomes_source": "arg_metadata" if chrom_offsets is None else str(chrom_offsets),
             "missing_policy": missing,

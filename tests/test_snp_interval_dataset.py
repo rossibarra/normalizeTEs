@@ -113,15 +113,33 @@ def test_boundary_access_strategies_preserve_scattered_order(tmp_path, strategy)
     np.testing.assert_allclose(actual, expected)
 
 
-def test_aggregate_cdf_is_blockwise_mean_and_cache_is_gated(tmp_path):
+def test_aggregate_cdf_is_blockwise_mean_and_cache_requires_path(tmp_path):
     store = SNPAgeIntervalDataset.open(_store(tmp_path / "store"))
     rows = np.array([2, 0])
     points = np.array([5.0, 15.0])
     expected = store.cdf_at(rows, points).mean(axis=0)
     np.testing.assert_allclose(
         store.aggregate_cdf_at(rows, points, block_rows=1), expected)
-    with pytest.raises(NotImplementedError, match="Gate 3"):
+    with pytest.raises(ValueError, match="requires a candidate cache"):
         store.boundary_cdfs(rows, points, access_strategy="cache")
+
+
+def test_candidate_cache_matches_gather_and_restores_requested_order(tmp_path):
+    store = SNPAgeIntervalDataset.open(_store(tmp_path / "store"))
+    candidates = np.array([2, 0])
+    cache = store.build_candidate_cache(candidates, tmp_path / "scratch-cache", block_rows=1)
+    assert cache.source_rows.tolist() == [0, 2]
+    assert cache.metadata["build_strategy"] == "full-sequential-scan"
+    points = np.array([5.0, 15.0, 25.0])
+    expected = store.boundary_cdfs(candidates, points, access_strategy="gather")
+    actual = store.boundary_cdfs(
+        candidates, points, access_strategy="cache", cache=cache
+    )
+    np.testing.assert_allclose(actual, expected)
+    with pytest.raises(FileExistsError):
+        store.build_candidate_cache(candidates, tmp_path / "scratch-cache")
+    with pytest.raises(KeyError, match="not present"):
+        cache.cdf_at(np.array([1]), points)
 
 
 def test_regular_grid_aggregate_matches_rowwise_cdf(tmp_path):
