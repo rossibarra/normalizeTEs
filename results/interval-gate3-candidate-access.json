@@ -1,0 +1,75 @@
+{
+  "block_rows": 100000,
+  "coalesce_gap": 64,
+  "n_boundaries": 21,
+  "n_candidate_rows": 396678,
+  "n_store_intervals": 74715451,
+  "n_store_rows": 27245216,
+  "repeats": 2,
+  "results": {
+    "cache": {
+      "best_repeat_seconds": 20.159887282177806,
+      "build_estimated_bytes_read": 672439059,
+      "build_seconds": 0.6367530487477779,
+      "cache_bytes_on_disk": 16888881,
+      "equal_to_gather": true,
+      "estimated_bytes_read": 16887846,
+      "estimated_endpoint_read_operations": 1190034,
+      "estimated_intervals_read": 1171222,
+      "estimated_offset_bytes_read": 6346848,
+      "estimated_record_bytes_read": 10540998,
+      "first_seconds": 20.37307889200747,
+      "max_abs_error_vs_gather": 0.0,
+      "repeat_seconds": [
+        20.183702553622425,
+        20.159887282177806
+      ]
+    },
+    "coalesced": {
+      "best_repeat_seconds": 20.49162084981799,
+      "equal_to_gather": true,
+      "estimated_bytes_read": 60745364,
+      "estimated_endpoint_read_operations": 82242,
+      "estimated_intervals_read": 5162828,
+      "estimated_offset_bytes_read": 14279912,
+      "estimated_record_bytes_read": 46465452,
+      "first_seconds": 20.52237552218139,
+      "max_abs_error_vs_gather": 0.0,
+      "repeat_seconds": [
+        20.49162084981799,
+        20.762028818950057
+      ]
+    },
+    "gather": {
+      "best_repeat_seconds": 20.120222816243768,
+      "equal_to_gather": true,
+      "estimated_bytes_read": 16887846,
+      "estimated_endpoint_read_operations": 1190034,
+      "estimated_intervals_read": 1171222,
+      "estimated_offset_bytes_read": 6346848,
+      "estimated_record_bytes_read": 10540998,
+      "first_seconds": 26.051460155285895,
+      "max_abs_error_vs_gather": 0.0,
+      "repeat_seconds": [
+        20.120222816243768,
+        20.17718560807407
+      ]
+    },
+    "scan": {
+      "best_repeat_seconds": 19.03324738610536,
+      "equal_to_gather": true,
+      "estimated_bytes_read": 890402971,
+      "estimated_endpoint_read_operations": 819,
+      "estimated_intervals_read": 74715451,
+      "estimated_offset_bytes_read": 217963912,
+      "estimated_record_bytes_read": 672439059,
+      "first_seconds": 25.364297696389258,
+      "max_abs_error_vs_gather": 0.0,
+      "repeat_seconds": [
+        19.12452141288668,
+        19.03324738610536
+      ]
+    }
+  },
+  "store": "/quobyte/jrigrp/jri/projects/normalizeTEs/results/interval-gate3-3draw-store"
+}

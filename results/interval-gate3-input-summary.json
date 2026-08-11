@@ -1,0 +1,12 @@
+{
+  "eligible_count": 396678,
+  "excluded_count": 88993,
+  "ineligible_count": 2995,
+  "label": "synonymous benchmark candidates",
+  "maximum_above": 22854736.529953808,
+  "n_boundaries": 21,
+  "policy": "drop",
+  "requested_count": 485671,
+  "resolved_count": 399673,
+  "unresolved_count": 85998
+}
