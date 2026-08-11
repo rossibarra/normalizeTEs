@@ -71,7 +71,11 @@ def bootstrap_wasserstein(
     Multinomial row counts are exactly equivalent to drawing row indices with
     replacement, while avoiding an ``replicates x SNPs`` index allocation.
     """
-    rows = np.asarray(cdf_rows, dtype=np.float64)
+    rows = np.asarray(cdf_rows)
+    if rows.ndim != 2 or rows.shape[0] == 0 or rows.shape[1] < 2:
+        raise ValueError("cdf_rows must be a nonempty SNP-by-age matrix")
+    if not np.issubdtype(rows.dtype, np.floating):
+        rows = rows.astype(np.float32)
     if n_replicates <= 0 or batch_size <= 0:
         raise ValueError("n_replicates and batch_size must be positive")
     ages = np.asarray(bin_centers)
@@ -82,7 +86,13 @@ def bootstrap_wasserstein(
     for start in range(0, n_replicates, batch_size):
         stop = min(start + batch_size, n_replicates)
         count = stop - start
-        weights = rng.multinomial(rows.shape[0], probabilities, size=count)
+        counts = rng.multinomial(rows.shape[0], probabilities, size=count)
+        # A scratch-backed interval CDF matrix is float32. Matching the weight
+        # dtype avoids NumPy promoting the complete memmap to an in-memory
+        # float64 temporary during matrix multiplication.
+        weight_dtype = np.float32 if rows.dtype == np.float32 else np.float64
+        weights = counts.astype(weight_dtype)
+        del counts
         boot = (weights @ rows) / rows.shape[0]
         output[start:stop] = np.sum(
             np.abs(boot[:, :-1] - target[:-1]) * widths,
@@ -150,7 +160,8 @@ def largest_remainder_quotas(
 
 
 def _analysis_cdfs(
-    store: object, rows: np.ndarray, *, bin_width: int
+    store: object, rows: np.ndarray, *, bin_width: int,
+    output_path: Path | None = None, block_rows: int = 512,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return legacy-compatible CDF rows and their age-bin centers."""
     if is_interval_store(store):
@@ -160,8 +171,35 @@ def _analysis_cdfs(
         last = max(1, int(np.floor(maximum / bin_width + 0.5)))
         centers = np.arange(last + 1, dtype=np.uint64) * np.uint64(bin_width)
         right_edges = centers.astype(np.float64) + bin_width / 2
-        cdfs = store.cdf_at(rows, right_edges, side="left", weighting="interval")
-        return np.asarray(cdfs, dtype=np.float64), centers
+        if output_path is None:
+            raise ValueError("interval CDF construction requires a scratch output path")
+        if block_rows <= 0:
+            raise ValueError("CDF block rows must be positive")
+        required_bytes = int(rows.size * right_edges.size * np.dtype("float32").itemsize)
+        free_bytes = shutil.disk_usage(output_path.parent).free
+        if required_bytes > free_bytes:
+            raise OSError(
+                f"interval TE CDF scratch needs {required_bytes} bytes but only "
+                f"{free_bytes} bytes are free in {output_path.parent}"
+            )
+        writer = getattr(store, "write_regular_grid_cdfs", None)
+        if writer is not None:
+            cdfs = writer(
+                rows, right_edges, output_path,
+                block_rows=block_rows, dtype=np.float32,
+            )
+        else:
+            cdfs = np.lib.format.open_memmap(
+                output_path, mode="w+", dtype=np.float32,
+                shape=(rows.size, right_edges.size),
+            )
+            for start in range(0, rows.size, block_rows):
+                stop = min(start + block_rows, rows.size)
+                cdfs[start:stop] = store.cdf_at(
+                    rows[start:stop], right_edges, side="left", weighting="interval"
+                ).astype(np.float32)
+            cdfs.flush()
+        return cdfs, centers
     return (
         np.asarray(store.read_cdfs(rows), dtype=np.float64),
         np.asarray(store.age_bins),
@@ -192,8 +230,10 @@ def build_target(
     batch_size: int = 256,
     row_indices: np.ndarray | None = None,
     bin_width: int = 1_000,
+    scratch_dir: str | Path | None = None,
+    cdf_block_rows: int = 512,
 ) -> TargetResult:
-    """Resolve positions and calculate all in-memory Stage 2 products."""
+    """Resolve positions and calculate Stage 2 products with bounded memory."""
     positions = np.asarray(te_positions, dtype=np.float64)
     if np.unique(positions).size != positions.size:
         raise ValueError("TE positions contain duplicates")
@@ -208,16 +248,35 @@ def build_target(
     invalid = ~np.asarray(store.eligible[rows], dtype=bool)
     if np.any(invalid):
         raise ValueError(f"invalid TE positions: {_format_values(positions[invalid])}")
-    cdf_rows, ages = _analysis_cdfs(store, rows, bin_width=bin_width)
-    rng = np.random.default_rng(seed)
-    distances = bootstrap_wasserstein(
-        cdf_rows,
-        n_replicates,
-        rng,
-        batch_size,
-        bin_centers=ages,
-    )
-    target = aggregate_cdf(cdf_rows)
+    if cdf_block_rows <= 0:
+        raise ValueError("cdf_block_rows must be positive")
+    temporary: tempfile.TemporaryDirectory[str] | None = None
+    try:
+        if is_interval_store(store):
+            parent = None if scratch_dir is None else Path(scratch_dir)
+            if parent is not None and not parent.is_dir():
+                raise NotADirectoryError(parent)
+            temporary = tempfile.TemporaryDirectory(prefix="te-target-cdf-", dir=parent)
+            cdf_path = Path(temporary.name) / "cdf_by_snp.npy"
+        else:
+            cdf_path = None
+        cdf_rows, ages = _analysis_cdfs(
+            store, rows, bin_width=bin_width, output_path=cdf_path,
+            block_rows=cdf_block_rows,
+        )
+        rng = np.random.default_rng(seed)
+        distances = bootstrap_wasserstein(
+            cdf_rows,
+            n_replicates,
+            rng,
+            batch_size,
+            bin_centers=ages,
+        )
+        target = aggregate_cdf(cdf_rows)
+        del cdf_rows
+    finally:
+        if temporary is not None:
+            temporary.cleanup()
     boundary_set = equal_mass_boundaries(target, bin_centers=ages)
     quotas = largest_remainder_quotas(
         positions.size, boundary_set.interval_shares,
@@ -282,6 +341,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--bin-width", type=int, default=1_000)
     parser.add_argument(
+        "--scratch-dir", type=Path,
+        help="node-local parent for temporary interval CDF storage",
+    )
+    parser.add_argument("--cdf-block-rows", type=int, default=512)
+    parser.add_argument(
         "--missing-position-policy", choices=("error", "drop"), default="error"
     )
     return parser.parse_args(argv)
@@ -313,6 +377,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         batch_size=args.bootstrap_batch_size,
         row_indices=resolution.included_rows,
         bin_width=args.bin_width,
+        scratch_dir=args.scratch_dir,
+        cdf_block_rows=args.cdf_block_rows,
     )
     boundary_set = result.boundaries
     metadata = {
@@ -332,6 +398,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             if is_interval_store(store) else "stored dense CDF"
         ),
         "bootstrap_replicates": args.bootstrap_replicates,
+        "bootstrap_batch_size": args.bootstrap_batch_size,
+        "cdf_block_rows": args.cdf_block_rows,
+        "cdf_working_dtype": "float32" if is_interval_store(store) else None,
+        "cdf_working_bytes": (
+            int(positions.size * result.age_bins.size * np.dtype("float32").itemsize)
+            if is_interval_store(store) else None
+        ),
+        "cdf_working_storage": (
+            "temporary scratch-backed NPY, removed after target construction"
+            if is_interval_store(store) else "dense store"
+        ),
+        "cdf_working_algorithm": (
+            "regular-grid slope/intercept differences; O(intervals + output cells)"
+            if is_interval_store(store) else "stored dense CDF"
+        ),
         "acceptance_quantile": args.acceptance_quantile,
         "wasserstein_threshold_generations": result.threshold,
         "boundary_probabilities": np.linspace(0.0, 1.0, 21).tolist(),

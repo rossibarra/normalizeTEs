@@ -42,6 +42,7 @@ def _store(path, *, endpoint_dtype="float64"):
         "n_snps": 3,
         "n_intervals": 5,
         "n_posterior_draws": 2,
+        "maximum_above": 30.0,
         "endpoint_dtype": endpoint_dtype,
         "minimum_usable_draws": 2,
         "arrays": array_metadata,
@@ -149,6 +150,21 @@ def test_regular_grid_aggregate_matches_rowwise_cdf(tmp_path):
     expected = store.cdf_at(rows, points, side="left").mean(axis=0)
     actual = store.aggregate_cdf_at(rows, points, side="left")
     np.testing.assert_allclose(actual, expected, atol=1e-14)
+
+
+@pytest.mark.parametrize("dtype", ["float32", "float64"])
+def test_regular_grid_cdf_writer_matches_rowwise_cdf(tmp_path, dtype):
+    store = SNPAgeIntervalDataset.open(_store(tmp_path / "store"))
+    rows = np.array([2, 0])
+    points = np.arange(-5.0, 40.0, 2.5)
+    expected = store.cdf_at(rows, points, side="left")
+    output = store.write_regular_grid_cdfs(
+        rows, points, tmp_path / f"cdfs-{dtype}.npy",
+        block_rows=1, dtype=dtype,
+    )
+    np.testing.assert_allclose(output, expected, atol=2e-7)
+    with pytest.raises(FileExistsError):
+        store.write_regular_grid_cdfs(rows, points, output.filename)
 
 
 def test_native_coordinates_preserve_one_base_gap(tmp_path):

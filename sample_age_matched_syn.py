@@ -13,6 +13,8 @@ import csv
 import json
 import os
 import shutil
+import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -59,7 +61,8 @@ def _boundary_weights(store: object, rows: np.ndarray,
                       boundary_ages: np.ndarray | None = None,
                       *, access_strategy: str = "gather",
                       block_rows: int = 100_000,
-                      coalesce_gap: int = 64) -> np.ndarray:
+                      coalesce_gap: int = 64,
+                      cache: object | str | Path | None = None) -> np.ndarray:
     """Return interval masses for CDF *edge* indices in ``[0, B]``.
 
     Edge zero is the implicit CDF value zero; edge ``e > 0`` maps to stored
@@ -78,7 +81,7 @@ def _boundary_weights(store: object, rows: np.ndarray,
         edge_cdfs = np.asarray(store.boundary_cdfs(
             rows, ages, side="left", weighting="interval",
             access_strategy=access_strategy, block_rows=block_rows,
-            coalesce_gap=coalesce_gap), dtype=np.float64)
+            coalesce_gap=coalesce_gap, cache=cache), dtype=np.float64)
         weights = np.diff(edge_cdfs, axis=1)
         np.maximum(weights, 0.0, out=weights)
         return weights
@@ -112,6 +115,7 @@ def build_candidate_weights(
     boundary_ages: np.ndarray | None = None,
     access_strategy: str = "gather",
     coalesce_gap: int = 64,
+    cache: object | str | Path | None = None,
 ) -> CandidateWeights:
     """Read candidate interval weights once, using bounded input blocks."""
     rows = np.asarray(syn_indices, dtype=np.int64)
@@ -126,6 +130,8 @@ def build_candidate_weights(
         raise ValueError("block_snps must be positive")
     if access_strategy == "auto":
         raise ValueError("auto access requires Gate 3 benchmark thresholds")
+    if access_strategy == "cache" and cache is None:
+        raise ValueError("cache access requires a built candidate cache")
     if np.any(rows < 0) or np.any(rows >= np.asarray(store.positions).size):
         raise ValueError("syn_indices contains an out-of-range row index")
     rows = np.sort(rows)
@@ -153,7 +159,7 @@ def build_candidate_weights(
         weights[start:stop] = _boundary_weights(
             store, rows[start:stop], bounds, boundary_ages,
             access_strategy=access_strategy, block_rows=block_snps,
-            coalesce_gap=coalesce_gap).astype(np.float32)
+            coalesce_gap=coalesce_gap, cache=cache).astype(np.float32)
     ages = None if boundary_ages is None else np.asarray(boundary_ages, dtype=np.float64)
     return CandidateWeights(rows.astype(np.int64, copy=False), bounds, weights, ages)
 
@@ -383,6 +389,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--missing-position-policy", choices=("error", "drop"), default="error")
     parser.add_argument("--candidate-access", choices=("auto", "gather", "coalesced", "scan", "cache"), default="gather")
     parser.add_argument("--coalesce-gap", type=int, default=64)
+    parser.add_argument(
+        "--candidate-cache-dir", type=Path,
+        help="existing node-local parent used for a temporary candidate cache",
+    )
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args(argv)
 
@@ -391,6 +401,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "candidate-access auto requires benchmark thresholds from Gate 3; "
             "select gather, coalesced, or scan explicitly"
         )
+    if args.candidate_access == "cache" and args.candidate_cache_dir is None:
+        raise ValueError("candidate-access cache requires --candidate-cache-dir")
 
     store = open_snp_age_store(args.store)
     candidates, resolution_meta = _load_candidates(
@@ -428,10 +440,40 @@ def main(argv: Sequence[str] | None = None) -> int:
     if is_interval_store(store) and boundary_ages is None:
         raise ValueError("interval target is missing interval_boundary_ages.npy")
     threshold = float(target_meta["wasserstein_threshold_generations"])
-    weights = build_candidate_weights(
-        store, candidates, boundaries, args.block_snps,
-        boundary_ages=boundary_ages, access_strategy=args.candidate_access,
-        coalesce_gap=args.coalesce_gap)
+    cache_metadata: dict[str, Any] = {}
+    cache_context: tempfile.TemporaryDirectory[str] | None = None
+    try:
+        cache = None
+        if args.candidate_access == "cache":
+            if not is_interval_store(store):
+                raise ValueError("candidate cache is supported only for interval stores")
+            cache_parent = args.candidate_cache_dir
+            assert cache_parent is not None
+            if not cache_parent.is_dir():
+                raise NotADirectoryError(cache_parent)
+            cache_context = tempfile.TemporaryDirectory(
+                prefix="syn-candidate-cache-", dir=cache_parent
+            )
+            cache_path = Path(cache_context.name) / "cache"
+            started = time.perf_counter()
+            cache = store.build_candidate_cache(
+                candidates, cache_path, block_rows=args.block_snps
+            )
+            cache_metadata = {
+                "candidate_cache_build_seconds": time.perf_counter() - started,
+                "candidate_cache_bytes": int(sum(
+                    path.stat().st_size for path in cache_path.iterdir()
+                    if path.is_file()
+                )),
+                "candidate_cache_cleanup": "removed after candidate weights were built",
+            }
+        weights = build_candidate_weights(
+            store, candidates, boundaries, args.block_snps,
+            boundary_ages=boundary_ages, access_strategy=args.candidate_access,
+            coalesce_gap=args.coalesce_gap, cache=cache)
+    finally:
+        if cache_context is not None:
+            cache_context.cleanup()
     result, diagnostics = generate_matches(
         store, weights, quotas, target_cdf, threshold,
         accepted_sets=args.accepted_sets, max_proposals=args.max_proposals,
@@ -446,6 +488,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                   "candidate_access_requested": args.candidate_access,
                   "candidate_access_effective": args.candidate_access,
                   "coalesce_gap": args.coalesce_gap,
+                  **cache_metadata,
                   "weight_matrix_shape": list(weights.values.shape),
                   "weight_matrix_dtype": str(weights.values.dtype),
                   "weight_matrix_bytes": int(weights.values.nbytes),

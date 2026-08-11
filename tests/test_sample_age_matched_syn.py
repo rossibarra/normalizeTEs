@@ -151,7 +151,11 @@ class FakeIntervalStore:
     eligible = np.ones(3, dtype=bool)
     intervals = [(0.0, 1_000.0), (1_000.0, 2_000.0), (2_000.0, 3_000.0)]
 
+    def __init__(self):
+        self.boundary_calls = []
+
     def boundary_cdfs(self, rows, points, **kwargs):
+        self.boundary_calls.append(kwargs.copy())
         return np.vstack([
             interval_cdf(np.array([self.intervals[r][0]]),
                          np.array([self.intervals[r][1]]), points,
@@ -181,6 +185,24 @@ def test_interval_weights_use_physical_edges_and_scoring_uses_target_grid():
     aggregate, distance = score_set(store, np.array([0, 1]), target, grid)
     np.testing.assert_allclose(aggregate, target)
     assert distance == pytest.approx(0)
+
+
+def test_interval_candidate_cache_is_required_and_forwarded():
+    store = FakeIntervalStore()
+    with pytest.raises(ValueError, match="requires a built candidate cache"):
+        build_candidate_weights(
+            store, np.array([0, 1]), np.array([0, 1, 3]),
+            boundary_ages=np.array([-500.0, 500.0, 2_500.0]),
+            access_strategy="cache",
+        )
+    marker = object()
+    build_candidate_weights(
+        store, np.array([0, 1]), np.array([0, 1, 3]), block_snps=1,
+        boundary_ages=np.array([-500.0, 500.0, 2_500.0]),
+        access_strategy="cache", cache=marker,
+    )
+    assert store.boundary_calls
+    assert all(call["cache"] is marker for call in store.boundary_calls)
 
 
 def test_index_candidates_drop_ineligible_and_report_exact_coordinate(tmp_path):

@@ -171,7 +171,11 @@ class FakeIntervalStore:
     below = np.array([[0.0], [1_500.0]])
     above = np.array([[1_000.0], [2_500.0]])
 
+    def __init__(self):
+        self.cdf_calls = []
+
     def cdf_at(self, rows, points, **kwargs):
+        self.cdf_calls.append(np.asarray(rows).copy())
         return np.vstack([
             interval_cdf(self.below[row], self.above[row], points, side=kwargs["side"]).mean(axis=0)
             for row in rows
@@ -179,13 +183,36 @@ class FakeIntervalStore:
 
 
 def test_interval_target_uses_right_cell_edges_and_persists_physical_boundaries(tmp_path):
+    store = FakeIntervalStore()
     result = build_target(
-        FakeIntervalStore(), np.array([10.0, 20.0]),
+        store, np.array([10.0, 20.0]),
         np.array(["chr1", "chr1"]), np.array([10, 20]),
         row_indices=np.array([0, 1]), n_replicates=10,
-        acceptance_quantile=.95, seed=2, bin_width=1_000)
+        acceptance_quantile=.95, seed=2, bin_width=1_000,
+        scratch_dir=tmp_path, cdf_block_rows=1)
     np.testing.assert_array_equal(result.age_bins, [0, 1_000, 2_000, 3_000])
     # The first row has half its uniform interval mass below the 500 edge.
     assert result.target_cdf[0] == pytest.approx(.25)
     edges = np.array([-500, 500, 1_500, 2_500, 3_500], dtype=float)
     np.testing.assert_array_equal(result.boundary_ages, edges[result.boundaries.indices])
+    assert [call.tolist() for call in store.cdf_calls] == [[0], [1]]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_interval_scratch_matrix_matches_in_memory_reference(tmp_path):
+    store = FakeIntervalStore()
+    rows = np.array([0, 1])
+    points = np.array([500.0, 1_500.0, 2_500.0, 3_500.0])
+    expected_rows = store.cdf_at(rows, points, side="left", weighting="interval")
+    expected = bootstrap_wasserstein(
+        expected_rows, 25, np.random.default_rng(9), 7,
+        bin_centers=np.array([0, 1_000, 2_000, 3_000]),
+    )
+    result = build_target(
+        store, np.array([10.0, 20.0]), np.array(["chr1", "chr1"]),
+        np.array([10, 20]), row_indices=rows, n_replicates=25,
+        acceptance_quantile=.95, seed=9, batch_size=7, bin_width=1_000,
+        scratch_dir=tmp_path, cdf_block_rows=1,
+    )
+    np.testing.assert_allclose(result.bootstrap_wasserstein, expected, atol=1e-4)
+    assert list(tmp_path.iterdir()) == []

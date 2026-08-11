@@ -557,6 +557,105 @@ class SNPAgeIntervalDataset:
             total += block.sum(axis=0, dtype=np.float64)
         return total / rows.size
 
+    def write_regular_grid_cdfs(
+        self,
+        row_indices: np.ndarray,
+        points: np.ndarray,
+        output_path: str | Path,
+        *,
+        block_rows: int = 512,
+        dtype: str | np.dtype = "float32",
+    ) -> np.memmap:
+        """Write SNP CDF rows on a uniform grid in O(intervals + output cells).
+
+        Three difference arrays encode the linear and complete portions of
+        every positive-width interval. This avoids constructing an
+        ``intervals x grid`` temporary for each SNP. The output is an NPY
+        memmap and the destination must not already exist.
+        """
+        rows = _checked_indices(row_indices, self.positions.size, "row")
+        query = np.asarray(points, dtype=np.float64)
+        output_dtype = np.dtype(dtype)
+        if rows.size == 0 or block_rows <= 0:
+            raise ValueError("rows must be nonempty and block_rows positive")
+        if query.ndim != 1 or query.size < 2 or np.any(~np.isfinite(query)):
+            raise ValueError("points must be a finite vector with at least two values")
+        widths = np.diff(query)
+        if not np.all(widths > 0) or not np.allclose(widths, widths[0], rtol=0, atol=0):
+            raise ValueError("points must be a strictly increasing uniform grid")
+        if output_dtype not in (np.dtype("float32"), np.dtype("float64")):
+            raise ValueError("CDF output dtype must be float32 or float64")
+        destination = Path(output_path)
+        if destination.exists():
+            raise FileExistsError(f"CDF output already exists: {destination}")
+        output = np.lib.format.open_memmap(
+            destination, mode="w+", dtype=output_dtype,
+            shape=(rows.size, query.size),
+        )
+        origin = float(query[0])
+        step = float(widths[0])
+        columns = np.arange(query.size, dtype=np.float64)
+        for start in range(0, rows.size, block_rows):
+            stop = min(start + block_rows, rows.size)
+            block = self.intervals(rows[start:stop])
+            counts = np.diff(block.offsets).astype(np.int64, copy=False)
+            if np.any(counts == 0):
+                raise ValueError("CDF rows include a SNP without usable intervals")
+            owners = np.repeat(np.arange(counts.size, dtype=np.int64), counts)
+            lower = np.asarray(block.below, dtype=np.float64)
+            upper = np.asarray(block.above, dtype=np.float64)
+            interval_width = upper - lower
+            if np.any(interval_width <= 0):
+                raise ValueError("CDF rows include a nonpositive interval")
+            per_interval = 1.0 / counts[owners]
+            linear_start = np.clip(
+                np.ceil((lower - origin) / step).astype(np.int64), 0, query.size
+            )
+            full_start = np.clip(
+                np.ceil((upper - origin) / step).astype(np.int64), 0, query.size
+            )
+            shape = (counts.size, query.size + 1)
+            slope = np.zeros(shape, dtype=np.float64)
+            intercept = np.zeros(shape, dtype=np.float64)
+            complete = np.zeros(shape, dtype=np.float64)
+            active = linear_start < full_start
+            inverse_width = per_interval / interval_width
+            slope_values = step * inverse_width
+            intercept_values = (origin - lower) * inverse_width
+            np.add.at(
+                slope, (owners[active], linear_start[active]), slope_values[active]
+            )
+            np.add.at(
+                slope, (owners[active], full_start[active]), -slope_values[active]
+            )
+            np.add.at(
+                intercept,
+                (owners[active], linear_start[active]),
+                intercept_values[active],
+            )
+            np.add.at(
+                intercept,
+                (owners[active], full_start[active]),
+                -intercept_values[active],
+            )
+            begins_full = full_start < query.size
+            np.add.at(
+                complete,
+                (owners[begins_full], full_start[begins_full]),
+                per_interval[begins_full],
+            )
+            np.cumsum(slope, axis=1, out=slope)
+            slope[:, :-1] *= columns
+            np.cumsum(intercept, axis=1, out=intercept)
+            slope += intercept
+            del intercept
+            np.cumsum(complete, axis=1, out=complete)
+            slope += complete
+            del complete
+            output[start:stop] = np.clip(slope[:, :-1], 0.0, 1.0).astype(output_dtype)
+        output.flush()
+        return output
+
     def _aggregate_uniform_interval_cdf(
         self, rows: np.ndarray, points: np.ndarray
     ) -> np.ndarray:
