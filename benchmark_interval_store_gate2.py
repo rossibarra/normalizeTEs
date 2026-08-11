@@ -244,7 +244,7 @@ def _count_and_bucket_metrics(
         "sites_with_root_skips": int(np.count_nonzero(skipped)),
         "bucket_count": num_buckets,
         "bucket_interval_counts": [int(value) for value in bucket_counts],
-        "bucket_min_intervals": int(bucket_counts.min(initial=0)),
+        "bucket_min_intervals": int(bucket_counts.min()) if bucket_counts.size else 0,
         "bucket_max_intervals": int(bucket_counts.max(initial=0)),
         "bucket_mean_intervals": float(bucket_counts.mean()),
         "bucket_imbalance_max_over_mean": (
