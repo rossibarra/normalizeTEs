@@ -118,7 +118,7 @@ python build_snp_age_store.py \
   --bin-width 1000 \
   --block-snps 100000 \
   --min-usable-fraction 0.1 \
-  --scratch-dir "$SLURM_TMPDIR"
+  --scratch-dir "$TMPDIR"
 ```
 
 The builder finds all variant positions across the tree sequences, estimates
@@ -146,8 +146,78 @@ quantized arrays. Its size is approximately
 `4 * number_of_SNPs * number_of_age_bins` bytes: at 20 million SNPs this is
 about 15 GiB for 200 bins or 75 GiB for 1,000 bins. Each posterior draw sweeps
 this accumulator in genomic order. Use `--scratch-dir` to place it on
-node-local storage such as `$SLURM_TMPDIR`; final store files are still
+node-local storage such as `$TMPDIR`; final store files are still
 assembled beside `--numpy-store` for atomic publication.
+
+On Farm, use `$TMPDIR`, not `$SLURM_TMPDIR`. The latter is not set. Jobs receive
+a per-job `$TMPDIR` on `/local/scratch`.
+
+### Compact all-SNP interval store (recommended)
+
+The compact builder retains the complete interval posterior for every SNP in
+the union of the input draws without materializing a dense SNP-by-age matrix.
+TE and synonymous lists are downstream selections and do not filter the
+store. For approximately 25--30 million SNPs and 75 TSZ draws like the
+measured combined SINGER files, the conservative default request is one CPU,
+48 GB RAM, 16 hours, and at least 32 GiB free in node-local `$TMPDIR`:
+
+```bash
+HPC_CPUS=1 HPC_MEM=48G HPC_TIME=16:00:00 ~/.claude/bin/hpc_run \
+  'python build_snp_interval_store.py project-data/posterior/*.tsz \
+    --interval-store age_interval_store \
+    --chrom-offsets project-data/chrom_offsets.txt \
+    --interval-dtype float32 \
+    --min-usable-fraction 0.1 \
+    --num-buckets 100 \
+    --bucket-memory-gb 2 \
+    --scratch-dir "$TMPDIR"'
+```
+
+The measured projection is approximately 17.1 GiB for the final 75-draw
+float32 store and 22.6 GiB of packed bucket scratch. Atomic construction also
+creates the new final arrays beside `--interval-store`, so retain additional
+Quobyte headroom if an older store remains present.
+
+The production builder is currently single-worker. Its final merge is
+Quobyte-I/O-bound, and merely allocating more CPUs does not make that phase
+faster. Multiple CPUs are implemented for the independent scalar correctness
+audit. A four-CPU audit of 10,000 mutations took 40m29s end to end and used
+19.9 GB peak RSS:
+
+```bash
+HPC_CPUS=4 HPC_MEM=48G HPC_TIME=01:00:00 ~/.claude/bin/hpc_run \
+  'python benchmark_interval_store_gate2.py project-data/posterior/draw.tsz \
+    --output results/interval-gate2.json \
+    --audit-size 10000 \
+    --audit-workers "$SLURM_CPUS_PER_TASK" \
+    --scratch-dir "$TMPDIR"'
+```
+
+Interval-store TE target construction uses a temporary float32 TE-by-age CDF
+matrix in node-local scratch instead of retaining a float64 matrix in RAM. At
+about 185,000 TEs, a 1,000-generation bin width, and the measured maximum age,
+allow roughly 16--18 GiB of additional `$TMPDIR` space. Bootstrap matrix
+multiplication can use four CPUs. Regular-grid CDF rows are built with
+slope/intercept difference accumulators in O(interval records + output cells),
+not interval-records times age-bins:
+
+```bash
+HPC_CPUS=4 HPC_MEM=16G HPC_TIME=08:00:00 ~/.claude/bin/hpc_run \
+  'OPENBLAS_NUM_THREADS="$SLURM_CPUS_PER_TASK" \
+   OMP_NUM_THREADS="$SLURM_CPUS_PER_TASK" \
+   python te_age_target.py \
+     --store age_interval_store \
+     --te-positions te_positions.txt \
+     --output te_age_target \
+     --scratch-dir "$TMPDIR"'
+```
+
+Synonymous matching defaults to `--candidate-access gather`. For repeated or
+explicitly cached access, select `--candidate-access cache` and provide
+`--candidate-cache-dir "$TMPDIR"`; the temporary cache is removed after the
+candidate weights are materialized. The Gate 3 cache for 396,678 candidates
+was 16.9 MB. See `INTERVAL_STORE_BENCHMARKS.md` for measured details and the
+limits of these projections.
 
 ### Optional chromosome offsets file
 
@@ -333,7 +403,7 @@ the synonymous pool has usable probability mass across the target age range.
 - Use large `--block-snps` values that fit comfortably in node memory; benchmark
   values between 250,000 and 1,000,000 on the production system.
 - If node-local scratch is available, stage frequently accessed arrays or
-  boundary blocks under `$SLURM_TMPDIR` and copy only final outputs to Quobyte.
+  boundary blocks under `$TMPDIR` and copy only final outputs to Quobyte.
 - Keep the store and result arrays as a small number of large files rather than
   creating per-SNP files.
 
