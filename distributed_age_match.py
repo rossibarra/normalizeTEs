@@ -28,7 +28,7 @@ from sample_age_matched_controls import (
     _write_results,
 )
 from snp_age_store import open_snp_age_store, store_schema
-from swap_control_sampler import ChainOutput, SwapConfig
+from swap_control_sampler import ChainOutput, SwapConfig, derive_chain_seed
 
 
 def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
@@ -44,6 +44,7 @@ def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--burnin-accepted-sweeps", type=float, default=1.0)
     parser.add_argument("--sample-accepted-sweeps", type=float, default=1.0)
     parser.add_argument("--max-construction-epochs", type=int, default=50)
+    parser.add_argument("--max-exact-plateau-epochs", type=int, default=3)
     parser.add_argument("--max-chain-proposals", type=int, default=10_000_000)
     parser.add_argument("--cdf-block-rows", type=int, default=256)
     parser.add_argument("--exact-check-accepted", type=int, default=1_000)
@@ -86,6 +87,15 @@ def _context(args: argparse.Namespace) -> dict[str, Any]:
     actual_catalog = getattr(store, "metadata", {}).get("catalog_sha256")
     if expected_catalog is not None and expected_catalog != actual_catalog:
         raise ValueError("target and interval store catalogs do not match")
+    expected_content = target_meta.get("source_store_content_sha256")
+    actual_content = getattr(store, "metadata", {}).get("content_sha256")
+    if not expected_content or not actual_content:
+        raise ValueError(
+            "distributed matching requires target and store content digests; "
+            "rebuild the interval store and target with normalizeTE 0.2.1 or later"
+        )
+    if expected_content != actual_content:
+        raise ValueError("target and interval store contents do not match")
 
     candidate_digest = None
     candidate_values = None
@@ -102,6 +112,7 @@ def _context(args: argparse.Namespace) -> dict[str, Any]:
         burnin_accepted_sweeps=args.burnin_accepted_sweeps,
         sample_accepted_sweeps=args.sample_accepted_sweeps,
         max_construction_epochs=args.max_construction_epochs,
+        max_exact_plateau_epochs=args.max_exact_plateau_epochs,
         max_chain_proposals=args.max_chain_proposals,
         cdf_block_rows=args.cdf_block_rows,
         exact_check_accepted=args.exact_check_accepted,
@@ -116,6 +127,7 @@ def _context(args: argparse.Namespace) -> dict[str, Any]:
     identity = {
         "source_store_schema": actual_schema,
         "source_catalog_sha256": actual_catalog,
+        "source_store_content_sha256": actual_content,
         "target_digest": target_digest,
         "candidate_rows_digest": candidate_digest,
         "software": software,
@@ -132,6 +144,7 @@ def _context(args: argparse.Namespace) -> dict[str, Any]:
         "target_meta": target_meta,
         "store": store,
         "catalog": actual_catalog,
+        "store_content": actual_content,
         "candidate_digest": candidate_digest,
         "candidate_values": candidate_values,
         "config": config,
@@ -145,6 +158,12 @@ def _run_chain(args: argparse.Namespace) -> int:
     if not 0 <= args.chain_index < args.chains:
         raise ValueError("--chain-index must lie in [0, chains)")
     context = _context(args)
+    expected_seed = derive_chain_seed(
+        args.seed,
+        context["target_digest"],
+        args.chain_index,
+        context["config"].algorithm_version,
+    )
     if args.chain_output.exists():
         if not args.resume:
             raise FileExistsError(f"chain output already exists: {args.chain_output}")
@@ -161,6 +180,7 @@ def _run_chain(args: argparse.Namespace) -> int:
             age_bins=context["age_bins"],
             threshold=context["threshold"],
             candidate_rows=context["candidate_values"],
+            expected_seed=expected_seed,
         )
         print(f"Complete chain bundle already exists: {args.chain_output}", flush=True)
         return 0
@@ -195,6 +215,7 @@ def _run_chain(args: argparse.Namespace) -> int:
             age_bins=context["age_bins"],
             threshold=context["threshold"],
             candidate_rows=context["candidate_values"],
+            expected_seed=expected_seed,
         )
         _save_chain_result(
             local_bundle, result, run_identity=context["identity"]
@@ -213,6 +234,7 @@ def _run_chain(args: argparse.Namespace) -> int:
             age_bins=context["age_bins"],
             threshold=context["threshold"],
             candidate_rows=context["candidate_values"],
+            expected_seed=expected_seed,
         )
     except BaseException:
         print(f"Incomplete scratch work retained at {args.work_dir}", flush=True)
@@ -246,6 +268,12 @@ def _gather(args: argparse.Namespace) -> int:
             age_bins=context["age_bins"],
             threshold=context["threshold"],
             candidate_rows=context["candidate_values"],
+            expected_seed=derive_chain_seed(
+                args.seed,
+                context["target_digest"],
+                chain_index,
+                context["config"].algorithm_version,
+            ),
         )
         outputs.append(result)
         bundle_paths.append(path.resolve())
@@ -259,6 +287,7 @@ def _gather(args: argparse.Namespace) -> int:
         "source_store": str(args.store.resolve()),
         "source_store_schema": store_schema(context["store"]),
         "source_catalog_sha256": context["catalog"],
+        "source_store_content_sha256": context["store_content"],
         "target": str(args.target.resolve()),
         "target_digest": context["target_digest"],
         "target_metadata": context["target_meta"],
@@ -274,6 +303,7 @@ def _gather(args: argparse.Namespace) -> int:
         "distributed_chain_tasks": args.chains,
         "distributed_chains": True,
         "chain_bundles": [str(path) for path in bundle_paths],
+        "algorithm_version": context["config"].algorithm_version,
         "config": asdict(context["config"]),
         "elapsed_seconds": time.perf_counter() - started,
         "numpy_version": np.__version__,

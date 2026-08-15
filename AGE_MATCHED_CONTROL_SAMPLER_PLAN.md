@@ -26,6 +26,8 @@ Confirmed behavior:
   swaps;
 - the default is one sweep before the first save and one sweep between saves;
 - membership replacement is measured and reported, not used to stop the walk;
+- construction adaptively refines a plateaued coarse grid down to the exact
+  target-grid width without changing the threshold;
 - every saved set is certified on the exact 1,000-generation target grid; and
 - no dense candidate index or target-specific candidate-weight matrix is
   required.
@@ -93,7 +95,8 @@ For every target:
 5. remove target rows;
 6. require strictly more candidates than the target size, ensuring at least one
    unselected proposal exists; and
-7. record the target, candidate, store-catalog, and software digests.
+7. require and record the target, candidate, full store-content, store-catalog,
+   and software digests.
 
 The default missing-target policy is `error`. A `drop` run records every
 excluded coordinate and reason.
@@ -120,8 +123,12 @@ Construction finds a feasible starting component:
 4. evaluate the incremental aggregate on the coarse search grid;
 5. accept only strict coarse-grid improvements;
 6. certify on the exact grid after each epoch and more often near the
-   threshold; and
-7. stop at the first exact-feasible state.
+   threshold;
+7. when a zero-acceptance epoch remains above threshold, halve the search-grid
+   width and recompute construction state, down to exact resolution;
+8. fail after three consecutive zero-acceptance epochs at exact resolution;
+   and
+9. stop at the first exact-feasible state.
 
 Construction failure reports the trajectory and seed and never relaxes the
 tolerance automatically.
@@ -176,8 +183,10 @@ compressed bundle to `OUTPUT.chains/chain-NNN.npz`. The bundle includes:
   seed, chain-count, and algorithm configuration fields.
 
 After publication, the chain reloads the durable bundle and validates its
-identity, eligibility, target exclusion, uniqueness, distances, and one CDF
-recomputed from row indices. Only then is scratch work removed.
+identity, re-derived seed, eligibility, target exclusion, uniqueness,
+distances, and all ten CDFs recomputed from row indices. Only then is scratch
+work removed. Publication uses a unique temporary name and an atomic
+no-overwrite claim, so an overlapping retry cannot replace a completed bundle.
 
 Interrupted-chain checkpoints are diagnostic and node-local; an interrupted
 chain restarts deterministically. Completed durable chain bundles are the unit
@@ -214,10 +223,12 @@ The implementation must:
 - accept uphill-but-feasible moves;
 - resynchronize incremental and independently aggregated CDFs at saves;
 - reject a bundle whose stored CDF is inconsistent with its row indices;
+- reject a bundle whose seed differs from deterministic derivation;
+- reject distributed work without a matching full store-content digest;
 - reject truncated or zero-byte outputs even when metadata says complete;
 - verify SLURM's actual array size against the declared task count; and
-- publish chain files and final directories atomically on their destination
-  filesystems.
+- publish chain files without overwrite and final directories atomically on
+  their destination filesystems.
 
 ## 8. Validation plan
 
@@ -228,7 +239,11 @@ The implementation must:
 - exactly the configured accepted-swap count occurs per phase;
 - membership diagnostics equal direct set intersections;
 - candidate count equal to target size fails rather than hanging;
-- stored-row/CDF mismatches and truncated outputs are rejected;
+- coarse construction plateaus refine to exact resolution or fail clearly;
+- later-set stored-row/CDF mismatches, wrong seeds, mixed identities, missing
+  bundles, and truncated outputs are rejected;
+- non-integer sweeps round up to the declared accepted-swap count;
+- overlap diagnostics equal direct intersections after saved transitions;
 - an uphill feasible proposal is accepted; and
 - scratch-to-durable publication leaves no partial visible output.
 
@@ -249,11 +264,14 @@ Before full rollout on the 75-draw store:
 3. measure per-chain RSS, time, acceptance, and staged-store I/O;
 4. confirm q50 and any absolute tolerance on the full posterior;
 5. inspect membership, reuse, chromosome composition, and between-chain
-   agreement; and
-6. establish an adequate sweep count using the actual downstream statistic.
+   agreement;
+6. inspect adaptive-refinement histories and any exact-grid plateau; and
+7. establish an adequate sweep count using the actual downstream statistic.
 
-The version-2 fixed-sweep `10 × 10` workflow has passed a complete local pilot
-for the 4,061-SNP in-gene target on the available two-draw store. It does not
+The version-2.1 `10 × 10` workflow has passed a complete local pilot for the
+4,061-SNP in-gene target on the available two-draw store, including all-set CDF,
+derived-seed, and full store-content validation. A deterministic synthetic test
+also confirms adaptive recovery from a coarse-grid plateau. These tests do not
 validate mixing for the 75-draw store or for a scientific downstream statistic.
 
 ## 9. Definition of done

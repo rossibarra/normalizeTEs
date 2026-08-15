@@ -29,6 +29,7 @@ from build_snp_age_store import (
     _chromosome_table,
     load_chrom_offsets,
 )
+from snp_interval_dataset import compute_interval_store_content_sha256
 
 
 SCHEMA_VERSION = "snp-age-interval-v1"
@@ -667,6 +668,9 @@ def build_interval_store(
             "record_dtype": record_dtype.descr,
             "arrays": arrays,
         }
+        metadata["content_sha256"] = compute_interval_store_content_sha256(
+            temp, metadata
+        )
         (temp / "metadata.json").write_text(
             json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )

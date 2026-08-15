@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.2.1 — 2026-08-15
+
+- Adaptively halves a plateaued coarse construction grid down to exact target
+  resolution, then fails clearly after three exact-grid plateau epochs instead
+  of exhausting the full construction budget.
+- Adds a full SHA-256 interval-store content identity and requires matching
+  store and target identities for distributed chain and gather jobs.
+- Recomputes every saved-set CDF from its row indices and re-derives every
+  deterministic chain seed before resume, publication, or gather.
+- Publishes chain bundles through globally unique staging names and an atomic
+  no-overwrite claim so overlapping retries cannot replace completed bundles.
+- Adds adversarial tests for later-set corruption, missing bundles, invalid
+  seeds, store mismatches, non-integer sweep counts, overlap bookkeeping,
+  construction refinement, and exact-grid plateau errors.
+- Clarifies that the manifest `target` field is a durable output directory and
+  that an absolute acceptance distance deliberately retains bootstrapping for
+  context.
+- Repeats the complete 10-by-10 in-gene pilot under version 0.2.1: all bundles
+  and all 100 row-derived CDFs validate, with matched W1 1,755.83--1,904.84 at
+  the 1,905.10 threshold.
+
 ## v0.2.0 — 2026-08-15
 
 - Changes the production layout from four 25-state chains in one job to ten

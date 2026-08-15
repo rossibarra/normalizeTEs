@@ -13,7 +13,11 @@ from build_snp_interval_store import (
     pack_status_row,
     unpack_status_row,
 )
-from snp_interval_dataset import SNPAgeIntervalDataset, validate_interval_store
+from snp_interval_dataset import (
+    SNPAgeIntervalDataset,
+    compute_interval_store_content_sha256,
+    validate_interval_store,
+)
 
 
 def _write_ts(path: Path, sites: dict[float, list[int]], *, second_interval=False):
@@ -133,10 +137,20 @@ def test_build_union_ragged_records_counts_status_and_metadata(tmp_path):
     np.testing.assert_allclose(batch.above, [100, 20, 20, 100])
     metadata = json.loads((output / "metadata.json").read_text())
     assert len(metadata["catalog_sha256"]) == 64
+    assert len(metadata["content_sha256"]) == 64
+    assert metadata["content_sha256"] == compute_interval_store_content_sha256(
+        output, metadata
+    )
     assert metadata["endpoint_dtype"] == "float32"
     assert metadata["maximum_above"] == 100
     assert metadata["minimum_usable_draws"] == 1
     assert list(scratch.iterdir()) == []
+    below = np.load(output / "below.npy", mmap_mode="r+")
+    below[0] += 1
+    below.flush()
+    del below
+    with pytest.raises(ValueError, match="content digest"):
+        validate_interval_store(output, deep=True)
 
 
 def test_missing_and_root_error_are_atomic(tmp_path):

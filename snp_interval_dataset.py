@@ -7,6 +7,7 @@ columns can be memory mapped without copying them into RAM.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -23,6 +24,54 @@ INTERVAL_SCHEMA_VERSION = "snp-age-interval-v1"
 STATUS_ABSENT = np.uint8(0)
 STATUS_PRESENT_UNUSABLE = np.uint8(1)
 STATUS_PRESENT_USABLE = np.uint8(2)
+
+
+_CONTENT_IDENTITY_METADATA_KEYS = (
+    "schema_version",
+    "n_posterior_draws",
+    "chromosomes",
+    "interval_weighting",
+    "missing_policy",
+    "root_policy",
+    "minimum_usable_fraction",
+    "minimum_usable_draws",
+)
+
+
+def compute_interval_store_content_sha256(
+    store_dir: str | Path,
+    metadata: dict | None = None,
+    *,
+    chunk_bytes: int = 8 * 1024**2,
+) -> str:
+    """Hash every declared array plus metadata that affects interpretation."""
+    path = Path(store_dir)
+    if chunk_bytes <= 0:
+        raise ValueError("chunk_bytes must be positive")
+    if metadata is None:
+        metadata = _read_metadata(path)
+    arrays = metadata.get("arrays")
+    if not isinstance(arrays, dict) or not arrays:
+        raise ValueError("cannot hash an interval store without declared arrays")
+    semantic = {
+        key: metadata.get(key) for key in _CONTENT_IDENTITY_METADATA_KEYS
+    }
+    digest = hashlib.sha256()
+    digest.update(b"normalizeTE-interval-store-content-v1\0")
+    digest.update(json.dumps(
+        semantic, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8"))
+    for name in sorted(arrays):
+        encoded = name.encode("utf-8")
+        array_path = path / f"{name}.npy"
+        size = array_path.stat().st_size
+        digest.update(len(encoded).to_bytes(4, "little"))
+        digest.update(encoded)
+        digest.update(size.to_bytes(8, "little"))
+        with array_path.open("rb") as handle:
+            while block := handle.read(chunk_bytes):
+                digest.update(block)
+    return digest.hexdigest()
 
 
 @dataclass(frozen=True)
@@ -863,6 +912,13 @@ def validate_interval_store(
         raise ValueError("endpoint_dtype must be float32 or float64")
     if not isinstance(metadata["arrays"], dict):
         raise ValueError("metadata arrays must be an object")
+    content_digest = metadata.get("content_sha256")
+    if content_digest is not None and (
+        not isinstance(content_digest, str)
+        or len(content_digest) != 64
+        or any(character not in "0123456789abcdef" for character in content_digest)
+    ):
+        raise ValueError("metadata content_sha256 must be a lowercase SHA-256 digest")
     draw_dtype = np.dtype("uint8" if n_draws <= 255 else "uint16")
     required = {
         "positions": (np.dtype("float64"), (n_snps,)),
@@ -912,6 +968,10 @@ def validate_interval_store(
         if np.any(arrays["status"][:, -1] >> np.uint8(used_bits)):
             raise ValueError("unused status slots must be zero")
     if deep:
+        if content_digest is not None:
+            actual_digest = compute_interval_store_content_sha256(path, metadata)
+            if actual_digest != content_digest:
+                raise ValueError("interval-store content digest does not match its arrays")
         below, above, draw_id = arrays["below"], arrays["above"], arrays["draw_id"]
         if np.any(~np.isfinite(below)) or np.any(~np.isfinite(above)):
             raise ValueError("interval endpoints must be finite")

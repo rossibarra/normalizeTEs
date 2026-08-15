@@ -21,8 +21,8 @@ for the reasons it still exists.
 Each usable mutation contributes a uniform age distribution between the age of
 its mutation node (`below`) and its parent node (`above`). For a TE dataset of
 size \(X\), `te_age_target.py` averages the \(X\) posterior CDFs and bootstraps
-the TE variants with replacement. The median bootstrap Wasserstein distance is the
-default maximum mismatch allowed for a control set.
+the TE variants with replacement. The median bootstrap Wasserstein distance is
+the default maximum mismatch allowed for a control set.
 
 `sample_age_matched_controls.py` first finds a set inside that threshold, then
 runs a constrained random swap walk. The construction state itself is not
@@ -86,8 +86,8 @@ The creation command is needed only once. Run the project tests with:
 python -m pytest -q tests test_snp_age_distribution.py
 ```
 
-One multiprocessing audit requires Linux `fork` and is expected to fail on
-macOS; production validation should run the suite on a Linux compute node.
+One multiprocessing audit requires Linux `fork` and is skipped on macOS;
+production validation should run the complete suite on a Linux compute node.
 
 For reproducible production runs, use an immutable tag or exact commit rather
 than a moving branch:
@@ -97,9 +97,11 @@ git fetch --tags
 git checkout COMMIT_HASH
 ```
 
-`v0.1.0` is the tagged q95 baseline. Version `0.2.0` uses the bootstrap median
-(q50), fixed accepted-swap sweeps, and the 10-chain distributed workflow.
-Release changes are summarized in [CHANGELOG.md](CHANGELOG.md).
+`v0.1.0` is the tagged q95 baseline. Version `0.2.0` introduced the bootstrap
+median (q50), fixed accepted-swap sweeps, and the 10-chain distributed
+workflow. Version `0.2.1` adds adaptive construction and stronger distributed
+integrity checks. Release changes are summarized in
+[CHANGELOG.md](CHANGELOG.md).
 
 ## 2. Build the compact all-SNP interval store
 
@@ -173,6 +175,12 @@ The production builder is single-worker. Its final merge is I/O-bound, so
 requesting more CPUs does not speed that phase. Keep the completed store
 immutable while target and matching jobs are running.
 
+Version 0.2.1 records a SHA-256 identity over every interval-store array plus
+the metadata needed to interpret it. Distributed matching requires this digest
+in both the interval store and target directory and rejects a mismatch. Rebuild
+stores and targets made by earlier versions before using the distributed
+workflow.
+
 ## 3. Prepare the TE datasets
 
 Use one position file per biological category. If a source file already
@@ -212,8 +220,10 @@ with an absolute Wasserstein limit in generations:
 python te_age_target.py ... --acceptance-distance 1500
 ```
 
-Bootstrap distances are still produced for context, while metadata records
-that the absolute distance supplied the operative threshold.
+Bootstrap distances are deliberately still produced for context, while
+metadata records that the absolute distance supplied the operative threshold.
+Thus `--acceptance-distance` changes the threshold but does not skip the
+bootstrap computation.
 
 For an interval store, target construction creates a temporary float32
 TE-by-age CDF matrix under `--scratch-dir`. At roughly 185,000 TEs and the
@@ -256,6 +266,14 @@ The defaults are:
 - 100 saved sets = 10 independent chains × 10 sets;
 - one accepted-swap sweep per set member during burn-in; and
 - one accepted-swap sweep per member between saved states.
+
+Construction starts on the coarse `--search-bin-width 20000` grid. If an epoch
+accepts no improving swaps while the exact distance is still too large, the
+sampler halves that width and recomputes construction state, stopping at the
+exact target-grid width. Three consecutive zero-acceptance epochs at exact
+resolution produce an explicit plateau error instead of wasting the remaining
+construction budget. Refinements are recorded in chain diagnostics; the
+matching threshold is never relaxed.
 
 The local CLI defaults to one worker to bound memory. Increase `--workers` only
 when the node can hold one exact selected-row CDF cache per active worker. The
@@ -313,6 +331,14 @@ in_gene	/quobyte/project/te/in_gene.pos.txt	/quobyte/project/targets/in_gene	/qu
 young	/quobyte/project/te/young.pos.txt	/quobyte/project/targets/young	/quobyte/project/matches/young	1003
 ```
 
+`positions` is the input chromosome/VCF-position text file. `target` is a
+durable **output directory**, not a single file: `build_age_targets.sbatch`
+creates it with the target CDF, exact age grid, bootstrap distances, resolved
+TE rows, threshold, store identity, and metadata. `output` is the separate
+durable directory where gather publishes the 100 matched control sets. Give
+every manifest row unique `target` and `output` directory paths; they must not
+already contain incomplete results.
+
 Target construction uses `build_age_targets.sbatch`. Matching uses two stages:
 `sample_age_matches.sbatch` runs one independently seeded chain per array task,
 and `gather_age_matches.sbatch` validates ten durable chain bundles before
@@ -357,8 +383,9 @@ so a shortened array cannot silently omit targets or chains. A chain task writes
 only one atomically published `OUTPUT.chains/chain-NNN.npz` bundle to Quobyte
 before its scratch directory disappears. Rerunning the array validates and
 skips existing complete bundles. The gather job refuses to publish until all ten
-bundles match the target, candidate universe, software provenance, and exact
-row-derived CDF checks.
+bundles match the target, candidate universe, full store-content identity,
+derived chain seeds, software provenance, and every exact row-derived CDF
+check. Concurrent duplicate chain tasks cannot overwrite an existing bundle.
 
 See [SWAP_SAMPLER_HPC_HOWTO.md](SWAP_SAMPLER_HPC_HOWTO.md) for the complete
 manifest rules, memory model, submission settings, restart behavior, output

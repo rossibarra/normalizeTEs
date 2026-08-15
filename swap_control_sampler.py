@@ -27,11 +27,12 @@ class SwapConfig:
     burnin_accepted_sweeps: float = 1.0
     sample_accepted_sweeps: float = 1.0
     max_construction_epochs: int = 50
+    max_exact_plateau_epochs: int = 3
     max_chain_proposals: int = 10_000_000
     cdf_block_rows: int = 256
     exact_check_accepted: int = 1_000
     progress_every: int = 100_000
-    algorithm_version: str = "swap-age-controls-v2-fixed-sweeps"
+    algorithm_version: str = "swap-age-controls-v2.1-adaptive-construction"
 
     def validate(self) -> None:
         if self.sets_per_chain <= 0:
@@ -42,7 +43,11 @@ class SwapConfig:
             raise ValueError("burn-in accepted sweeps must be positive")
         if self.sample_accepted_sweeps <= 0:
             raise ValueError("sample accepted sweeps must be positive")
-        if self.max_construction_epochs <= 0 or self.max_chain_proposals <= 0:
+        if (
+            self.max_construction_epochs <= 0
+            or self.max_exact_plateau_epochs <= 0
+            or self.max_chain_proposals <= 0
+        ):
             raise ValueError("proposal budgets must be positive")
         if self.exact_check_accepted <= 0 or self.progress_every <= 0:
             raise ValueError("progress intervals must be positive")
@@ -84,6 +89,17 @@ def incremental_cdf(current: np.ndarray, old: np.ndarray, new: np.ndarray,
     return np.asarray(current, dtype=np.float64) + (
         np.asarray(new, dtype=np.float64) - np.asarray(old, dtype=np.float64)
     ) / set_size
+
+
+def feasible_walk_accepts(
+    current_distance: float, trial_distance: float, threshold: float
+) -> bool:
+    """Accept any finite feasible trial, including an uphill move."""
+    return (
+        np.isfinite(current_distance)
+        and np.isfinite(trial_distance)
+        and trial_distance <= threshold
+    )
 
 
 def analysis_points(age_bins: np.ndarray) -> np.ndarray:
@@ -213,11 +229,20 @@ def run_chain(
         )
     exact_ages = np.asarray(age_bins, dtype=np.float64)
     exact_points = analysis_points(exact_ages)
+    exact_step = float(exact_ages[1] - exact_ages[0])
+    if not np.isclose(exact_step, round(exact_step), rtol=0, atol=1e-9):
+        raise ValueError("adaptive construction requires an integral exact grid width")
+    minimum_search_width = max(1, int(round(exact_step)))
+    if config.search_bin_width < minimum_search_width:
+        raise ValueError(
+            "search_bin_width cannot be finer than the exact target grid"
+        )
     target_cdf = np.asarray(target_cdf, dtype=np.float64)
     if target_cdf.shape != exact_ages.shape:
         raise ValueError("target CDF and age grid are incompatible")
     maximum = float(store.metadata["maximum_above"])
-    coarse_ages, coarse_points = search_grid(maximum, config.search_bin_width)
+    current_search_width = config.search_bin_width
+    coarse_ages, coarse_points = search_grid(maximum, current_search_width)
     target_search = aggregate_cdf(store, target_rows, coarse_points)
     seed = derive_chain_seed(global_seed, target_digest, chain_index,
                              config.algorithm_version)
@@ -229,6 +254,8 @@ def run_chain(
     exact_distance = np.inf
     total_proposals = total_accepted = duplicate_proposals = 0
     construction_history: list[dict[str, Any]] = []
+    search_refinements: list[dict[str, int]] = []
+    exact_plateau_epochs = 0
 
     for epoch in range(1, config.max_construction_epochs + 1):
         slots = rng.permutation(n)
@@ -274,10 +301,32 @@ def run_chain(
         if not reached_threshold:
             exact = aggregate_cdf(store, selected, exact_points)
             exact_distance = _w1(exact, target_cdf, exact_ages)
+        refined_to = None
+        plateau_failure = False
+        if epoch_accepted == 0 and exact_distance > threshold:
+            if current_search_width > minimum_search_width:
+                refined_to = max(
+                    minimum_search_width, current_search_width // 2
+                )
+                search_refinements.append({
+                    "epoch": epoch,
+                    "from_width": current_search_width,
+                    "to_width": refined_to,
+                })
+                exact_plateau_epochs = 0
+            else:
+                exact_plateau_epochs += 1
+                plateau_failure = (
+                    exact_plateau_epochs >= config.max_exact_plateau_epochs
+                )
+        else:
+            exact_plateau_epochs = 0
         record = {
             "epoch": epoch,
             "proposals": epoch_proposals,
             "accepted_swaps": epoch_accepted,
+            "search_bin_width": current_search_width,
+            "refined_to_search_bin_width": refined_to,
             "coarse_wasserstein": current_distance,
             "exact_wasserstein": exact_distance,
         }
@@ -290,11 +339,31 @@ def run_chain(
                                payload={"chain_index": chain_index, **record})
         if reached_threshold or exact_distance <= threshold:
             break
+        if refined_to is not None:
+            emit(
+                f"chain={chain_index} construction plateau; refining search "
+                f"grid from {current_search_width} to {refined_to} generations"
+            )
+            current_search_width = refined_to
+            coarse_ages, coarse_points = search_grid(
+                maximum, current_search_width
+            )
+            target_search = aggregate_cdf(store, target_rows, coarse_points)
+            current_search = aggregate_cdf(store, selected, coarse_points)
+        elif plateau_failure:
+            raise SwapSamplingError(
+                f"chain {chain_index} construction plateaued for "
+                f"{exact_plateau_epochs} epochs at the exact "
+                f"{current_search_width}-generation search grid; "
+                f"W1={exact_distance:.6g}, threshold={threshold:.6g}, "
+                f"seed={seed}"
+            )
     else:
         raise SwapSamplingError(
             f"chain {chain_index} did not reach threshold after "
             f"{config.max_construction_epochs} epochs; best W1={exact_distance:.6g}, "
-            f"threshold={threshold:.6g}"
+            f"threshold={threshold:.6g}, final search grid="
+            f"{current_search_width} generations, seed={seed}"
         )
 
     entry = selected.copy()
@@ -342,7 +411,9 @@ def run_chain(
             trial_distance = _w1(trial, target_cdf, exact_ages)
             phase_proposals += 1
             walk_proposals += 1
-            if trial_distance <= walk_threshold:
+            if feasible_walk_accepts(
+                exact_distance, trial_distance, walk_threshold
+            ):
                 selected_set.remove(old)
                 selected_set.add(new)
                 if old in reference_set:
@@ -416,6 +487,8 @@ def run_chain(
         "duplicate_proposals": duplicate_proposals,
         "entry_wasserstein": construction_history[-1]["exact_wasserstein"],
         "history": construction_history,
+        "search_refinements": search_refinements,
+        "final_search_bin_width": current_search_width,
         "walk_proposals": walk_proposals,
         "walk_accepted_swaps": walk_accepted,
         "walk_duplicate_redraws": walk_duplicates,

@@ -22,13 +22,17 @@ conda activate normalizeTE
 python -m pytest -q tests test_snp_age_distribution.py
 ```
 
-One interval-store audit test requires Linux `fork` and fails deliberately on
-macOS when asked to use two workers. Run production validation on a Linux
-compute node.
+One interval-store audit test requires Linux `fork` and is skipped on macOS.
+Run production validation on a Linux compute node.
 
 Pin an exact commit or immutable release tag and require a clean checkout. The
 canonical interval store must already be complete and validated; never modify
 it while target or chain jobs are running.
+
+Distributed version-0.2.1 runs require an interval store and targets built with
+the full `content_sha256` store identity. Rebuild older stores and targets;
+the position-only catalog digest is not sufficient to distinguish ARG-age
+contents.
 
 Every TE file is whitespace-delimited chromosome plus 1-based VCF position:
 
@@ -69,6 +73,12 @@ gather tasks = T
 
 Flat chain task `k` maps to manifest row `k // 10` and chain `k % 10`.
 
+`positions` is an input text file. `target` is the durable output directory
+created by target construction; it contains the target CDF, exact age grid,
+bootstrap distances, resolved TE rows, threshold, store identity, and metadata.
+`output` is a different durable directory where gather publishes the 100
+matched sets. Neither directory field denotes a single file.
+
 ## 3. Resource model
 
 ### Target jobs
@@ -91,8 +101,8 @@ copies across nodes but never creates multiple permanent stores.
 
 ### Gather jobs
 
-Gathering stages the store once more so it can independently recompute one CDF
-from the saved row indices in every chain. It assembles the final directory
+Gathering stages the store once more so it can independently recompute all ten
+CDFs from the saved row indices in every chain. It assembles the final directory
 under `$TMPDIR`, copies the complete result to a temporary sibling on Quobyte,
 checks `metadata.json` for `complete: true`, and exposes it with a same-filesystem
 atomic rename.
@@ -137,8 +147,8 @@ export ACCEPTANCE_DISTANCE=1500
 ```
 
 An absolute distance overrides the bootstrap quantile as the threshold, but the
-bootstrap distribution is still saved. Never reuse a target output path across
-tolerances.
+full bootstrap is deliberately still computed and saved for context. Never
+reuse a target output path across tolerances.
 
 Target resolution defaults to `error`. Set `MISSING_POSITION_POLICY=drop` only
 when every exclusion in target `metadata.json` will be reviewed.
@@ -166,19 +176,28 @@ Each task:
 1. verifies the declared array size;
 2. stages the canonical store to `$TMPDIR/interval_store`;
 3. constructs and runs exactly one deterministic chain under `$TMPDIR`;
-4. performs one fixed accepted-swap sweep per target member before the first
+4. adaptively halves a plateaued coarse construction grid down to exact
+   target-grid resolution without relaxing the threshold;
+5. performs one fixed accepted-swap sweep per target member before the first
    save and between later saves;
-5. validates row eligibility, target exclusion, uniqueness, stored distances,
-   and a row-derived CDF;
-6. writes one complete local compressed bundle; and
-7. atomically copies and reloads that bundle at
+6. validates row eligibility, target exclusion, uniqueness, the derived chain
+   seed, stored distances, and every row-derived CDF;
+7. writes one complete local compressed bundle; and
+8. atomically publishes without overwrite and reloads that bundle at
    `OUTPUT.chains/chain-NNN.npz` before deleting scratch work.
 
 A killed chain has no completed durable bundle and restarts from its deterministic
 seed. A rerun with an existing bundle validates its schema, parameters, target
-digest, candidate digest, store catalog, software provenance, rows, and CDF
-before skipping it. Local checkpoints are diagnostic only and are not expected
-to survive job termination.
+digest, candidate digest, full store-content identity, derived seed, software
+provenance, rows, and all CDFs before skipping it. Local checkpoints are
+diagnostic only and are not expected to survive job termination.
+
+Construction begins at `--search-bin-width 20000`. A zero-acceptance epoch
+above the exact threshold halves the grid width and recomputes the construction
+CDFs. Refinement stops at the exact target-grid width; three consecutive
+zero-acceptance epochs there fail with a labeled plateau error. The refinement
+history is retained in each bundle, and the acceptance threshold is never
+changed automatically.
 
 The walk uses fixed accepted-swap counts rather than stopping the first time a
 membership-replacement threshold is crossed. Replacement fractions are
@@ -255,9 +274,10 @@ Final metadata must contain:
 {"schema_version": "swap-age-matched-controls-v1", "complete": true}
 ```
 
-The schema describes the directory layout; the embedded sampler config records
-the version-2 fixed-sweep algorithm. Before downstream analysis, require the
-expected Git commit and reject `git_dirty: true`.
+The schema describes the unchanged directory layout. Top-level
+`algorithm_version` and the embedded sampler config identify the version-2.1
+adaptive-construction, fixed-sweep algorithm. Before downstream analysis,
+require the expected Git commit and reject `git_dirty: true`.
 
 ## 9. Using the matched sets
 
@@ -291,25 +311,29 @@ Before launching every category on the 75-draw store:
 4. compare chain-level summaries for evidence of disconnected feasible regions;
 5. record chain and gather `MaxRSS`, elapsed time, staged-store size, acceptance
    rate, and proposals per accepted sweep;
-6. re-measure q50 feasibility on the complete 75-draw store; and
-7. adjust memory, time, and array concurrency from those measurements.
+6. inspect construction refinement histories and investigate any exact-grid
+   plateau, especially for the smallest target;
+7. re-measure q50 feasibility on the complete 75-draw store; and
+8. adjust memory, time, and array concurrency from those measurements.
 
-### Two-draw fixed-sweep pilot
+### Two-draw version-2.1 pilot
 
-The 4,061-SNP in-gene target was rerun locally with the version-2 defaults:
+The 4,061-SNP in-gene target was rerun locally with the version-2.1 defaults:
 ten independently seeded chains, ten saved states per chain, one accepted-swap
 sweep for burn-in, and one sweep between saves. All ten durable bundles passed
-reload and row-derived CDF validation, and gather published all 100 sets.
+reload, derived-seed, store-content, and all-set row-derived CDF validation;
+gather published all 100 sets.
 
 - q50 threshold: 1,905.10 generations;
-- matched-set W1: 1,761.08--1,904.94, median 1,881.25;
-- mean adjacent membership replacement: 0.6089--0.6115 by chain;
-- W1 lag-one correlation: -0.519--0.081 by chain;
-- membership-overlap AR(1) ESS heuristic: 43.9 total;
-- 260,354 unique controls across the 100 sets, with maximum reuse 13.
+- matched-set W1: 1,755.83--1,904.84, median 1,883.62;
+- mean adjacent membership replacement: 0.6085--0.6136 by chain;
+- membership-overlap AR(1) ESS heuristic: 43.92 total;
+- 260,258 unique controls across the 100 sets, with maximum reuse 14; and
+- construction refinements: zero for all ten chains.
 
 Each correlation estimate has only nine adjacent pairs and the ESS is an
 explicitly crude membership heuristic. This pilot shows that the distributed
 fixed-sweep implementation works on the available two-draw store; it does not
 establish mixing for a scientific downstream statistic or for the 75-draw
-store. Treat the full-store gates above as required before production claims.
+store. A deterministic synthetic regression separately confirms recovery from
+a coarse-grid plateau; the full-store small-target gate remains required.

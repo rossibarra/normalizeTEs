@@ -12,6 +12,7 @@ import os
 import shutil
 import sys
 import time
+import uuid
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Sequence
@@ -25,6 +26,7 @@ from swap_control_sampler import (
     SwapConfig,
     aggregate_cdf,
     analysis_points,
+    derive_chain_seed,
     run_chain,
 )
 from te_age_target import wasserstein_1
@@ -146,29 +148,28 @@ def _load_chain_bundle(path: Path) -> tuple[ChainOutput, dict[str, Any]]:
 
 
 def _atomic_copy_file(source: Path, destination: Path) -> None:
-    """Copy one completed file and expose it with a same-filesystem rename."""
+    """Copy and atomically publish one file without replacing existing data."""
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(
-        f".{destination.name}.publish.{os.getpid()}"
+        f".{destination.name}.publish.{uuid.uuid4().hex}"
     )
-    if temporary.exists():
-        raise FileExistsError(f"publication staging path already exists: {temporary}")
     try:
         shutil.copy2(source, temporary)
-        os.replace(temporary, destination)
+        # The hard-link claim is atomic and fails if another task has already
+        # published this chain. Both paths are siblings on the same filesystem.
+        os.link(temporary, destination)
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
+    temporary.unlink()
 
 
 def _publish_directory(source: Path, destination: Path) -> None:
     """Copy a complete scratch directory and atomically publish it."""
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(
-        f".{destination.name}.publish.{os.getpid()}"
+        f".{destination.name}.publish.{uuid.uuid4().hex}"
     )
-    if temporary.exists():
-        raise FileExistsError(f"publication staging path already exists: {temporary}")
     try:
         shutil.copytree(source, temporary)
         metadata = json.loads(
@@ -301,10 +302,16 @@ def _validate_chain_result(
     age_bins: np.ndarray,
     threshold: float,
     candidate_rows: np.ndarray | None,
+    expected_seed: int,
 ) -> None:
     if result.chain_index != chain_index:
         raise ValueError(
             f"chain bundle index {result.chain_index} does not match {chain_index}"
+        )
+    if result.seed != expected_seed:
+        raise ValueError(
+            f"chain {chain_index} seed {result.seed} does not match derived "
+            f"seed {expected_seed}"
         )
     expected_rows = (sets_per_chain, target_rows.size)
     expected_cdfs = (sets_per_chain, age_bins.size)
@@ -349,11 +356,16 @@ def _validate_chain_result(
     if np.any(recalculated > threshold):
         raise ValueError(f"chain {chain_index} exceeds the target threshold")
 
-    recomputed = aggregate_cdf(store, rows[0], analysis_points(age_bins))
-    if not np.allclose(result.cdfs[0], recomputed, rtol=1e-9, atol=1e-10):
-        raise ValueError(
-            f"chain {chain_index} stored CDF does not match its row indices"
-        )
+    points = analysis_points(age_bins)
+    for sample_index, (selected, stored_cdf) in enumerate(
+        zip(rows, result.cdfs, strict=True)
+    ):
+        recomputed = aggregate_cdf(store, selected, points)
+        if not np.allclose(stored_cdf, recomputed, rtol=1e-9, atol=1e-10):
+            raise ValueError(
+                f"chain {chain_index} sample {sample_index} stored CDF does "
+                "not match its row indices"
+            )
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -378,6 +390,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--burnin-accepted-sweeps", type=float, default=1.0)
     parser.add_argument("--sample-accepted-sweeps", type=float, default=1.0)
     parser.add_argument("--max-construction-epochs", type=int, default=50)
+    parser.add_argument("--max-exact-plateau-epochs", type=int, default=3)
     parser.add_argument("--max-chain-proposals", type=int, default=10_000_000)
     parser.add_argument("--cdf-block-rows", type=int, default=256)
     parser.add_argument("--exact-check-accepted", type=int, default=1_000)
@@ -408,6 +421,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     actual_catalog = getattr(store, "metadata", {}).get("catalog_sha256")
     if expected_catalog is not None and expected_catalog != actual_catalog:
         raise ValueError("target and interval store catalogs do not match")
+    expected_content = target_meta.get("source_store_content_sha256")
+    actual_content = getattr(store, "metadata", {}).get("content_sha256")
+    if expected_content is not None and expected_content != actual_content:
+        raise ValueError("target and interval store contents do not match")
     candidate_values = None
     if args.candidate_rows is not None:
         raw = np.load(args.candidate_rows, mmap_mode="r", allow_pickle=False)
@@ -420,6 +437,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         burnin_accepted_sweeps=args.burnin_accepted_sweeps,
         sample_accepted_sweeps=args.sample_accepted_sweeps,
         max_construction_epochs=args.max_construction_epochs,
+        max_exact_plateau_epochs=args.max_exact_plateau_epochs,
         max_chain_proposals=args.max_chain_proposals,
         cdf_block_rows=args.cdf_block_rows,
         exact_check_accepted=args.exact_check_accepted,
@@ -461,6 +479,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     run_identity = {
         "source_store_schema": store_schema(store),
         "source_catalog_sha256": actual_catalog,
+        "source_store_content_sha256": actual_content,
         "target_digest": target_digest,
         "candidate_rows_digest": candidate_digest,
         "software": software,
@@ -545,6 +564,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 age_bins=age_bins,
                 threshold=threshold,
                 candidate_rows=candidate_values,
+                expected_seed=derive_chain_seed(
+                    args.seed,
+                    target_digest,
+                    result.chain_index,
+                    config.algorithm_version,
+                ),
             )
         metadata = {
             "software": software,
@@ -552,6 +577,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "source_store": str(args.store.resolve()),
             "source_store_schema": store_schema(store),
             "source_catalog_sha256": actual_catalog,
+            "source_store_content_sha256": actual_content,
             "target": str(args.target.resolve()),
             "target_digest": target_digest,
             "target_metadata": target_meta,
@@ -563,6 +589,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "chains": args.chains,
             "sets_per_chain": args.sets_per_chain,
             "workers": args.workers,
+            "algorithm_version": config.algorithm_version,
             "config": asdict(config),
             "elapsed_seconds": time.perf_counter() - started,
             "numpy_version": np.__version__,

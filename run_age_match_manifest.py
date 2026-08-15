@@ -147,6 +147,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--burnin-accepted-sweeps", type=float, default=1.0)
     parser.add_argument("--sample-accepted-sweeps", type=float, default=1.0)
     parser.add_argument("--max-construction-epochs", type=int, default=50)
+    parser.add_argument("--max-exact-plateau-epochs", type=int, default=3)
     parser.add_argument("--max-chain-proposals", type=int, default=10_000_000)
     parser.add_argument("--keep-checkpoints", action="store_true")
     parser.add_argument("--resume", action="store_true")
@@ -239,6 +240,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "--burnin-accepted-sweeps", str(args.burnin_accepted_sweeps),
                 "--sample-accepted-sweeps", str(args.sample_accepted_sweeps),
                 "--max-construction-epochs", str(args.max_construction_epochs),
+                "--max-exact-plateau-epochs", str(args.max_exact_plateau_epochs),
                 "--max-chain-proposals", str(args.max_chain_proposals),
                 "--cdf-block-rows", str(args.cdf_block_rows),
             ]
@@ -273,6 +275,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "--burnin-accepted-sweeps", str(args.burnin_accepted_sweeps),
                 "--sample-accepted-sweeps", str(args.sample_accepted_sweeps),
                 "--max-construction-epochs", str(args.max_construction_epochs),
+                "--max-exact-plateau-epochs", str(args.max_exact_plateau_epochs),
                 "--max-chain-proposals", str(args.max_chain_proposals),
                 "--cdf-block-rows", str(args.cdf_block_rows),
                 "--resume",
@@ -299,6 +302,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "--burnin-accepted-sweeps", str(args.burnin_accepted_sweeps),
                 "--sample-accepted-sweeps", str(args.sample_accepted_sweeps),
                 "--max-construction-epochs", str(args.max_construction_epochs),
+                "--max-exact-plateau-epochs", str(args.max_exact_plateau_epochs),
                 "--max-chain-proposals", str(args.max_chain_proposals),
                 "--cdf-block-rows", str(args.cdf_block_rows),
             ]

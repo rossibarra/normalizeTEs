@@ -400,6 +400,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "source_store": str(args.store.resolve()),
         "source_store_schema": store_schema(store),
         "source_catalog_sha256": getattr(store, "metadata", {}).get("catalog_sha256"),
+        "source_store_content_sha256": getattr(
+            store, "metadata", {}
+        ).get("content_sha256"),
         "te_position_source": str(args.te_positions.resolve()),
         "n_te_snps": int(positions.size),
         "effective_te_set_size": int(positions.size),
