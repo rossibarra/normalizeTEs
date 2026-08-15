@@ -22,26 +22,26 @@ class SwapSamplingError(RuntimeError):
 
 @dataclass(frozen=True)
 class SwapConfig:
-    sets_per_chain: int = 25
+    sets_per_chain: int = 10
     search_bin_width: int = 20_000
-    burnin_replacement_fraction: float = 0.50
-    sample_replacement_fraction: float = 0.25
+    burnin_accepted_sweeps: float = 1.0
+    sample_accepted_sweeps: float = 1.0
     max_construction_epochs: int = 50
     max_chain_proposals: int = 10_000_000
     cdf_block_rows: int = 256
     exact_check_accepted: int = 1_000
     progress_every: int = 100_000
-    algorithm_version: str = "swap-age-controls-v1"
+    algorithm_version: str = "swap-age-controls-v2-fixed-sweeps"
 
     def validate(self) -> None:
         if self.sets_per_chain <= 0:
             raise ValueError("sets_per_chain must be positive")
         if self.search_bin_width <= 0 or self.cdf_block_rows <= 0:
             raise ValueError("grid width and CDF block rows must be positive")
-        if not 0 < self.burnin_replacement_fraction <= 1:
-            raise ValueError("burn-in replacement fraction must be in (0, 1]")
-        if not 0 < self.sample_replacement_fraction <= 1:
-            raise ValueError("sample replacement fraction must be in (0, 1]")
+        if self.burnin_accepted_sweeps <= 0:
+            raise ValueError("burn-in accepted sweeps must be positive")
+        if self.sample_accepted_sweeps <= 0:
+            raise ValueError("sample accepted sweeps must be positive")
         if self.max_construction_epochs <= 0 or self.max_chain_proposals <= 0:
             raise ValueError("proposal budgets must be positive")
         if self.exact_check_accepted <= 0 or self.progress_every <= 0:
@@ -207,8 +207,10 @@ def run_chain(
     if n == 0 or np.unique(target_rows).size != n:
         raise ValueError("target rows must be nonempty and unique")
     candidates = eligible_candidates(store, target_rows, candidate_rows)
-    if candidates.size < n:
-        raise SwapSamplingError("candidate universe is smaller than the target set")
+    if candidates.size <= n:
+        raise SwapSamplingError(
+            "candidate universe must contain more rows than the target set"
+        )
     exact_ages = np.asarray(age_bins, dtype=np.float64)
     exact_points = analysis_points(exact_ages)
     target_cdf = np.asarray(target_cdf, dtype=np.float64)
@@ -311,11 +313,17 @@ def run_chain(
     saved_distances: list[float] = []
     walk_proposals = walk_accepted = walk_duplicates = 0
 
-    def advance(reference: np.ndarray, required: float, phase: str) -> dict[str, Any]:
+    numerical_margin = max(1e-6, abs(threshold) * 1e-12)
+    walk_threshold = max(0.0, threshold - numerical_margin)
+
+    def advance(reference: np.ndarray, sweeps: float, phase: str) -> dict[str, Any]:
         nonlocal current_exact, exact_distance, walk_proposals, walk_accepted
         nonlocal walk_duplicates
         phase_proposals = phase_accepted = phase_duplicates = 0
-        while replacement_fraction(selected, reference) < required:
+        required_accepted = max(1, int(np.ceil(sweeps * n)))
+        reference_set = set(map(int, reference))
+        shared_with_reference = sum(row in reference_set for row in selected_set)
+        while phase_accepted < required_accepted:
             if walk_proposals >= config.max_chain_proposals:
                 raise SwapSamplingError(
                     f"chain {chain_index} exceeded {config.max_chain_proposals} "
@@ -334,9 +342,13 @@ def run_chain(
             trial_distance = _w1(trial, target_cdf, exact_ages)
             phase_proposals += 1
             walk_proposals += 1
-            if trial_distance <= threshold:
+            if trial_distance <= walk_threshold:
                 selected_set.remove(old)
                 selected_set.add(new)
+                if old in reference_set:
+                    shared_with_reference -= 1
+                if new in reference_set:
+                    shared_with_reference += 1
                 selected[slot] = new
                 exact_cache[slot] = new_cdf
                 current_exact = trial
@@ -346,21 +358,23 @@ def run_chain(
             if walk_proposals % config.progress_every == 0:
                 emit(f"chain={chain_index} phase={phase} proposals={walk_proposals} "
                      f"accepted={walk_accepted} replacement="
-                     f"{replacement_fraction(selected, reference):.4f}")
+                     f"{1.0 - shared_with_reference / n:.4f}")
         return {
             "phase": phase,
             "proposals": phase_proposals,
             "accepted_swaps": phase_accepted,
+            "required_accepted_swaps": required_accepted,
+            "accepted_sweeps": phase_accepted / n,
             "duplicate_redraws": phase_duplicates,
-            "replacement_fraction": replacement_fraction(selected, reference),
+            "replacement_fraction": 1.0 - shared_with_reference / n,
             "wasserstein": exact_distance,
         }
 
-    diagnostics.append(advance(entry, config.burnin_replacement_fraction, "burnin"))
+    diagnostics.append(advance(entry, config.burnin_accepted_sweeps, "burnin"))
     for sample_index in range(config.sets_per_chain):
         if sample_index:
             diagnostics.append(advance(
-                saved_rows[-1], config.sample_replacement_fraction, "thinning"
+                saved_rows[-1], config.sample_accepted_sweeps, "thinning"
             ))
         certified = aggregate_cdf(store, selected, exact_points)
         certified_distance = _w1(certified, target_cdf, exact_ages)
@@ -368,6 +382,8 @@ def run_chain(
             raise SwapSamplingError(
                 f"chain {chain_index} sample {sample_index} failed exact certification"
             )
+        current_exact = certified
+        exact_distance = certified_distance
         saved_rows.append(selected.copy())
         saved_cdfs.append(certified)
         saved_distances.append(certified_distance)

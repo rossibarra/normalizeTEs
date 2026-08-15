@@ -1,15 +1,14 @@
 # Swap-chain age matching on Farm/Quobyte
 
-This guide runs many independent TE datasets and produces 100 posterior-age
-matched SNP sets for each dataset. The defaults are four independent chains,
-25 saved sets per chain, 50% membership replacement during burn-in, and 25%
-replacement between saved states.
+This runbook produces 100 posterior-age-matched SNP sets for every TE dataset.
+The production layout is ten independently seeded chains with ten saved states
+per chain. Each chain is a separate one-CPU SLURM array task; no node holds all
+ten chain caches.
 
-The interval store and final targets/results live on Quobyte. Each SLURM array
-task copies the interval store once to its job-local `$TMPDIR` under
-`/local/scratch`, processes several manifest rows, and writes only durable
-targets/results back to Quobyte. Do not use `$SLURM_TMPDIR`; it is not set on
-Farm.
+Quobyte holds one canonical interval store, target directories, completed chain
+bundles, and final results. Every active store copy, checkpoint, CDF cache, and
+result-assembly directory lives under the job's `$TMPDIR` on `/local/scratch`.
+Do not use `$SLURM_TMPDIR`; Farm does not set it.
 
 ## 1. Preconditions
 
@@ -20,19 +19,18 @@ git fetch --tags
 git checkout COMMIT_HASH
 conda env create -f environment.yml       # once
 conda activate normalizeTE
-python -m pytest -q tests
+python -m pytest -q tests test_snp_age_distribution.py
 ```
 
-Pin an exact commit or immutable tag for production rather than a moving
-`main`. `v0.1.0` is the q95 baseline; the q50 default is a follow-up commit and
-therefore must be pinned by its commit hash. Do not run with a dirty checkout
-and treat it as a tagged release.
+One interval-store audit test requires Linux `fork` and fails deliberately on
+macOS when asked to use two workers. Run production validation on a Linux
+compute node.
 
-The canonical interval store must already be complete and validated. Never
-modify it while matching jobs are running.
+Pin an exact commit or immutable release tag and require a clean checkout. The
+canonical interval store must already be complete and validated; never modify
+it while target or chain jobs are running.
 
-Every TE position file is whitespace-delimited with chromosome and 1-based
-position columns:
+Every TE file is whitespace-delimited chromosome plus 1-based VCF position:
 
 ```text
 1 57396
@@ -42,8 +40,7 @@ position columns:
 
 ## 2. Create the manifest
 
-Create one tab-delimited manifest on Quobyte. Paths should be absolute so array
-tasks do not depend on their launch directory:
+Create one tab-delimited manifest on Quobyte with absolute paths:
 
 ```text
 label	positions	target	output	seed
@@ -54,46 +51,59 @@ young	/quobyte/project/te/young.pos.txt	/quobyte/project/targets/young	/quobyte/
 
 Requirements:
 
-- labels are unique, begin with a letter or digit, and otherwise contain only
-  letters, digits, dots, dashes, or underscores;
-- every target and output path is unique;
-- targets and outputs must be unique; complete existing outputs are skipped,
-  while ambiguous or incomplete existing outputs stop the task;
-- seed is an integer; and
-- position, target, and output paths point to Quobyte, not node-local scratch.
+- labels are unique and contain only letters, digits, dots, dashes, and
+  underscores;
+- every target and final output path is unique;
+- seed is an integer and unique seeds are recommended across targets;
+- position, target, and output paths are durable Quobyte paths; and
+- a complete existing output is skipped, while an incomplete or incompatible
+  output stops the task.
 
-The runner assigns row `i` to array task `i % AGE_MATCH_TASK_COUNT`. Each task
-therefore stages the interval store once and then handles its rows sequentially.
+Let `T` be the number of non-header manifest rows. With the defaults:
 
-## 3. Choose array width and resources
+```text
+target tasks = T
+chain tasks  = 10 * T
+gather tasks = T
+```
 
-There are two levels of parallelism:
+Flat chain task `k` maps to manifest row `k // 10` and chain `k % 10`.
 
-1. SLURM array tasks process independent manifest shards in parallel.
-2. A sampling task uses four worker processes so its four chains run in
-   parallel.
+## 3. Resource model
 
-Start conservatively with 5–10 array tasks. Each sampling task requests four
-CPUs and 96 GiB RAM. Increase array width only after measuring Quobyte staging
-load and scheduler behavior. More than four CPUs per sampling task does not
-help the default four-chain workflow.
+### Target jobs
 
-For a target of size `n` and exact grid length `B`, each chain's selected-row
-float64 CDF cache is approximately `8*n*B` bytes. At `n=35,000` and `B=22,000`,
-this is about 5.7 GiB per chain, or 23 GiB across four workers, plus interval
-store pages, transient blocks, Python processes, and output arrays. The 96 GiB
-starting request is intentionally conservative and must be replaced by measured
-production RSS.
+Target construction stages the interval store and creates a temporary float32
+TE-by-age CDF matrix under `$TMPDIR`. For about 185,000 TEs at the measured age
+range, allow roughly 16--18 GiB beyond the staged store. The supplied launcher
+starts at one CPU and 96 GiB.
 
-Node-local scratch must hold the complete staged interval store plus at least
-20%. The supplied scripts abort before copying when this check fails.
+### Chain jobs
+
+One chain keeps a selected-row float64 CDF cache of approximately
+`8 * n * B` bytes for target size `n` and exact grid length `B`. At `n=35,000`
+and `B=22,000`, this is about 5.7 GiB. Each chain task requests one CPU and 32
+GiB; replace that provisional request with measured Linux `MaxRSS`.
+
+Ten chain tasks may run on different nodes. Each stages the same immutable
+interval store into its own `$TMPDIR/interval_store`. This duplicates temporary
+copies across nodes but never creates multiple permanent stores.
+
+### Gather jobs
+
+Gathering stages the store once more so it can independently recompute one CDF
+from the saved row indices in every chain. It assembles the final directory
+under `$TMPDIR`, copies the complete result to a temporary sibling on Quobyte,
+checks `metadata.json` for `complete: true`, and exposes it with a same-filesystem
+atomic rename.
+
+Node-local scratch must hold the complete staged store plus at least 20%. Every
+launcher checks free space before `rsync`.
 
 ## 4. Build target distributions
 
-Edit the `#SBATCH --array` range in `build_age_targets.sbatch` so it contains
-exactly `AGE_MATCH_TASK_COUNT` elements. For ten tasks use `0-9`.
-
-Submit from a login node:
+Set the `#SBATCH --array` range in `build_age_targets.sbatch` to exactly `T`
+elements. For ten targets use `0-9`.
 
 ```bash
 mkdir -p /quobyte/project/normalizeTE/logs
@@ -101,65 +111,105 @@ mkdir -p /quobyte/project/normalizeTE/logs
 export PROJECT=/quobyte/project/normalizeTE
 export STORE=/quobyte/project/data/snp_interval_store
 export MANIFEST=/quobyte/project/manifests/te_manifest.tsv
-export AGE_MATCH_TASK_COUNT=10
+export T=3  # number of non-header manifest rows in this example
+export AGE_MATCH_TASK_COUNT=$T
 
-sbatch --export=ALL,PROJECT,STORE,MANIFEST,AGE_MATCH_TASK_COUNT \
-  build_age_targets.sbatch
+target_job=$(sbatch --parsable \
+  --export=ALL,PROJECT,STORE,MANIFEST,AGE_MATCH_TASK_COUNT \
+  build_age_targets.sbatch)
 ```
 
-Each manifest row runs `te_age_target.py` with 10,000 bootstrap replicates.
-Temporary target CDF matrices go under `$TMPDIR`; complete target directories
-publish atomically to their Quobyte paths.
+Every target uses 10,000 bootstrap replicates and the bootstrap median by
+default. The threshold is the operative matching-quality specification: the
+feasible walk does not prefer a smaller W1 once a proposal remains inside it,
+so saved distances normally concentrate near the boundary.
 
-Target resolution defaults to `error` if any requested position is absent or
-ineligible. To retain only eligible positions and record every exclusion, add
-`MISSING_POSITION_POLICY=drop` to the exported submission variables. Do not use
-`drop` without reviewing `position_resolution` and `excluded_positions` in the
-target metadata.
-
-The acceptance threshold defaults to the bootstrap median
-(`ACCEPTANCE_QUANTILE=0.50`). Set a different quantile only for an explicitly
-labeled sensitivity analysis, and never reuse a target path across quantiles.
-
-Check the array before sampling:
+For a labeled quantile sensitivity analysis:
 
 ```bash
-squeue -u "$USER"
-sacct -j JOB_ID --format=JobID,State,Elapsed,MaxRSS,ExitCode
-find /quobyte/project/targets -name metadata.json -print | wc -l
+export ACCEPTANCE_QUANTILE=0.95
 ```
 
-Do not submit matching jobs for missing or incomplete targets.
-
-## 5. Generate 100 matched sets per target
-
-After all target jobs succeed:
+For a pre-specified absolute Wasserstein tolerance in generations:
 
 ```bash
-export PROJECT=/quobyte/project/normalizeTE
-export STORE=/quobyte/project/data/snp_interval_store
-export MANIFEST=/quobyte/project/manifests/te_manifest.tsv
-export AGE_MATCH_TASK_COUNT=10
-
-sbatch --export=ALL,PROJECT,STORE,MANIFEST,AGE_MATCH_TASK_COUNT \
-  sample_age_matches.sbatch
+export ACCEPTANCE_DISTANCE=1500
 ```
 
-Every target runs:
+An absolute distance overrides the bootstrap quantile as the threshold, but the
+bootstrap distribution is still saved. Never reuse a target output path across
+tolerances.
 
-```text
-100 sets = 4 independent chains * 25 saved sets
-burn-in replacement = 50%
-between-sample replacement = 25%
+Target resolution defaults to `error`. Set `MISSING_POSITION_POLICY=drop` only
+when every exclusion in target `metadata.json` will be reviewed.
+
+The launcher verifies `SLURM_ARRAY_TASK_COUNT == AGE_MATCH_TASK_COUNT`; a short
+array cannot silently omit manifest rows.
+
+## 5. Run ten independent chains per target
+
+Wait for every target to complete. Set `sample_age_matches.sbatch` to exactly
+`10*T` array elements (`0-29` for three targets), then submit:
+
+```bash
+export AGE_MATCH_CHAINS=10
+export AGE_MATCH_SETS_PER_CHAIN=10
+export AGE_MATCH_CHAIN_TASK_COUNT=$((AGE_MATCH_CHAINS * T))
+
+chain_job=$(sbatch --parsable --dependency="afterok:${target_job}" \
+  --export=ALL,PROJECT,STORE,MANIFEST,AGE_MATCH_CHAINS,AGE_MATCH_SETS_PER_CHAIN,AGE_MATCH_CHAIN_TASK_COUNT \
+  sample_age_matches.sbatch)
 ```
 
-The greedy first-passage set is not one of the 100 outputs. Every saved set is
-scored on the exact 1,000-generation grid and final publication fails if any
-set exceeds the target's bootstrap threshold or contains duplicate controls.
+Each task:
 
-## 6. Single-target command
+1. verifies the declared array size;
+2. stages the canonical store to `$TMPDIR/interval_store`;
+3. constructs and runs exactly one deterministic chain under `$TMPDIR`;
+4. performs one fixed accepted-swap sweep per target member before the first
+   save and between later saves;
+5. validates row eligibility, target exclusion, uniqueness, stored distances,
+   and a row-derived CDF;
+6. writes one complete local compressed bundle; and
+7. atomically copies and reloads that bundle at
+   `OUTPUT.chains/chain-NNN.npz` before deleting scratch work.
 
-For debugging or an isolated category:
+A killed chain has no completed durable bundle and restarts from its deterministic
+seed. A rerun with an existing bundle validates its schema, parameters, target
+digest, candidate digest, store catalog, software provenance, rows, and CDF
+before skipping it. Local checkpoints are diagnostic only and are not expected
+to survive job termination.
+
+The walk uses fixed accepted-swap counts rather than stopping the first time a
+membership-replacement threshold is crossed. Replacement fractions are
+reported diagnostics. This removes a path-dependent save rule and avoids an
+`O(n log n)` set intersection on every proposal.
+
+## 6. Gather and publish the 100 sets
+
+Set `gather_age_matches.sbatch` to exactly `T` array elements and submit it with
+an `afterok` dependency on the chain array:
+
+```bash
+export AGE_MATCH_GATHER_TASK_COUNT=$T
+
+gather_job=$(sbatch --parsable --dependency="afterok:${chain_job}" \
+  --export=ALL,PROJECT,STORE,MANIFEST,AGE_MATCH_CHAINS,AGE_MATCH_SETS_PER_CHAIN,AGE_MATCH_GATHER_TASK_COUNT \
+  gather_age_matches.sbatch)
+```
+
+The gather task refuses to publish if any of the ten bundles is absent,
+truncated, from another run, or inconsistent with its row indices. It writes
+all active assembly files under `$TMPDIR`; only the ten completed chain bundles,
+a short-lived publication copy, and the final result reside on Quobyte.
+
+Chain bundles remain after publication so the final output can be regenerated
+without rerunning chains. Remove `OUTPUT.chains/` only after final validation
+and any required archival period.
+
+## 7. Local single-target command
+
+For debugging without distributed SLURM tasks:
 
 ```bash
 python sample_age_matched_controls.py \
@@ -167,128 +217,99 @@ python sample_age_matched_controls.py \
   --target /quobyte/project/targets/in_gene \
   --all-eligible \
   --output /quobyte/project/matches/in_gene \
+  --work-dir "$TMPDIR/match-in-gene" \
   --sets 100 \
-  --chains 4 \
-  --sets-per-chain 25 \
-  --workers 4 \
+  --chains 10 \
+  --sets-per-chain 10 \
+  --workers 1 \
   --seed 1002 \
-  --burnin-replacement-fraction 0.50 \
-  --sample-replacement-fraction 0.25
+  --burnin-accepted-sweeps 1 \
+  --sample-accepted-sweeps 1
 ```
 
-Use `--candidate-rows candidates.npy` instead of `--all-eligible` to restrict
-the declared candidate universe. Target rows are always removed.
+Increase `--workers` only when the node has enough memory for one selected-row
+CDF cache per active worker. Use `--candidate-rows candidates.npy` instead of
+`--all-eligible` to restrict the declared candidate universe.
 
-## 7. Outputs
+With local `--work-dir`, `--resume` can reuse completed chains only while that
+same scratch directory still exists. The production distributed workflow uses
+durable completed bundles instead.
 
-Each output directory contains:
+## 8. Final outputs
 
-- `row_indices.npy`: canonical store rows, shape `(100, n)`;
-- `positions.npy`: 1-based native positions, shape `(100, n)`;
-- `chromosome_codes.npy` and `chromosome_labels.npy`;
-- `cdfs.npy`: exact aggregate CDF for every set;
-- `wasserstein.npy`: 100 exact distances;
+Each final output directory contains:
+
+- `row_indices.npy`, shape `(100, n)`;
+- `positions.npy`, `chromosome_codes.npy`, and `chromosome_labels.npy`;
+- `cdfs.npy` and `wasserstein.npy`;
+- `target_cdf.npy` and `age_bins.npy`;
 - `chain_index.npy` and `sample_index.npy`;
-- `diagnostics.csv`: construction, burn-in, thinning, and save diagnostics;
-- `reuse_row_indices.npy` and `reuse_counts.npy`;
-- `target_cdf.npy` and `age_bins.npy`; and
-- `metadata.json`: complete provenance, seeds, parameters, timings, and chain
-  histories.
+- `diagnostics.csv` with construction, fixed-sweep, and save records;
+- `reuse_row_indices.npy` and `reuse_counts.npy`; and
+- `metadata.json` with complete provenance, seeds, chain histories, membership
+  overlap, W1 autocorrelation, and an overlap-based ESS heuristic.
 
-Both target and matched-control metadata contain a `software` object:
-
-```json
-{
-  "name": "normalizeTE",
-  "version": "0.1.0",
-  "git_commit": "40-character commit hash",
-  "git_describe": "v0.1.0-1-gCOMMIT",
-  "git_tag": null,
-  "git_dirty": false
-}
-```
-
-Before downstream analysis, require the expected `software.version` and
-`software.git_commit`, and reject `git_dirty: true`. An exported source tree
-without `.git` retains the release version but records the Git fields as null;
-prefer running from a tagged clone so the commit is preserved.
-
-A successfully published `metadata.json` contains:
+Final metadata must contain:
 
 ```json
 {"schema_version": "swap-age-matched-controls-v1", "complete": true}
 ```
 
-Incomplete runs remain at a sibling path named `.OUTPUT_NAME.work`. Inspect
-that directory and its chain checkpoints before retrying. The supplied array
-runner always enables `--resume`: it validates the saved run identity, reuses
-every completed chain, and restarts only interrupted chains. A fresh job with
-no work directory starts normally even with `--resume`; already complete
-manifest rows from the same release are skipped, while unversioned or
-different-version outputs stop the task. An interrupted chain currently
-restarts from its deterministic seed; completed chains do not. Store identity
-uses its schema and
-catalog digest, so a new node-local staging path does not invalidate a retry.
-Do not delete failed work until its logs have been reviewed.
+The schema describes the directory layout; the embedded sampler config records
+the version-2 fixed-sweep algorithm. Before downstream analysis, require the
+expected Git commit and reject `git_dirty: true`.
 
-## 8. Operational guidance
+## 9. Using the matched sets
 
-- Keep BLAS/OpenMP thread counts at one inside each worker. Parallelism comes
-  from the four independent chain processes.
-- Stage the store once per array task. Do not launch one array task per target
-  unless Quobyte can sustain every task copying the store simultaneously.
-- Write final targets and match directories directly to Quobyte; they publish
-  via same-filesystem atomic rename.
-- Never point final output paths into `$TMPDIR`.
-- Use different manifest seeds for different targets. Chain seeds are derived
-  reproducibly from the target digest, global seed, chain number, and algorithm
-  version.
-- If a category exhausts its proposal budget, inspect its best construction
-  distance and chain acceptance rate. Do not silently relax its threshold.
-- Expect accepted-chain distances to concentrate near the acceptance cutoff:
-  most feasible sets may lie near the boundary. This is not a failed match,
-  but it makes the saved W1 distribution and chain diagnostics essential
-  outputs to inspect.
-- Keep the `.out`/`.err` logs until all 100-set completeness and diversity
-  checks pass.
+Compute the downstream statistic once for every row of `row_indices.npy`.
+Preserve `chain_index.npy` and `sample_index.npy` when constructing the matched
+null distribution. The 100 states are not guaranteed to be independent;
+correlation is within each ten-state chain.
 
-## 9. Production gates
+For each scientific statistic:
 
-Before launching every TE category on the 75-draw store:
+1. plot values against within-chain sample order;
+2. estimate within-chain autocorrelation and effective sample size;
+3. compare chain means and ranges;
+4. inspect `reuse_counts.npy` for control-SNP concentration; and
+5. report Monte Carlo uncertainty using the effective, not nominal, replicate
+   count.
 
-1. run one approximately 500-SNP target;
-2. run one approximately 4,000-SNP target;
-3. run one approximately 35,000-SNP target;
-4. confirm all four chains finish and all 100 distances pass;
-5. inspect membership replacement, overlap, control reuse, and chromosome
-   composition;
-6. record `MaxRSS`, elapsed time, staged-store size, and proposals per saved
-   set; and
-7. adjust SLURM memory/time and array width from those measurements.
+The generic membership and W1 diagnostics cannot prove that another statistic
+has mixed. If effective sample size is inadequate, increase
+`--sample-accepted-sweeps` or the number of independent chains and regenerate
+the target's matched sets without changing its acceptance threshold.
 
-The 25% between-sample replacement is the initial default. Compare 10%, 25%,
-and 50% on representative categories before claiming the 100 sets are
-effectively independent.
+## 10. Production gates
 
-## 10. Local two-draw validation
+Before launching every category on the 75-draw store:
 
-The implementation was exercised on the two available ARG draws with the
-4,072-position in-gene TE file. Eleven positions were explicitly recorded as
-ineligible, leaving 4,061 targets. With 10,000 bootstrap replicates, the W1
-range was 315.36–6,868.01 generations, the median was 1,905.05, and the
-conservative 95th-percentile cutoff was 3,793.04. All 100 generated sets passed;
-their W1 range was 3,639.31–3,792.66 and their median was 3,763.44.
+1. run approximately 500-, 4,000-, and 35,000-SNP targets;
+2. confirm all ten chain bundles and all 100 exact distances pass;
+3. inspect membership replacement, W1 autocorrelation, downstream-statistic
+   autocorrelation, overlap, reuse, and chromosome composition;
+4. compare chain-level summaries for evidence of disconnected feasible regions;
+5. record chain and gather `MaxRSS`, elapsed time, staged-store size, acceptance
+   rate, and proposals per accepted sweep;
+6. re-measure q50 feasibility on the complete 75-draw store; and
+7. adjust memory, time, and array concurrency from those measurements.
 
-A second 100-set run used the same bootstrap replicates and the 50th-percentile
-cutoff of 1,905.10. Its saved W1 range was 1,790.75–1,904.43 and its median was
-1,883.12. The tighter chain had a 31.4% thinning-proposal acceptance rate versus
-32.3% at the 95th-percentile cutoff, with essentially identical serial runtime
-(147 versus 148 seconds). Thus a median constraint remained computationally
-practical in this two-draw test and prevented drift toward the broader 95%
-boundary.
+### Two-draw fixed-sweep pilot
 
-The local sandbox could not create process semaphores and therefore ran the
-four chains serially in 148 seconds; individual chains took 35–37 seconds.
-Linux HPC jobs should run them concurrently, but production timing and memory
-must be measured on the complete 75-draw store. The follow-up default is 0.50;
-use 0.95 only as an explicitly labeled sensitivity analysis.
+The 4,061-SNP in-gene target was rerun locally with the version-2 defaults:
+ten independently seeded chains, ten saved states per chain, one accepted-swap
+sweep for burn-in, and one sweep between saves. All ten durable bundles passed
+reload and row-derived CDF validation, and gather published all 100 sets.
+
+- q50 threshold: 1,905.10 generations;
+- matched-set W1: 1,761.08--1,904.94, median 1,881.25;
+- mean adjacent membership replacement: 0.6089--0.6115 by chain;
+- W1 lag-one correlation: -0.519--0.081 by chain;
+- membership-overlap AR(1) ESS heuristic: 43.9 total;
+- 260,354 unique controls across the 100 sets, with maximum reuse 13.
+
+Each correlation estimate has only nine adjacent pairs and the ESS is an
+explicitly crude membership heuristic. This pilot shows that the distributed
+fixed-sweep implementation works on the available two-draw store; it does not
+establish mixing for a scientific downstream statistic or for the 75-draw
+store. Treat the full-store gates above as required before production claims.

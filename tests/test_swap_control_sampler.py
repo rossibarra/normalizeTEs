@@ -3,6 +3,7 @@ import json
 import numpy as np
 import pytest
 
+from distributed_age_match import main as distributed_main
 from sample_age_matched_controls import main
 from snp_interval_dataset import INTERVAL_SCHEMA_VERSION, pack_status
 from swap_control_sampler import (
@@ -94,8 +95,8 @@ def test_run_chain_burns_in_thins_and_certifies(tmp_path):
     config = SwapConfig(
         sets_per_chain=3,
         search_bin_width=10,
-        burnin_replacement_fraction=0.5,
-        sample_replacement_fraction=0.5,
+        burnin_accepted_sweeps=0.5,
+        sample_accepted_sweeps=0.5,
         max_construction_epochs=3,
         max_chain_proposals=1_000,
         cdf_block_rows=2,
@@ -112,7 +113,23 @@ def test_run_chain_burns_in_thins_and_certifies(tmp_path):
     assert np.all(result.wasserstein <= 1_000)
     assert all(np.unique(row).size == row.size for row in result.row_indices)
     assert not np.any(np.isin(result.row_indices, rows))
-    assert replacement_fraction(result.row_indices[1], result.row_indices[0]) >= 0.5
+    thinning = [row for row in result.diagnostics if row["phase"] == "thinning"]
+    assert all(row["required_accepted_swaps"] == 1 for row in thinning)
+
+
+def test_run_chain_rejects_candidate_universe_with_no_unselected_row(tmp_path):
+    store = _interval_store(tmp_path / "store")
+    target = _target(tmp_path / "target", store)
+    rows = np.load(target / "te_row_indices.npy")
+    cdf = np.load(target / "target_cdf.npy")
+    ages = np.load(target / "age_bins.npy")
+    config = SwapConfig(sets_per_chain=1, search_bin_width=10)
+    with pytest.raises(Exception, match="more rows than the target set"):
+        run_chain(
+            store, rows, cdf, ages, 1_000.0,
+            candidate_rows=np.array([2, 3]), global_seed=9,
+            target_digest="fixture", chain_index=0, config=config,
+        )
 
 
 def test_cli_writes_four_exact_sets_atomically(tmp_path):
@@ -124,8 +141,8 @@ def test_cli_writes_four_exact_sets_atomically(tmp_path):
         "--all-eligible", "--output", str(output),
         "--sets", "4", "--chains", "2", "--sets-per-chain", "2",
         "--workers", "2", "--seed", "11", "--search-bin-width", "10",
-        "--burnin-replacement-fraction", "0.5",
-        "--sample-replacement-fraction", "0.5",
+        "--burnin-accepted-sweeps", "0.5",
+        "--sample-accepted-sweeps", "0.5",
         "--max-construction-epochs", "3", "--max-chain-proposals", "1000",
         "--cdf-block-rows", "2", "--progress-every", "100",
     ]) == 0
@@ -136,13 +153,16 @@ def test_cli_writes_four_exact_sets_atomically(tmp_path):
     assert metadata["complete"] is True
     assert metadata["sets"] == 4
     assert metadata["software"]["name"] == "normalizeTE"
-    assert metadata["software"]["version"] == "0.1.0"
+    assert metadata["software"]["version"] == "0.2.0"
+    assert metadata["maximum_wasserstein"] == pytest.approx(
+        float(np.load(output / "wasserstein.npy").max())
+    )
     assert metadata["software"]["git_commit"]
     assert not (output / "checkpoints").exists()
     with pytest.raises(FileExistsError):
         main([
             "--store", str(store), "--target", str(target),
-            "--output", str(output),
+            "--all-eligible", "--output", str(output),
         ])
 
 
@@ -152,13 +172,82 @@ def test_cli_resume_flag_can_start_fresh_work(tmp_path):
     output = tmp_path / "controls"
     assert main([
         "--store", str(store), "--target", str(target),
-        "--output", str(output), "--resume",
+        "--all-eligible", "--output", str(output), "--resume",
         "--sets", "1", "--chains", "1", "--sets-per-chain", "1",
         "--workers", "1", "--seed", "13", "--search-bin-width", "10",
-        "--burnin-replacement-fraction", "0.5",
-        "--sample-replacement-fraction", "0.5",
+        "--burnin-accepted-sweeps", "0.5",
+        "--sample-accepted-sweeps", "0.5",
         "--max-construction-epochs", "3", "--max-chain-proposals", "1000",
         "--cdf-block-rows", "2", "--progress-every", "100",
     ]) == 0
     assert (output / "metadata.json").is_file()
     assert not output.with_name(f".{output.name}.work").exists()
+
+
+def test_distributed_chains_publish_from_scratch_and_gather(tmp_path):
+    store = _interval_store(tmp_path / "store")
+    target = _target(tmp_path / "target", store)
+    chain_dir = tmp_path / "durable-chains"
+    common = [
+        "--store", str(store), "--target", str(target), "--all-eligible",
+        "--chains", "2", "--sets-per-chain", "2", "--seed", "19",
+        "--search-bin-width", "10", "--burnin-accepted-sweeps", "0.5",
+        "--sample-accepted-sweeps", "0.5",
+        "--max-construction-epochs", "3", "--max-chain-proposals", "1000",
+        "--cdf-block-rows", "2", "--progress-every", "100",
+    ]
+    for chain in range(2):
+        work = tmp_path / f"scratch-chain-{chain}"
+        assert distributed_main([
+            "chain", *common, "--chain-index", str(chain),
+            "--chain-output", str(chain_dir / f"chain-{chain:03d}.npz"),
+            "--work-dir", str(work),
+        ]) == 0
+        assert not work.exists()
+
+    output = tmp_path / "durable-result"
+    gather_work = tmp_path / "scratch-gather"
+    assert distributed_main([
+        "gather", *common, "--chain-dir", str(chain_dir),
+        "--output", str(output), "--work-dir", str(gather_work),
+    ]) == 0
+    assert not gather_work.exists()
+    assert np.load(output / "row_indices.npy").shape == (4, 2)
+    metadata = json.loads((output / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["distributed_chains"] is True
+    assert metadata["distributed_chain_tasks"] == 2
+    assert metadata["workers"] == 1
+    assert metadata["chains"] == 2
+
+
+def test_distributed_gather_rejects_row_cdf_mismatch(tmp_path):
+    store = _interval_store(tmp_path / "store")
+    target = _target(tmp_path / "target", store)
+    chain_dir = tmp_path / "chains"
+    chain_path = chain_dir / "chain-000.npz"
+    common = [
+        "--store", str(store), "--target", str(target), "--all-eligible",
+        "--chains", "1", "--sets-per-chain", "1", "--seed", "23",
+        "--search-bin-width", "10", "--burnin-accepted-sweeps", "0.5",
+        "--sample-accepted-sweeps", "0.5",
+        "--max-construction-epochs", "3", "--max-chain-proposals", "1000",
+        "--cdf-block-rows", "2", "--progress-every", "100",
+    ]
+    assert distributed_main([
+        "chain", *common, "--chain-index", "0",
+        "--chain-output", str(chain_path),
+        "--work-dir", str(tmp_path / "chain-work"),
+    ]) == 0
+    with np.load(chain_path, allow_pickle=False) as archive:
+        payload = {name: archive[name] for name in archive.files}
+    payload["row_indices"] = payload["row_indices"].copy()
+    used = set(map(int, payload["row_indices"][0]))
+    payload["row_indices"][0, 0] = next(row for row in range(2, 7) if row not in used)
+    with chain_path.open("wb") as handle:
+        np.savez_compressed(handle, **payload)
+    with pytest.raises(ValueError, match="stored CDF does not match"):
+        distributed_main([
+            "gather", *common, "--chain-dir", str(chain_dir),
+            "--output", str(tmp_path / "result"),
+            "--work-dir", str(tmp_path / "gather-work"),
+        ])

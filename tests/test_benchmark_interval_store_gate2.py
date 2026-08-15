@@ -1,4 +1,5 @@
 import json
+import sys
 
 import pytest
 import tskit
@@ -75,6 +76,10 @@ def test_ordinary_tree_records_selective_access_unavailable(tmp_path):
     assert report["scalar_parent_audit"]["passed"]
 
 
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="shared read-only multiworker audit requires Linux fork",
+)
 def test_scalar_audit_one_and_two_workers_select_same_mutations(tmp_path):
     ordinary = tmp_path / "draw.trees"
     _write_fixture(ordinary)

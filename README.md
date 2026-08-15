@@ -10,8 +10,8 @@ The supported production path has three stages:
 
 1. Build one compact all-SNP interval store from all posterior ARG draws.
 2. Build one target distribution and bootstrap threshold for each TE dataset.
-3. Generate 100 matched control sets per target with four independent swap
-   chains, saving 25 sets from each chain.
+3. Generate 100 matched control sets per target with ten independent swap
+   chains, saving ten sets from each chain.
 
 The interval store is built once and reused for every TE dataset. Do not build
 a dense CDF store first; the dense builder is a legacy alternative, not a
@@ -25,11 +25,18 @@ the TE SNPs with replacement. The median bootstrap Wasserstein distance is the
 default maximum mismatch allowed for a control set.
 
 `sample_age_matched_controls.py` first finds a set inside that threshold, then
-runs a constrained random swap walk. The construction state is discarded.
-Each chain replaces at least 50% of that state during burn-in, and successive
-saved sets differ by at least 25% of their members. Every saved set is
-recomputed on the exact 1,000-generation grid and must remain inside the target
-threshold.
+runs a constrained random swap walk. The construction state itself is not
+saved. Each chain performs one fixed accepted-swap sweep per set member before
+its first save and another fixed sweep between saves. Membership replacement is
+reported as a mixing diagnostic rather than used as a path-dependent stopping
+rule. Every saved set is recomputed on the exact 1,000-generation grid and must
+remain inside the target threshold.
+
+The 100 saved sets are correlated Monte Carlo states, not 100 independent data
+replicates. Correlation is confined within each ten-set chain; retain
+`chain_index.npy` and `sample_index.npy`, and measure autocorrelation of the
+actual downstream statistic before interpreting the empirical null as having
+100 independent observations.
 
 ## Input data
 
@@ -79,6 +86,9 @@ The creation command is needed only once. Run the project tests with:
 python -m pytest -q tests test_snp_age_distribution.py
 ```
 
+One multiprocessing audit requires Linux `fork` and is expected to fail on
+macOS; production validation should run the suite on a Linux compute node.
+
 For reproducible production runs, use an immutable tag or exact commit rather
 than a moving branch:
 
@@ -87,9 +97,9 @@ git fetch --tags
 git checkout COMMIT_HASH
 ```
 
-`v0.1.0` is the tagged q95 baseline. The bootstrap-median (q50) default is a
-follow-up commit on `main`, so pin that exact commit until it receives its own
-release tag. Release changes are summarized in [CHANGELOG.md](CHANGELOG.md).
+`v0.1.0` is the tagged q95 baseline. Version `0.2.0` uses the bootstrap median
+(q50), fixed accepted-swap sweeps, and the 10-chain distributed workflow.
+Release changes are summarized in [CHANGELOG.md](CHANGELOG.md).
 
 ## 2. Build the compact all-SNP interval store
 
@@ -189,9 +199,21 @@ python te_age_target.py \
 
 The command averages the TE posterior CDFs and compares 10,000 bootstrap
 resamples with the observed target. The default acceptance threshold is the
-bootstrap median (`--acceptance-quantile 0.50`). Use another quantile only for
-an explicitly labeled sensitivity analysis, and never reuse one target output
-path across quantiles.
+bootstrap median (`--acceptance-quantile 0.50`). The walk has no preference for
+smaller distances once it is feasible, so this threshold is the matching-quality
+specification, not merely a safety margin; saved distances normally concentrate
+near it. Use another quantile only for an explicitly labeled sensitivity
+analysis, and never reuse one target output path across tolerances.
+
+For a pre-specified scientific tolerance, replace the quantile-derived boundary
+with an absolute Wasserstein limit in generations:
+
+```bash
+python te_age_target.py ... --acceptance-distance 1500
+```
+
+Bootstrap distances are still produced for context, while metadata records
+that the absolute distance supplied the operative threshold.
 
 For an interval store, target construction creates a temporary float32
 TE-by-age CDF matrix under `--scratch-dir`. At roughly 185,000 TEs and the
@@ -216,10 +238,11 @@ python sample_age_matched_controls.py \
   --target targets/in_gene \
   --all-eligible \
   --output matches/in_gene \
+  --work-dir "${TMPDIR:?TMPDIR is not set}/match-in-gene" \
   --sets 100 \
-  --chains 4 \
-  --sets-per-chain 25 \
-  --workers 4 \
+  --chains 10 \
+  --sets-per-chain 10 \
+  --workers 1 \
   --seed 1002
 ```
 
@@ -228,31 +251,56 @@ To restrict controls, resolve the desired universe to canonical store rows and
 pass the resulting one-dimensional NumPy array with `--candidate-rows`.
 Target rows are always excluded.
 
-The production defaults are:
+The defaults are:
 
-- 100 saved sets = 4 independent chains × 25 sets;
-- 50% membership replacement during burn-in; and
-- 25% membership replacement between successive saved states.
+- 100 saved sets = 10 independent chains × 10 sets;
+- one accepted-swap sweep per set member during burn-in; and
+- one accepted-swap sweep per member between saved states.
 
-The CLI defaults to one worker, so specify `--workers 4` to run all four chains
-concurrently when four CPUs are available. More than four CPUs does not help
-the default four-chain configuration. BLAS and OpenMP thread counts should
-remain one inside each worker.
+The local CLI defaults to one worker to bound memory. Increase `--workers` only
+when the node can hold one exact selected-row CDF cache per active worker. The
+production SLURM workflow instead runs each chain as a separate one-CPU array
+task that the scheduler can place independently across nodes.
 
 Each output directory contains:
 
 - `row_indices.npy`, shape `(100, X)`;
 - `positions.npy`, `chromosome_codes.npy`, and `chromosome_labels.npy`;
 - `cdfs.npy` and `wasserstein.npy` for all 100 sets;
+- `target_cdf.npy` and `age_bins.npy` used for exact certification;
 - `chain_index.npy` and `sample_index.npy`;
 - `diagnostics.csv` with construction, burn-in, thinning, and save records;
 - `reuse_row_indices.npy` and `reuse_counts.npy`; and
-- `metadata.json` with seeds, settings, timings, chain histories, store
-  identity, and software provenance.
+- `metadata.json` with seeds, settings, chain histories, membership overlap,
+  Wasserstein autocorrelation, an overlap-based ESS heuristic, store identity,
+  and software provenance.
 
-Final publication fails if any set contains duplicate controls or exceeds the
-target's exact Wasserstein threshold. An interrupted run remains at
-`.OUTPUT_NAME.work`; rerun with `--resume` to reuse completed chains.
+Final publication fails if any set contains duplicate controls, violates the
+declared candidate universe, has a stored CDF inconsistent with its rows, or
+exceeds the target's exact Wasserstein threshold. With `--work-dir`, temporary
+checkpoints and result assembly stay on local scratch; the completed directory
+is copied to a temporary sibling of `--output` and exposed by an atomic rename.
+
+For the local all-chain command, `--resume` reuses completed chains only while
+the same work directory still exists. Production restarts use durable completed
+chain bundles as described below; an interrupted individual chain restarts from
+its deterministic seed.
+
+### Using the 100 matched sets
+
+Compute the same downstream statistic once for every row of `row_indices.npy`
+and compare the observed TE statistic with that empirical matched-control
+distribution. Preserve `chain_index.npy` and `sample_index.npy` when joining
+results. Plot the statistic by chain and estimate its within-chain
+autocorrelation; correlation does not bias a simple Monte Carlo average, but it
+reduces precision and must not be ignored in standard errors or effective
+replicate counts.
+
+`reuse_row_indices.npy` and `reuse_counts.npy` report how often each control SNP
+appears across all sets. Use them to detect a small subset of controls
+dominating the null distribution. The `chain_diversity` metadata provides
+generic age-distance and membership diagnostics, but the decisive mixing check
+must use the actual scientific statistic being tested.
 
 ## 6. Run many TE datasets on Farm/Quobyte
 
@@ -265,10 +313,11 @@ in_gene	/quobyte/project/te/in_gene.pos.txt	/quobyte/project/targets/in_gene	/qu
 young	/quobyte/project/te/young.pos.txt	/quobyte/project/targets/young	/quobyte/project/matches/young	1003
 ```
 
-Then use the supplied `build_age_targets.sbatch` and
-`sample_age_matches.sbatch` array launchers. Each array task stages the
-immutable interval store from Quobyte to its job-local `$TMPDIR` once, processes
-several manifest rows, and writes only durable targets and results back to
+Target construction uses `build_age_targets.sbatch`. Matching uses two stages:
+`sample_age_matches.sbatch` runs one independently seeded chain per array task,
+and `gather_age_matches.sbatch` validates ten durable chain bundles before
+publishing one final 100-set directory. Every task stages the immutable interval
+store to its own `$TMPDIR`; active checkpoints and CDF caches never live on
 Quobyte.
 
 ```bash
@@ -283,18 +332,33 @@ sbatch --export=ALL,PROJECT,STORE,MANIFEST,AGE_MATCH_TASK_COUNT \
   build_age_targets.sbatch
 ```
 
-After every target task succeeds:
+For `T` manifest rows, matching requires `10*T` chain tasks and `T` gather
+tasks. Edit the launchers' `#SBATCH --array` ranges accordingly, then submit the
+gather array with an `afterok` dependency:
 
 ```bash
-sbatch --export=ALL,PROJECT,STORE,MANIFEST,AGE_MATCH_TASK_COUNT \
-  sample_age_matches.sbatch
+export T=3  # number of non-header rows in this example manifest
+export AGE_MATCH_CHAINS=10
+export AGE_MATCH_SETS_PER_CHAIN=10
+export AGE_MATCH_CHAIN_TASK_COUNT=$((10 * T))
+export AGE_MATCH_GATHER_TASK_COUNT=$T
+
+chain_job=$(sbatch --parsable \
+  --export=ALL,PROJECT,STORE,MANIFEST,AGE_MATCH_CHAINS,AGE_MATCH_SETS_PER_CHAIN,AGE_MATCH_CHAIN_TASK_COUNT \
+  sample_age_matches.sbatch)
+
+sbatch --dependency="afterok:${chain_job}" \
+  --export=ALL,PROJECT,STORE,MANIFEST,AGE_MATCH_CHAINS,AGE_MATCH_SETS_PER_CHAIN,AGE_MATCH_GATHER_TASK_COUNT \
+  gather_age_matches.sbatch
 ```
 
-The `#SBATCH --array` range in each launcher must contain exactly
-`AGE_MATCH_TASK_COUNT` elements; `0-9` corresponds to 10 tasks. Start with
-5--10 array tasks and increase only after measuring Quobyte staging load and
-scheduler behavior. Each matching task requests four CPUs because its four
-chains run in separate processes.
+Each launcher verifies `SLURM_ARRAY_TASK_COUNT` against its declared task count,
+so a shortened array cannot silently omit targets or chains. A chain task writes
+only one atomically published `OUTPUT.chains/chain-NNN.npz` bundle to Quobyte
+before its scratch directory disappears. Rerunning the array validates and
+skips existing complete bundles. The gather job refuses to publish until all ten
+bundles match the target, candidate universe, software provenance, and exact
+row-derived CDF checks.
 
 See [SWAP_SAMPLER_HPC_HOWTO.md](SWAP_SAMPLER_HPC_HOWTO.md) for the complete
 manifest rules, memory model, submission settings, restart behavior, output
@@ -371,6 +435,16 @@ For a longer list, provide one numeric position per line with
 binned distributions. This script is intended for inspection and small
 queries; use the compact interval store for reusable genome-scale data.
 
+## Document map
+
+- [SWAP_SAMPLER_HPC_HOWTO.md](SWAP_SAMPLER_HPC_HOWTO.md) is the production
+  Farm/Quobyte runbook.
+- [AGE_MATCHED_CONTROL_SAMPLER_PLAN.md](AGE_MATCHED_CONTROL_SAMPLER_PLAN.md)
+  records the current sampler design and validation gates.
+- [CHANGELOG.md](CHANGELOG.md) records release-level behavior changes.
+- `INTERVAL_STORE_*`, `GLOBAL_QUANTILE_*`, and `CODE_REVIEW*` documents are
+  design history and review records, not operator instructions.
+
 ## Alternative and legacy workflows
 
 These workflows remain available for reproducibility and specialized use, but
@@ -410,5 +484,5 @@ large TE datasets because it builds target-specific candidate weights and may
 spend many proposals in rejection sampling.
 
 The production workflow instead uses `sample_age_matched_controls.py`, which
-works directly from the canonical interval store and enforces burn-in and
-between-sample replacement for the saved sets.
+works directly from the canonical interval store and uses fixed accepted-swap
+sweeps so saving is not triggered by a path-dependent replacement crossing.

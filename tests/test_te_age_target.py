@@ -140,6 +140,20 @@ def test_build_target_is_reproducible():
     assert len(a.interval_quotas) == len(a.boundaries.indices) - 1
 
 
+def test_absolute_acceptance_distance_overrides_bootstrap_quantile():
+    result = build_target(
+        FakeStore(),
+        np.array([10.0, 20.0]),
+        np.array(["chr1", "chr1"]),
+        np.array([10, 20]),
+        n_replicates=20,
+        acceptance_quantile=0.50,
+        acceptance_distance=123.5,
+        seed=5,
+    )
+    assert result.threshold == 123.5
+
+
 def test_build_target_rejects_invalid_rows():
     with pytest.raises(ValueError, match="invalid TE positions: 30"):
         build_target(

@@ -228,6 +228,7 @@ def build_target(
     n_replicates: int,
     acceptance_quantile: float,
     seed: int | None,
+    acceptance_distance: float | None = None,
     batch_size: int = 256,
     row_indices: np.ndarray | None = None,
     bin_width: int = 1_000,
@@ -282,7 +283,12 @@ def build_target(
     quotas = largest_remainder_quotas(
         positions.size, boundary_set.interval_shares,
     )
-    threshold = empirical_threshold(distances, acceptance_quantile)
+    if acceptance_distance is not None:
+        if not np.isfinite(acceptance_distance) or acceptance_distance <= 0:
+            raise ValueError("acceptance_distance must be finite and positive")
+        threshold = float(acceptance_distance)
+    else:
+        threshold = empirical_threshold(distances, acceptance_quantile)
     return TargetResult(
         positions, np.asarray(te_chromosomes), np.asarray(te_vcf_positions),
         rows, target, distances, boundary_set, quotas, threshold, seed,
@@ -339,6 +345,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--bootstrap-replicates", type=int, default=10_000)
     parser.add_argument("--bootstrap-batch-size", type=int, default=256)
     parser.add_argument("--acceptance-quantile", type=float, default=0.50)
+    parser.add_argument(
+        "--acceptance-distance", type=float,
+        help=("absolute Wasserstein tolerance in generations; overrides the "
+              "bootstrap quantile threshold"),
+    )
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--bin-width", type=int, default=1_000)
     parser.add_argument(
@@ -374,6 +385,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         included_vcf_positions,
         n_replicates=args.bootstrap_replicates,
         acceptance_quantile=args.acceptance_quantile,
+        acceptance_distance=args.acceptance_distance,
         seed=args.seed,
         batch_size=args.bootstrap_batch_size,
         row_indices=resolution.included_rows,
@@ -416,6 +428,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             if is_interval_store(store) else "stored dense CDF"
         ),
         "acceptance_quantile": args.acceptance_quantile,
+        "acceptance_distance": args.acceptance_distance,
+        "acceptance_threshold_source": (
+            "absolute_distance"
+            if args.acceptance_distance is not None
+            else "bootstrap_quantile"
+        ),
         "wasserstein_threshold_generations": result.threshold,
         "boundary_probabilities": np.linspace(0.0, 1.0, 21).tolist(),
         "compressed_boundary_edge_indices": boundary_set.indices.tolist(),

@@ -1,14 +1,31 @@
 # Changelog
 
-## After v0.1.0
+## v0.2.0 — 2026-08-15
 
+- Changes the production layout from four 25-state chains in one job to ten
+  independent 10-state chains, each runnable as its own SLURM task.
+- Keeps interval-store copies, checkpoints, CDF caches, and result assembly on
+  node-local `$TMPDIR`; atomically publishes validated completed-chain bundles
+  and final result directories to Quobyte before scratch disappears.
+- Replaces path-dependent membership-crossing save rules with one fixed
+  accepted-swap sweep for burn-in and one sweep between saves. Membership
+  replacement remains a reported diagnostic.
+- Adds durable chain identity, row eligibility/target-exclusion checks,
+  row-to-CDF recomputation, truncated-output rejection, and explicit
+  `--all-eligible` versus `--candidate-rows` selection.
+- Adds an absolute Wasserstein tolerance option while retaining the bootstrap
+  median as the default matching specification.
+- Adds chain-level membership overlap, W1 autocorrelation, and an explicitly
+  heuristic overlap-based effective-sample-size summary.
 - Changes the target-builder, manifest runner, SLURM wrapper, and legacy
   threshold fallback from the bootstrap 95th percentile to the bootstrap
   median (`0.50`).
 - Keeps the acceptance quantile configurable for explicitly labeled
   sensitivity analyses.
 - Repeats the 4,061-SNP in-gene validation with 10,000 bootstraps and 100 fresh
-  matched sets under the new default.
+  matched sets under the new default: all ten bundles validated, matched W1 was
+  1,761.08--1,904.94 at the 1,905.10 threshold, and adjacent membership
+  replacement averaged about 61%.
 
 ## v0.1.0 — 2026-08-15
 

@@ -1,28 +1,30 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=age-match
-#SBATCH --array=0-9
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=96G
+#SBATCH --job-name=age-match-chain
+#SBATCH --array=0-99
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=32G
 #SBATCH --time=24:00:00
-#SBATCH --output=logs/age-match-%A_%a.out
-#SBATCH --error=logs/age-match-%A_%a.err
+#SBATCH --output=logs/age-match-chain-%A_%a.out
+#SBATCH --error=logs/age-match-chain-%A_%a.err
 
 set -euo pipefail
 
-# Required submission-time variables:
-#   PROJECT=/quobyte/.../normalizeTE
-#   STORE=/quobyte/.../snp_interval_store
-#   MANIFEST=/quobyte/.../te_manifest.tsv
-#   AGE_MATCH_TASK_COUNT=10  (must equal the SLURM array size)
+# One array element runs one independently seeded chain. For T manifest rows
+# and C chains, set the array size and AGE_MATCH_CHAIN_TASK_COUNT to T*C.
 : "${PROJECT:?set PROJECT to the repository path on Quobyte}"
 : "${STORE:?set STORE to the completed interval-store directory on Quobyte}"
 : "${MANIFEST:?set MANIFEST to the TE manifest on Quobyte}"
-: "${AGE_MATCH_TASK_COUNT:?set AGE_MATCH_TASK_COUNT to the array size}"
+: "${AGE_MATCH_CHAIN_TASK_COUNT:?set to target count times chain count}"
 : "${TMPDIR:?Farm must provide per-job TMPDIR under /local/scratch}"
-: "${SLURM_CPUS_PER_TASK:?SLURM_CPUS_PER_TASK is unavailable}"
+AGE_MATCH_CHAINS="${AGE_MATCH_CHAINS:-10}"
+AGE_MATCH_SETS_PER_CHAIN="${AGE_MATCH_SETS_PER_CHAIN:-10}"
+
+[[ "${SLURM_ARRAY_TASK_COUNT:?}" == "$AGE_MATCH_CHAIN_TASK_COUNT" ]] || {
+    echo "array size $SLURM_ARRAY_TASK_COUNT != chain task count $AGE_MATCH_CHAIN_TASK_COUNT" >&2
+    exit 3
+}
 
 mkdir -p "$PROJECT/logs" "$TMPDIR/interval_store"
-
 if type module >/dev/null 2>&1; then
     module load conda
 elif command -v conda >/dev/null 2>&1; then
@@ -32,7 +34,6 @@ else
     exit 90
 fi
 conda activate normalizeTE
-
 export OPENBLAS_NUM_THREADS=1
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
@@ -43,16 +44,14 @@ if (( free_kib < required_kib * 6 / 5 )); then
     echo "insufficient node-local scratch: need store size plus 20%" >&2
     exit 2
 fi
-
-# Each array task stages once, then processes its round-robin manifest shard.
-# This avoids random interval reads from Quobyte during the swap chains.
 rsync -a --delete "$STORE/" "$TMPDIR/interval_store/"
 
 cd "$PROJECT"
-python run_age_match_manifest.py sample \
+python run_age_match_manifest.py sample-chain \
     --manifest "$MANIFEST" \
     --store "$TMPDIR/interval_store" \
     --task-id "$SLURM_ARRAY_TASK_ID" \
-    --task-count "$AGE_MATCH_TASK_COUNT" \
-    --workers "$SLURM_CPUS_PER_TASK" \
-    --resume
+    --task-count "$AGE_MATCH_CHAIN_TASK_COUNT" \
+    --scratch-dir "$TMPDIR" \
+    --chains "$AGE_MATCH_CHAINS" \
+    --sets-per-chain "$AGE_MATCH_SETS_PER_CHAIN"

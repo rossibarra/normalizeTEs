@@ -1,25 +1,24 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=age-target
+#SBATCH --job-name=age-match-gather
 #SBATCH --array=0-9
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=96G
-#SBATCH --time=24:00:00
-#SBATCH --output=logs/age-target-%A_%a.out
-#SBATCH --error=logs/age-target-%A_%a.err
+#SBATCH --mem=32G
+#SBATCH --time=08:00:00
+#SBATCH --output=logs/age-match-gather-%A_%a.out
+#SBATCH --error=logs/age-match-gather-%A_%a.err
 
 set -euo pipefail
 
 : "${PROJECT:?set PROJECT to the repository path on Quobyte}"
 : "${STORE:?set STORE to the completed interval-store directory on Quobyte}"
 : "${MANIFEST:?set MANIFEST to the TE manifest on Quobyte}"
-: "${AGE_MATCH_TASK_COUNT:?set AGE_MATCH_TASK_COUNT to the array size}"
+: "${AGE_MATCH_GATHER_TASK_COUNT:?set to the number of manifest targets}"
 : "${TMPDIR:?Farm must provide per-job TMPDIR under /local/scratch}"
-MISSING_POSITION_POLICY="${MISSING_POSITION_POLICY:-error}"
-ACCEPTANCE_QUANTILE="${ACCEPTANCE_QUANTILE:-0.50}"
-ACCEPTANCE_DISTANCE="${ACCEPTANCE_DISTANCE:-}"
+AGE_MATCH_CHAINS="${AGE_MATCH_CHAINS:-10}"
+AGE_MATCH_SETS_PER_CHAIN="${AGE_MATCH_SETS_PER_CHAIN:-10}"
 
-[[ "${SLURM_ARRAY_TASK_COUNT:?}" == "$AGE_MATCH_TASK_COUNT" ]] || {
-    echo "array size $SLURM_ARRAY_TASK_COUNT != AGE_MATCH_TASK_COUNT $AGE_MATCH_TASK_COUNT" >&2
+[[ "${SLURM_ARRAY_TASK_COUNT:?}" == "$AGE_MATCH_GATHER_TASK_COUNT" ]] || {
+    echo "array size $SLURM_ARRAY_TASK_COUNT != gather task count $AGE_MATCH_GATHER_TASK_COUNT" >&2
     exit 3
 }
 
@@ -46,16 +45,11 @@ fi
 rsync -a --delete "$STORE/" "$TMPDIR/interval_store/"
 
 cd "$PROJECT"
-command=(python run_age_match_manifest.py build-targets \
+python run_age_match_manifest.py gather \
     --manifest "$MANIFEST" \
     --store "$TMPDIR/interval_store" \
     --task-id "$SLURM_ARRAY_TASK_ID" \
-    --task-count "$AGE_MATCH_TASK_COUNT" \
+    --task-count "$AGE_MATCH_GATHER_TASK_COUNT" \
     --scratch-dir "$TMPDIR" \
-    --bootstrap-replicates 10000 \
-    --acceptance-quantile "$ACCEPTANCE_QUANTILE" \
-    --missing-position-policy "$MISSING_POSITION_POLICY")
-if [[ -n "$ACCEPTANCE_DISTANCE" ]]; then
-    command+=(--acceptance-distance "$ACCEPTANCE_DISTANCE")
-fi
-"${command[@]}"
+    --chains "$AGE_MATCH_CHAINS" \
+    --sets-per-chain "$AGE_MATCH_SETS_PER_CHAIN"
