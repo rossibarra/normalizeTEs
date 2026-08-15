@@ -17,6 +17,7 @@ import numpy as np
 from snp_age_dataset import load_native_position_list
 from snp_age_store import is_interval_store, open_snp_age_store, store_schema
 from snp_position_resolution import resolve_native_position_requests
+from release_provenance import software_provenance
 
 
 @dataclass(frozen=True)
@@ -383,6 +384,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     boundary_set = result.boundaries
     metadata = {
         "schema_version": 2,
+        "software": software_provenance(),
         "source_store": str(args.store.resolve()),
         "source_store_schema": store_schema(store),
         "source_catalog_sha256": getattr(store, "metadata", {}).get("catalog_sha256"),

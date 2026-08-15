@@ -462,6 +462,49 @@ the synonymous pool has usable probability mass across the target age range.
 - Keep the store and result arrays as a small number of large files rather than
   creating per-SNP files.
 
+## Swap-chain matched controls (recommended workflow)
+
+The recommended sampler for the full eligible control pool is now
+`sample_age_matched_controls.py`. It uses stochastic one-for-one swaps against
+the canonical interval store and does not require the large global alias index.
+For every TE target it generates 100 sets as four independent chains with 25
+saved sets each. The greedy construction state is discarded; chains replace at
+least 50% of that state during burn-in and at least 25% of members between saved
+sets. Every saved set is certified with the exact full-grid Wasserstein test.
+Target and match `metadata.json` files record the normalizeTE release version,
+Git commit, nearest Git description, exact tag when present, and whether tracked
+files were dirty when the command ran.
+
+For one target:
+
+```bash
+python sample_age_matched_controls.py \
+  --store interval_store \
+  --target targets/in_gene \
+  --all-eligible \
+  --output matches/in_gene \
+  --sets 100 --chains 4 --sets-per-chain 25 --workers 4 \
+  --seed 1002
+```
+
+For many TE datasets on Farm, use `run_age_match_manifest.py` with
+`build_age_targets.sbatch` and `sample_age_matches.sbatch`. Array tasks stage
+the immutable interval store from Quobyte to Farm's per-job `$TMPDIR`, run four
+chain workers per target, and write atomically published results back to
+Quobyte. See [`SWAP_SAMPLER_HPC_HOWTO.md`](SWAP_SAMPLER_HPC_HOWTO.md) for the
+manifest format, submission commands, resource model, outputs, and validation
+gates.
+
+For reproducible production runs, check out an immutable release tag rather
+than a moving branch:
+
+```bash
+git fetch --tags
+git checkout v0.1.0
+```
+
+Release changes are summarized in [`CHANGELOG.md`](CHANGELOG.md).
+
 ## Documentation for accessory scripts
 
 ### `snp_age_distribution.py`

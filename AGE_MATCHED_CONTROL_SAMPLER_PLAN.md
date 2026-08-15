@@ -348,6 +348,8 @@ their agreement after randomized sequences.
 Checkpoint each chain independently and atomically. A checkpoint contains:
 
 - schema and algorithm version;
+- normalizeTE release version, Git commit, exact tag, description, and dirty
+  checkout status;
 - target/store/candidate digests;
 - chain and derived seed;
 - RNG bit-generator state;

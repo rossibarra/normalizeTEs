@@ -30,6 +30,10 @@ def test_interval_target_then_cached_matching_cleans_scratch(tmp_path):
         "--seed", "7",
     ]) == 0
     assert list(scratch.iterdir()) == []
+    target_metadata = json.loads(
+        (target / "metadata.json").read_text(encoding="utf-8")
+    )
+    assert target_metadata["software"]["version"] == "0.1.0"
 
     matches = tmp_path / "matches"
     assert sample_main([
