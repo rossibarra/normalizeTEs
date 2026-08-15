@@ -15,7 +15,7 @@ set -euo pipefail
 : "${AGE_MATCH_TASK_COUNT:?set AGE_MATCH_TASK_COUNT to the array size}"
 : "${TMPDIR:?Farm must provide per-job TMPDIR under /local/scratch}"
 MISSING_POSITION_POLICY="${MISSING_POSITION_POLICY:-error}"
-ACCEPTANCE_QUANTILE="${ACCEPTANCE_QUANTILE:-0.95}"
+ACCEPTANCE_QUANTILE="${ACCEPTANCE_QUANTILE:-0.50}"
 
 mkdir -p "$PROJECT/logs" "$TMPDIR/interval_store"
 if type module >/dev/null 2>&1; then

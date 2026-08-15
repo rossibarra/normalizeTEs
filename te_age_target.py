@@ -102,7 +102,7 @@ def bootstrap_wasserstein(
     return output
 
 
-def empirical_threshold(distances: np.ndarray, quantile: float = 0.95) -> float:
+def empirical_threshold(distances: np.ndarray, quantile: float = 0.50) -> float:
     """Return a conservative observed empirical quantile."""
     values = np.asarray(distances)
     if not 0 < quantile < 1:
@@ -338,7 +338,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--bootstrap-replicates", type=int, default=10_000)
     parser.add_argument("--bootstrap-batch-size", type=int, default=256)
-    parser.add_argument("--acceptance-quantile", type=float, default=0.95)
+    parser.add_argument("--acceptance-quantile", type=float, default=0.50)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--bin-width", type=int, default=1_000)
     parser.add_argument(

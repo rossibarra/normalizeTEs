@@ -17,15 +17,16 @@ From the repository root:
 
 ```bash
 git fetch --tags
-git checkout v0.1.0
+git checkout COMMIT_HASH
 conda env create -f environment.yml       # once
 conda activate normalizeTE
 python -m pytest -q tests
 ```
 
-Use an immutable tag for production rather than `main`. If a deliberate local
-change is unavoidable, retain it in a commit and create a new version/tag; do
-not run with a dirty checkout and treat it as the tagged release.
+Pin an exact commit or immutable tag for production rather than a moving
+`main`. `v0.1.0` is the q95 baseline; the q50 default is a follow-up commit and
+therefore must be pinned by its commit hash. Do not run with a dirty checkout
+and treat it as a tagged release.
 
 The canonical interval store must already be complete and validated. Never
 modify it while matching jobs are running.
@@ -116,10 +117,9 @@ ineligible. To retain only eligible positions and record every exclusion, add
 `drop` without reviewing `position_resolution` and `excluded_positions` in the
 target metadata.
 
-The acceptance threshold defaults to the conservative 95th bootstrap
-percentile. Set `ACCEPTANCE_QUANTILE=0.50` when submitting a separate manifest
-whose target and output paths are reserved for a median-constrained comparison.
-Never reuse a target path across quantiles.
+The acceptance threshold defaults to the bootstrap median
+(`ACCEPTANCE_QUANTILE=0.50`). Set a different quantile only for an explicitly
+labeled sensitivity analysis, and never reuse a target path across quantiles.
 
 Check the array before sampling:
 
@@ -202,8 +202,8 @@ Both target and matched-control metadata contain a `software` object:
   "name": "normalizeTE",
   "version": "0.1.0",
   "git_commit": "40-character commit hash",
-  "git_describe": "v0.1.0",
-  "git_tag": "v0.1.0",
+  "git_describe": "v0.1.0-1-gCOMMIT",
+  "git_tag": null,
   "git_dirty": false
 }
 ```
@@ -290,6 +290,5 @@ boundary.
 The local sandbox could not create process semaphores and therefore ran the
 four chains serially in 148 seconds; individual chains took 35–37 seconds.
 Linux HPC jobs should run them concurrently, but production timing and memory
-must be measured on the complete 75-draw store. The tagged release keeps 0.95
-as the compatibility default and exposes `ACCEPTANCE_QUANTILE=0.50` for the
-recommended production-gate comparison on the full store.
+must be measured on the complete 75-draw store. The follow-up default is 0.50;
+use 0.95 only as an explicitly labeled sensitivity analysis.

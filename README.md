@@ -23,9 +23,10 @@ For an input set of \(X\) TE positions, the workflow retrieves and averages
 their individual CDFs to obtain the target TE age distribution. It then
 bootstraps the \(X\) TE SNPs with replacement and calculates the one-dimensional
 Wasserstein distance between each bootstrap CDF and the observed target CDF.
-The upper 95th-percentile bootstrap distance defines the maximum acceptable
-mismatch for a synonymous control set. At least 1,000 bootstrap replicates are
-recommended so this tail threshold is reasonably stable.
+The median bootstrap distance defines the default maximum acceptable mismatch
+for a control set. At least 1,000 bootstrap replicates are recommended so this
+threshold is reasonably stable. The quantile remains configurable for explicit
+sensitivity analyses.
 
 ### Stratified synonymous sampling
 
@@ -381,12 +382,12 @@ python te_age_target.py \
   --te-positions te_subset.txt \
   --output targets/te_subset \
   --bootstrap-replicates 10000 \
-  --acceptance-quantile 0.95 \
+  --acceptance-quantile 0.50 \
   --seed 12345
 ```
 
 This command averages the \(X\) TE CDFs, bootstraps the TE SNPs, and stores the
-95th-percentile Wasserstein acceptance threshold. It also divides the target
+median Wasserstein acceptance threshold. It also divides the target
 distribution at 5% probability increments. Repeated boundaries on the discrete
 age grid are merged, and integer sampling quotas are adjusted to total exactly
 \(X\).
@@ -495,12 +496,13 @@ Quobyte. See [`SWAP_SAMPLER_HPC_HOWTO.md`](SWAP_SAMPLER_HPC_HOWTO.md) for the
 manifest format, submission commands, resource model, outputs, and validation
 gates.
 
-For reproducible production runs, check out an immutable release tag rather
-than a moving branch:
+For reproducible production runs, pin either an immutable tag or an exact
+commit rather than relying on a moving branch. `v0.1.0` is the tagged q95
+baseline; the q50 default is the documented follow-up commit on `main`:
 
 ```bash
 git fetch --tags
-git checkout v0.1.0
+git checkout COMMIT_HASH
 ```
 
 Release changes are summarized in [`CHANGELOG.md`](CHANGELOG.md).

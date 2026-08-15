@@ -3,7 +3,14 @@ import json
 import pytest
 
 from release_provenance import PROJECT_VERSION
-from run_age_match_manifest import _completed, _manifest
+from run_age_match_manifest import _completed, _manifest, parse_args
+
+
+def test_manifest_runner_defaults_to_bootstrap_median():
+    args = parse_args([
+        "build-targets", "--manifest", "targets.tsv", "--store", "store"
+    ])
+    assert args.acceptance_quantile == 0.50
 
 
 def test_manifest_validates_labels_paths_and_seeds(tmp_path):

@@ -1,5 +1,15 @@
 # Changelog
 
+## After v0.1.0
+
+- Changes the target-builder, manifest runner, SLURM wrapper, and legacy
+  threshold fallback from the bootstrap 95th percentile to the bootstrap
+  median (`0.50`).
+- Keeps the acceptance quantile configurable for explicitly labeled
+  sensitivity analyses.
+- Repeats the 4,061-SNP in-gene validation with 10,000 bootstraps and 100 fresh
+  matched sets under the new default.
+
 ## v0.1.0 — 2026-08-15
 
 First tagged age-matched control-sampler release.

@@ -8,6 +8,7 @@ from te_age_target import (
     empirical_threshold,
     equal_mass_boundaries,
     largest_remainder_quotas,
+    parse_args,
     wasserstein_1,
     write_target,
 )
@@ -23,6 +24,13 @@ def test_wasserstein_identical_adjacent_distant_and_nonuniform():
     assert wasserstein_1(young, young, ages) == 0
     assert wasserstein_1(young, adjacent, ages) == 1_000
     assert wasserstein_1(young, distant, ages) == 5_000
+
+
+def test_target_cli_defaults_to_bootstrap_median():
+    args = parse_args([
+        "--store", "store", "--te-positions", "te.txt", "--output", "target"
+    ])
+    assert args.acceptance_quantile == 0.50
 
 
 def test_aggregate_averages_cdfs():

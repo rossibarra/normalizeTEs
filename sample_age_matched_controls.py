@@ -41,7 +41,7 @@ def _load_target(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, float,
     threshold = metadata.get("wasserstein_threshold_generations")
     if threshold is None:
         distances = np.load(path / "bootstrap_wasserstein.npy", allow_pickle=False)
-        threshold = float(np.quantile(distances, 0.95, method="higher"))
+        threshold = float(np.quantile(distances, 0.50, method="higher"))
     rows = np.asarray(rows, dtype=np.int64)
     cdf = np.asarray(cdf, dtype=np.float64)
     ages = np.asarray(ages, dtype=np.float64)

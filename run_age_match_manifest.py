@@ -100,7 +100,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--bootstrap-replicates", type=int, default=10_000)
     parser.add_argument("--bootstrap-batch-size", type=int, default=256)
-    parser.add_argument("--acceptance-quantile", type=float, default=0.95)
+    parser.add_argument("--acceptance-quantile", type=float, default=0.50)
     parser.add_argument(
         "--missing-position-policy", choices=("error", "drop"), default="error"
     )
