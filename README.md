@@ -1,7 +1,7 @@
 # normalizeTE
 
 normalizeTE generates SNP control sets whose posterior age distributions match
-an observed TE SNP dataset. The production workflow is designed for many TE
+an observed TE variant dataset. The production workflow is designed for many TE
 datasets, posterior ARG draws stored as `.tsz` files, SLURM, and Quobyte.
 
 ## Recommended workflow
@@ -21,7 +21,7 @@ for the reasons it still exists.
 Each usable mutation contributes a uniform age distribution between the age of
 its mutation node (`below`) and its parent node (`above`). For a TE dataset of
 size \(X\), `te_age_target.py` averages the \(X\) posterior CDFs and bootstraps
-the TE SNPs with replacement. The median bootstrap Wasserstein distance is the
+the TE variants with replacement. The median bootstrap Wasserstein distance is the
 default maximum mismatch allowed for a control set.
 
 `sample_age_matched_controls.py` first finds a set inside that threshold, then
