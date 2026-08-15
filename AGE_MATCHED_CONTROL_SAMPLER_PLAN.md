@@ -1,720 +1,572 @@
-# Age-matched control sampling for many TE sets: implementation plan v2
+# Age-matched control sampler: swap-chain implementation plan
 
-This supersedes `GLOBAL_QUANTILE_SAMPLER_IMPLEMENTATION_PLAN.md`. It keeps that
-plan's engineering discipline — provenance, atomic publication, deterministic
-seeds, explicit failure — and replaces its statistical core and its cost model.
+## 1. Decision and scope
 
-Goal, unchanged: hold posterior ages for all ~23 million SNPs in the canonical
-interval store, and build control SNP sets whose age profile matches each of
-dozens of TE categories.
+This plan supersedes `GLOBAL_QUANTILE_SAMPLER_IMPLEMENTATION_PLAN.md` and the
+earlier quota-fitting/index proposal. The production sampler will use the
+canonical SNP interval store directly and construct matched control sets by
+stochastic one-for-one swaps.
 
-## 0. Why v1 is replaced
+The first release must generate **100 control sets per TE dataset**, using
+**four independent chains with 25 saved sets per chain**.
 
-Three findings. The first is the important one.
+Confirmed defaults:
 
-### 0.1 The quota rule does not target the quantity that is scored
+- controls per set equal the number of eligible target TEs;
+- sampling is without replacement within a set;
+- controls may recur across different saved sets and chains;
+- target TEs are excluded from the control pool;
+- greedy construction stops when the exact Wasserstein criterion is first met;
+- burn-in continues until at least 50% of the first feasible set has been
+  replaced;
+- consecutive saved sets within a chain must differ by at least 25% of their
+  members;
+- every saved set is certified on the exact 1,000-generation analysis grid;
+- the canonical `snp-age-interval-v1` store remains the source of truth; and
+- no global alias table, dense candidate-by-bin matrix, or Monte Carlo bucket
+  index is part of version 1.
 
-v1 §4.4 sets the quota for stratum `j` to the target's probability mass in
-stratum `j`, then draws a control with probability proportional to
-`w_ij = P_i(age in bin j)`. The existing `te_age_target.equal_mass_boundaries`
-plus `largest_remainder_quotas` does the same thing over 20 target-specific
-strata, so this is a property of the current pipeline, not something v1
-introduced.
+This is an age-matching algorithm. It must report other genomic composition
+diagnostics, but it must not silently introduce chromosome, gene, frequency,
+distance, LD, or annotation constraints. Any such constraint is a separately
+declared scientific design choice.
 
-Acceptance, however, scores the mean of the selected SNPs' **full** posteriors.
-Writing `F_i` for candidate `i`'s posterior CDF and `pi_i` for its final
-inclusion probability under the complete sequential algorithm, the exact
-statement is
+## 2. Why this replaces the indexed proposals
+
+The original global-quantile design required approximately 175 GiB of alias
+arrays and tens of billions of table cells. A later design reduced storage but
+still required a global proposal index and quota calibration. Both approaches
+optimize proposal generation before establishing that an index is necessary.
+
+Direct uniform rejection is not viable for atypical targets. On the two-draw
+real-data pilot, an in-gene target with 4,061 eligible TEs had an estimated 95%
+bootstrap threshold of 3,573 generations, while an ordinary random control set
+had Wasserstein distance 650,651 generations. For the 35,373-TE target, none of
+1,000 independent uniform proposals passed; the best distance was 599,519
+against a threshold of 2,564.
+
+One-for-one stochastic improvement, however, converged quickly:
+
+| Target | Eligible TEs | First accepted epoch | Pilot optimization time |
+| --- | ---: | ---: | ---: |
+| all structural TEs | 35,373 | 4 | about 9 s |
+| in-gene structural TEs | 4,061 | 5 | about 1.2 s |
+| `crap1` pilot | 496 | 2 | 0.07 s |
+| `crap2` pilot | 494 | 1 | 0.03 s |
+
+These measurements used two real SINGER draws and a coarse 20,000-generation
+search grid with exact 1,000-generation scoring after each epoch. They prove
+local feasibility, not 75-draw production performance. Production gates below
+must confirm the result using the complete interval store.
+
+## 3. Statistical objects
+
+### 3.1 SNP posterior CDF
+
+For SNP `i`, each usable interval `[L_ir, U_ir]` is uniform and usable intervals
+receive equal weight, matching the existing interval-store behavior:
 
 ```text
-E[aggregate CDF of the matched set] = (1 / n) * sum_i pi_i * F_i
+F_i(t) = (1 / m_i) * sum_r F_uniform(t; L_ir, U_ir).
 ```
 
-and the useful approximation is
+For a target containing `n` eligible TE SNPs:
 
 ```text
-E[aggregate CDF of the matched set] ~= sum_j p_j * G_j
-G_j = (sum_i w_ij F_i) / (sum_i w_ij)
+T(t) = (1 / n) * sum_i_in_target F_i(t).
 ```
 
-The mixture form is exact only for independent within-stratum draws with no
-global uniqueness constraint. Today's sampler uses `rng.choice(replace=False)`
-within a stratum and removes selected SNPs from later strata, so inclusion
-probabilities are not exactly `q_j * w_ij / sum_k w_kj`, and later strata depend
-on which strata ran first. Randomizing stratum order averages that dependence;
-it does not remove it. The mixture is the low-depletion limit, and `n / N` here
-is tiny, but it must be **diagnosed rather than assumed** — see §2.3.
-
-`G_j` is the mean posterior of the control SNPs holding mass in bin `j`. With 75
-SINGER draws a SNP's posterior is far wider than one global-quantile bin, so
-`G_j` is not concentrated in bin `j`; it is broad. The map `T -> sum_j p_j G_j`
-is therefore a **smoothing operator**, and it is the identity only when the
-target equals the whole control pool. For any TE category whose age profile
-actually differs from the genome-wide SNP profile — that is, every interesting
-category — the matched set is systematically shrunk toward the pool and never
-reaches the target.
-
-Equivalently: the target's bin masses are already posterior-smoothed. Using them
-as quotas and then drawing SNPs whose posteriors smooth again applies the
-smoothing kernel one time too many.
-
-Measured on a 20,000-SNP / 75-draw / 200-bin synthetic stand-in, young-biased
-overlapping target, target SNPs excluded from the control pool
-(`design_probes/deconvolution_check.py`):
-
-| | W1 to target (generations) | acceptance |
-| --- | ---: | ---: |
-| unmatched control pool | 12,363 | — |
-| bootstrap 95% threshold | 81 | — |
-| **quota = target bin mass (v1 and current code)** | **692** | **0%** |
-| **quota fitted to `{G_j}`** | **30** | **100%** |
-| oracle: best achievable by any quota vector | 3.5 | — |
-
-The realized median (692) sits essentially on the predicted expectation (661),
-confirming this is systematic bias, not proposal noise. No amount of alias-table
-engineering removes it.
-
-It bites hardest where categories are large. At `n = 200` the bootstrap
-threshold is loose (279) and both quota rules pass; at `n = 2,000` the threshold
-tightens to 94 and only the fitted rule passes. The bias does not shrink with
-`n`; the threshold shrinks as `n^-1/2`.
-
-**Caveat, stated plainly:** this is a synthetic lognormal stand-in, not the real
-store. The magnitude is model-dependent. The mechanism is not — it is an
-identity that holds whenever posteriors are wider than strata, which the real
-75-draw store certainly satisfies. Gate 1 confirms the magnitude on real data
-before anything else is built.
-
-### 0.2 The 175 GiB index buys nothing that a 3 GiB index does not
-
-v1 §5–7 commits to a persistent `(K=1000, N=23.5e6)` float32 alias-probability
-array plus a uint32 alias-index array (175 GiB), an 87.5 GiB temporary weight
-matrix, 350+ GiB node-local scratch, 384–512 GB RAM, 24–48 hours, and a compiled
-Numba/C++ kernel.
-
-Sparsity does not rescue the exact approach: measured on the same stand-in, a
-SNP's posterior has positive weight in **52% of bins** (mean 103 of 200), so CSR
-saves only ~1.9x.
-
-But the exact weights are not needed. v1 decision 8 already concedes that the
-alias layer is an acceleration layer and that acceptance is exact. So the
-proposal layer may be approximate. Drawing `R` ages per SNP from its own
-posterior and bucketing them by age boundary makes a SNP's draw probability
-proportional to its Monte Carlo count in that bin — an unbiased estimate of
-`R * w_ij` — at `N * R * 4` bytes:
-
-| R | entries | storage |
-| ---: | ---: | ---: |
-| 16 | 376 M | 1.4 GiB |
-| 32 | 752 M | 2.8 GiB |
-| 64 | 1.5 B | 5.6 GiB |
-
-Measured accepted-set quality is indistinguishable from exact `w_ij`
-(`design_probes/mc_bucket_check.py`, `design_probes/combined_check.py`). At `n = 2,000`
-with fitted quotas both reach the threshold; at `n = 200` both accept at 100%.
-
-Because bucketing `N * R` values against any boundary vector is a `searchsorted`
-plus a counting sort, **fixed global boundaries become a default rather than a
-constraint**; v1 decision 4 can be relaxed. Do not assume this is free: 752
-million values is memory-traffic bound and the bucket index has to be stored, so
-Gate 2 must measure it before target-specific rebucketing is promised per
-category.
-
-### 0.3 The plan optimizes the cheapest phase
-
-`_aggregate_uniform_interval_cdf` already scores a proposal exactly in
-`O(75n + B)` on the uniform analysis grid. For `n = 10,000` that is 750,000
-interval records, about 6.4 MiB of canonical input. Proposal generation is
-`O(n)` random lookups. Neither justifies a 23.5-billion-cell product. Throughput
-is governed by acceptance rate — which §0.1 shows was going to be near zero.
-
-## 1. Confirmed decisions
-
-Carried over from v1 unchanged:
-
-1. The control pool is the full ~23.5 million eligible SNPs, not a
-   synonymous-only subset.
-2. The canonical `snp-age-interval-v1` store remains the source of truth and is
-   never replaced or deleted. Every derived product is reproducible from it and
-   records its digests.
-3. Posterior weighting stays equal-per-usable-interval, matching
-   `cdf_at(..., weighting="interval")`. See §7.1 — this needs one explicit
-   confirmation.
-4. Final scoring uses the exact aggregate CDF reconstructed from the interval
-   store, on the same analysis grid, with the same `wasserstein_1`. (The
-   *threshold* applied to that distance changes — see §2.5.)
-5. Sampling is without replacement within a matched set; controls may be reused
-   across independently generated sets.
-6. Heavy work runs on SLURM compute nodes; transient files go to node-local
-   scratch; results publish atomically.
-
-Changed:
-
-7. **Quotas are fitted to the bin response functions `{Ghat_j}`, not copied
-   from the target's bin masses.** (§2.2)
-8. **The proposal index is a Monte Carlo posterior-draw matrix, not an alias
-   table.** (§3.1)
-9. **Boundaries are global by default but not fixed by construction.** (§3.2)
-10. **Acceptance is split into design adequacy and realized-set
-    variability, and no longer rests on the target-only bootstrap alone.**
-    (§2.5)
-
-## 2. The estimator
-
-### 2.1 Estimand
-
-State it explicitly, because §0.1 turns on it, and state it in the language that
-survives review:
-
-> A control sample **calibrated so that its mean posterior age distribution
-> matches the TE category's mean posterior age distribution.**
-
-Not "drawing the same proportion of controls from each TE age stratum." The
-fitted quotas of §2.2 are design weights that invert a blurred sampling
-operator; they are not estimates of the fraction of TEs in latent age bin `j`,
-and papers and metadata must not describe them as such.
-
-Under this estimand, target-mass quotas are an internal construction that
-demonstrably fails to deliver the stated goal, and calibration is the correct
-estimator — not cheating. The cost of the change is interpretive, and §2.5
-carries the diagnostics that keep it honest.
-
-### 2.2 Bin response functions and quota fitting
-
-For boundaries `b_0 < ... < b_K` over the eligible control pool, the response
-function is defined from the **frozen-draw bucket multiplicities that sampling
-actually uses**, not from the ideal weights:
+For a control set `S` of the same size:
 
 ```text
-Ghat_j = (sum_i m_ij F_i) / (sum_i m_ij)
+C_S(t) = (1 / n) * sum_i_in_S F_i(t).
 ```
 
-where `m_ij` is SNP `i`'s multiplicity in bucket `j` and `F_i` is its exact
-interval-store posterior. Using `m_ij` rather than `w_ij` is not a compromise:
-it makes fitting and sampling consistent, so much of the sketch error in §3.1 is
-absorbed into `Ghat_j` instead of appearing as unexplained bias.
+### 3.2 Distance and threshold
 
-`Ghat_j` is **not** computed as `(M^T @ CDF) / colmass`; that contraction is
-`N*K*B` and impossible at production scale. Estimate it by subsampling `S`
-bucket **entries** (default 5,000, so multiplicity is carried automatically),
-gathering their intervals, and calling the existing exact
-`_aggregate_uniform_interval_cdf`. Cost is `O(S * 75 + B)` per bin — minutes,
-once per index. Record `S`, the seed, and a per-bin standard error.
-
-Quotas for a target `T` are then chosen **lexicographically**, not by a single
-penalized objective:
-
-1. Solve `d* = min over x in simplex of W1(x @ Ghat, T)`. This is convex; on a
-   fixed grid one-dimensional W1 is a weighted L1 norm of CDF differences, so it
-   is an LP, or a projected subgradient solve in well under a second.
-2. Among `x` with `W1(x @ Ghat, T) <= d* + epsilon`, minimize a **design**
-   penalty:
+The exact acceptance statistic remains the existing one-dimensional
+Wasserstein calculation on the 1,000-generation target grid:
 
 ```text
-lambda_1 * || x - x_targetmass ||_1        keep near the natural mixture
-+ lambda_2 * sum_j (second_difference(x)_j)^2   forbid oscillatory adjacent bins
-+ lambda_3 * sum_j x_j^2 / distinct_j           discourage concentration in weak bins
+W1(C_S, T) = sum_b |C_S(b) - T(b)| * grid_width_b.
 ```
 
-3. Apportion to integers with the project's existing
-   `largest_remainder_quotas`, then **rescore the rounded vector** — generic
-   largest-remainder rounding is not guaranteed to preserve the fitted CDF, and
-   the rounding step must not be allowed to silently spend the tolerance.
+The initial threshold remains the conservative observed 95th percentile of
+target-SNP bootstrap distances, computed separately for each TE dataset at its
+actual eligible size. Bootstrap replicates resample target SNP rows with
+replacement and retain each row's complete posterior CDF.
 
-`epsilon` is set from measured resolution limits — sketch uncertainty (§3.1),
-integer rounding, proposal-to-proposal variation, and exclusion-correction error
-— and regularization may consume only a small declared fraction of the final
-equivalence tolerance. Never choose `lambda` because the quota curve looks
-smooth.
+Version 1 must use the same CDF convention, grid, weighting, and empirical
+quantile method for target construction, bootstrap distances, and saved-set
+certification. Metadata records the bootstrap replicate count, seed, quantile,
+and full distance summary.
 
-`{Ghat_j}` are broad and strongly collinear, so `x` is **not identifiable**:
-very different quota vectors give essentially the same fitted CDF. That is
-tolerable because `x` is never interpreted, but it is why the design penalty
-exists — quotas still control candidate concentration, exclusion sensitivity,
-depletion, covariate composition, and reproducibility. Stability gates therefore
-apply to the **fitted response**, not to the quota vector (§8, Gate 2).
+The bootstrap threshold is a matching tolerance, not evidence that saved
+control sets are independent or uniformly sampled. Those are separate
+diagnostic questions.
 
-Record the unregularized fit, the chosen penalty weights, the target-mass fit,
-and `d*` for every category.
+### 3.3 Incremental swap identity
 
-### 2.3 Validating the linear-response approximation
-
-Because §0.1's mixture form is an approximation, every category must report:
-
-- within-bin sampling fraction and unique-SNP effective sample size;
-- entry-level and SNP-level rejection/collision rates, separately — entry-level
-  collision badly understates SNP-level concentration;
-- predicted W1 from `sum_j (q_j / n) Ghat_j` versus the empirical mean W1 of
-  repeated exact proposals.
-
-A large gap between predicted and empirical W1 means the low-depletion
-approximation has failed locally — typically a tail bin with low effective
-capacity, or a few SNPs dominating several fitted bins — and the category must
-be flagged rather than accepted.
-
-### 2.4 Proposal draw
-
-Sample bins in randomized order. To fill bin `j`'s quota, draw uniformly from
-bucket `j`, rejecting entries that are already selected in the current set or
-excluded for this category. Multiplicity within the bucket encodes `w_ij`.
-
-Name the design precisely, as v1 §4.5 did not: this is **successive
-probability-proportional-to-size sampling without replacement, conditional on a
-randomized stratum order**. It is not equivalent to Gumbel-top-k or to
-noncentral-hypergeometric designs, which give different subset probabilities.
-Test it against a small float64 reference implementation rather than asserting
-equivalence.
-
-Uniform-within-bucket sampling is correct only if the following are handled, and
-each needs an explicit test:
-
-- a SNP appearing several times in one bucket must not be selected twice;
-- uniqueness applies globally across all buckets, not per bucket;
-- rejection yields the correct sequential renormalization only while entries for
-  already-selected *or excluded* SNPs are redrawn rather than skipped;
-- entry-level collision rate understates SNP-level concentration — record
-  unique-SNP ESS and maximum multiplicity, not just redraw counts;
-- a fitted quota can exceed a bucket's unique *eligible* capacity even when its
-  entry count is large. Validate against distinct eligible candidates after the
-  exclusion mask, not against `total_bucket_mass`.
-
-### 2.5 Acceptance
-
-The target-only bootstrap threshold answers "how far might another realization
-of the target differ from the observed target?" That is the target's own
-sampling variability, which an engineered control sample has no obligation to
-reproduce, and it tightens as `n^-1/2` while sampler approximation bias does
-not. §0.1 is exactly that mismatch surfacing. Split acceptance in two.
-
-**Criterion 1 — design adequacy** (evaluated once per category, before
-sampling). Is the fitted expected response `sum_j (q_j / n) Ghat_j` close enough
-to the observed target? Judge against a **prespecified scientific equivalence
-margin** — an age mismatch large enough to materially confound the downstream
-comparison — and additionally require a declared relative improvement over the
-unmatched control pool. In the §0.1 measurement that pool distance was 12,363
-generations, so "how much of the gap did matching close" is a meaningful and
-size-stable statistic in a way the bootstrap threshold is not.
-
-**Criterion 2 — realized-set variability** (evaluated per proposal). Simulate
-from the fitted design and characterize the distribution of exact W1 values,
-which absorbs integer quotas, finite control variation, depletion, and exact
-interval-store scoring. A proposal is accepted if it is consistent with that
-simulated distribution.
-
-Scoring itself is unchanged: reconstruct the proposal's exact aggregate CDF via
-the same `aggregate_cdf_at` uniform-grid path, on the same analysis grid, with
-the same equal-per-interval weighting, the same edge convention, and the same
-`wasserstein_1`. The frozen draws affect only proposal construction; they never
-enter scoring.
-
-**Selection-bias warning.** Accepting the best 100 sets out of a very large
-proposal pool conditions the controls toward unusually favorable random
-realizations, and the induced selection is currently unrecorded. This applies to
-the pipeline as it stands today. Prefer a calibrated design whose ordinary
-proposals pass at a high prespecified rate, and always record the proposal count
-that produced the accepted sets.
-
-**If inferential uncertainty in the target must be propagated,** use a
-two-source bootstrap: resample target SNPs, refit the calibration, sample
-controls under the refitted design, and evaluate the target-control discrepancy.
-That estimates the uncertainty of the complete procedure rather than of the
-target alone.
-
-**Report on every proposal, accepted or not** — these are what the aggregate CDF
-cannot see, and they are the guard against a mixture that reproduces a curve
-without resembling the target biologically:
-
-- the aggregate-CDF W1 and its predicted counterpart from §2.3;
-- the W1 between the matched set's and the TE set's distributions of per-SNP
-  posterior point estimates (`store.mean_ages`) — a mixture balancing very young
-  against very old SNPs can match the aggregate curve while containing no SNP of
-  typical target age;
-- the posterior-width distribution — controls with broad, uncertain posteriors
-  can reproduce the mean CDF of TEs with sharp ones;
-- unique-SNP effective sample size and maximum inclusion propensity;
-- fitted quota profile versus target-mass profile;
-- balance on whatever genomic covariates §5.5 settles on;
-- stability of all of the above across equivalent fits.
-
-### 2.6 Where this goes next
-
-Binning is a means, not the ideal formulation. The clean statement of the
-problem is direct per-SNP calibration: find inclusion probabilities `pi_i` with
+If selected row `old` is replaced by unselected row `new`, the aggregate CDF
+updates exactly as
 
 ```text
-sum_i pi_i = n,   0 <= pi_i <= 1,   sum_i pi_i F_i ~= n * T
+C_new = C_current + (F_new - F_old) / n.
 ```
 
-and then convert them into a fixed-size sample by a balanced sampling design.
-That eliminates the artificial stratum layer and optimizes the scored quantity
-directly.
+This identity is used on both the coarse search grid and exact analysis grid.
+It avoids reconstructing a set aggregate from all `n` rows for each proposal.
 
-It is not practical at production scale as stated: 23.5 million variables
-against ~23,000 grid constraints implies a dense response matrix of roughly
-5.4e11 entries, over 2 TB even in float32, with highly redundant constraints
-that may be infeasible exactly once `pi_i <= 1` and fixed size are imposed.
+The Wasserstein distance still costs `O(B)` per evaluated swap for `B` grid
+points. Version 1 may batch CDF construction for proposed rows, but it must not
+materialize full-grid CDFs for the entire 23.5-million-row pool.
 
-A **reduced-feature** version is tractable and is the right long-term direction:
-represent each `F_i` by tens of spline coefficients, CDF landmarks, or
-multiscale interval masses, calibrate those features by streaming matrix-vector
-products with entropy balancing or bounded exponential tilting, and keep exact
-full-grid scoring as validation. Do not build it now. Fitted bin responses are
-simpler, auditable, and likely adequate provided §2.3's linear-response
-approximation is empirically validated.
+## 4. Candidate universe
 
-## 3. Data products
+For each TE dataset:
 
-### 3.1 Posterior draw matrix — `snp-posterior-draws-v1`
+1. open and validate the canonical interval store;
+2. resolve target chromosome/position pairs exactly;
+3. apply the declared missing/ineligible target policy;
+4. form the control universe from the declared eligible store rows or an
+   explicit eligible control-row list;
+5. exclude every resolved target row;
+6. reject duplicate target or candidate rows;
+7. verify `candidate_count >= target_size`; and
+8. record target-resolution and candidate-universe digests.
+
+The default missing-target policy for production should be `error`. A `drop`
+mode is useful for audits and pilots, but every excluded coordinate and reason
+must be written to the result metadata.
+
+## 5. Two-phase algorithm
+
+### 5.1 Independent chains and deterministic seeds
+
+Run four chains. Derive each chain seed deterministically from:
 
 ```text
-posterior_draws/
+global seed + target digest + chain index + algorithm version
+```
+
+Use a stable documented derivation rather than Python's process-randomized
+`hash()`. Store the derived seeds.
+
+Each chain starts from an independently drawn uniform set of `n` distinct
+candidate rows. Do not seed later chains from an earlier accepted set.
+
+### 5.2 Phase A: greedy construction
+
+The construction phase finds a feasible starting state; it is not counted
+among the 100 saved sets.
+
+For each epoch:
+
+1. randomly permute all selected slots;
+2. draw a batch of candidate replacement rows;
+3. skip any replacement already present in the current set;
+4. evaluate `C_trial = C + (F_new - F_old) / n` on the coarse grid;
+5. accept the swap only if coarse-grid Wasserstein distance strictly improves;
+6. update membership, selected rows, aggregate CDF, and diagnostics; and
+7. compute the exact full-grid distance at the end of the epoch.
+
+Near the threshold, exact scoring should occur more frequently so construction
+stops close to the first exact threshold crossing rather than overshooting to
+an unnecessarily perfect match. A safe initial rule is:
+
+- exact score after every epoch while exact distance exceeds twice the
+  threshold;
+- below twice the threshold, exact score after every configurable block of
+  accepted swaps; and
+- stop immediately after the first exact-certified state.
+
+Coarse distance may guide construction but never certifies a set. The exact
+first-passage set becomes the entry state for burn-in and is not written as one
+of the 100 requested samples.
+
+If no feasible state is found within the maximum epochs or proposal budget,
+fail with the best exact distance, distance trajectory, acceptance trajectory,
+and seed. Do not relax the threshold automatically.
+
+### 5.3 Phase B: feasible-region walk
+
+After construction, use stochastic one-for-one swaps to move within the
+matched region. The default proposal chooses:
+
+- one selected slot uniformly; and
+- one row uniformly from the control universe, rejecting rows already selected.
+
+For a mathematically exact constrained chain, accept a proposal if and only if
+its **exact** distance is at or below the threshold. Because the proposal is
+symmetric over equal-sized subsets, this indicator acceptance rule satisfies
+detailed balance with a uniform distribution over the connected feasible
+states.
+
+Version 1 must not claim that saved sets are independent or uniformly sampled
+unless empirical mixing and connectivity diagnostics support that claim.
+Single-swap feasible states could mix slowly or form disconnected components.
+The four independent chains and membership diagnostics are therefore required.
+
+Two execution modes should be implemented explicitly:
+
+1. `exact-chain`: every proposed swap is evaluated on the exact grid; this is
+   the reference method and the only mode eligible for a uniform-feasible-set
+   interpretation.
+2. `screened-chain`: a coarse calculation rejects clearly invalid proposals,
+   but every provisionally acceptable proposal is evaluated exactly before its
+   state changes. Screening must have no false rejection if a uniform target is
+   claimed; otherwise the output is labeled an optimization-derived matched
+   ensemble rather than a uniform constrained sample.
+
+The first implementation should favor correctness and measurement over an
+unproven coarse-only chain.
+
+### 5.4 Burn-in
+
+Let `S_entry` be the exact first-passage state and `S_current` the chain state.
+Burn-in ends only when all of the following hold:
+
+```text
+1 - |S_current intersect S_entry| / n >= 0.50
+exact_W1(S_current, T) <= threshold
+minimum accepted-swap count is satisfied
+```
+
+The 50% membership replacement is authoritative. Accepted-swap count is a
+secondary guard because a slot can change multiple times and an earlier member
+can re-enter the set.
+
+As a rough planning approximation, 50% replacement requires approximately
+`-n * log(0.5) = 0.693n` accepted swaps under well-mixed removal. The code must
+measure actual membership replacement instead of assuming the approximation.
+
+### 5.5 Saving 25 sets per chain
+
+After burn-in, save the current state only after exact certification. For every
+later saved set in the same chain, continue until:
+
+```text
+1 - |S_current intersect S_previous_saved| / n >= 0.25
+exact_W1(S_current, T) <= threshold.
+```
+
+Thus consecutive saved states share at most 75% of their members. The default
+25% replacement corresponds to approximately `-n * log(0.75) = 0.288n`
+accepted swaps, but actual set intersection controls saving.
+
+Save 25 states from each of four chains for exactly 100 output sets. Output
+ordering is deterministic: chain index first, then within-chain sample index.
+
+The 25% default is a starting point, not proof of independence. Gate 3 compares
+10%, 25%, and 50% replacement using autocorrelation, effective sample size,
+membership overlap, and the downstream statistic. Change the production
+default only with documented evidence.
+
+## 6. Efficient implementation
+
+### 6.1 New modules and CLI
+
+Add a focused implementation rather than extending the legacy stratified
+sampler indefinitely:
+
+```text
+swap_control_sampler.py
+sample_age_matched_controls.py
+tests/test_swap_control_sampler.py
+```
+
+The CLI should accept at least:
+
+```text
+--store
+--target-positions / --target
+--candidate-rows / --all-eligible
+--output
+--sets 100
+--chains 4
+--sets-per-chain 25
+--seed
+--bootstrap-replicates
+--acceptance-quantile 0.95
+--analysis-bin-width 1000
+--search-bin-width 20000
+--burnin-replacement-fraction 0.50
+--sample-replacement-fraction 0.25
+--max-construction-epochs
+--max-chain-proposals
+--candidate-batch-rows
+--progress-every
+--checkpoint-every
+--scratch-dir
+```
+
+Validate that `sets == chains * sets_per_chain` when all three are supplied.
+
+### 6.2 CDF access and memory
+
+Keep the interval store memory-mapped and read-only. Do not precompute a full
+candidate-by-grid matrix.
+
+Maintain for each active chain:
+
+- selected canonical row indices;
+- an efficient membership structure;
+- current aggregate CDF on search and exact grids;
+- the construction entry set and previous saved set;
+- current exact and coarse distances; and
+- RNG state and counters.
+
+During greedy epochs, evaluate old and proposed row CDFs in blocks. A block may
+hold float32 row CDFs on the search grid, while aggregate and Wasserstein sums
+remain float64. Select block sizes from an explicit memory formula.
+
+For the exact chain, benchmark these alternatives:
+
+1. compute `F_old` and `F_new` from their small ragged interval records for each
+   proposal;
+2. cache exact CDFs only for currently selected rows plus a bounded LRU of
+   recently proposed rows; and
+3. batch exact candidate CDF calculation while preserving sequential state
+   transitions.
+
+Do not add a persistent all-candidate CDF cache without a separate storage and
+precision gate.
+
+### 6.3 Membership operations
+
+The selected set is small relative to the candidate universe. Use:
+
+- a row array indexed by selected slot;
+- a hash set or equivalent for `O(1)` selected-membership tests; and
+- optional row-to-slot mapping when needed for cache updates.
+
+Every accepted swap updates these structures atomically. Tests must assert
+their agreement after randomized sequences.
+
+### 6.4 Checkpoint and resume
+
+Checkpoint each chain independently and atomically. A checkpoint contains:
+
+- schema and algorithm version;
+- target/store/candidate digests;
+- chain and derived seed;
+- RNG bit-generator state;
+- phase, epoch, proposal, and accepted-swap counters;
+- selected rows;
+- coarse and exact aggregate CDFs;
+- construction entry and previous saved rows when applicable;
+- saved sets completed by that chain; and
+- current diagnostic summaries.
+
+Resume only when all provenance and parameter fields match. Refuse stale or
+partial checkpoints. Termination signals should request a checkpoint and clean
+exit where safe.
+
+## 7. Outputs and diagnostics
+
+Publish one result directory atomically:
+
+```text
+matched_controls/
 ├── metadata.json
-├── candidate_rows.npy      int64  (N,)   strictly increasing canonical rows
-└── sampled_ages.npy        float32 (N, R) R ages per SNP from its own posterior
+├── row_indices.npy          # int64, (100, n)
+├── chromosomes.npy          # string, (100, n), or compact encoded equivalent
+├── positions.npy            # native positions, (100, n)
+├── wasserstein.npy          # float64, (100,)
+├── chain_index.npy          # integer, (100,)
+├── sample_index.npy         # integer, (100,)
+├── diagnostics.csv
+├── target_cdf.npy
+├── age_bins.npy
+└── checkpoints/             # absent or marked complete after final publication
 ```
 
-Built in one streaming pass over the interval store: for each row block, read
-its ragged intervals, draw `R` interval indices uniformly in `[0, m_i)` and `R`
-uniforms, and set `age = L + u * (U - L)`. Pure NumPy, vectorized per block. No
-compiled kernel. `R = 64` default, ~5.6 GiB at `N = 23.5e6`.
-
-Metadata records the source-store digests, `R`, the draw seed, block size, per-
-phase timings, and array digests. Same staging/`complete: true`/atomic-rename
-discipline as v1 §7 Phase F.
-
-**Frozen-draw correlation.** One matrix reused for every set of every category
-makes its Monte Carlo partition error **common to all categories and all
-replicates**; 100 accepted sets do not average it away. Two mitigations, both
-required:
-
-1. *Decorrelate replicates.* Store `R = 64` and bucket each accepted-set
-   replicate from a distinct, seed-derived 16-column subset.
-2. *Measure the common component.* Build the panel as `2R` and split it into two
-   independent halves. Construct responses and fit quotas independently on each,
-   cross-evaluate each fitted solution against the **other** half's response
-   matrix, and run exact interval-store scoring on pilot proposals from both.
-   Two panels suffice to estimate the common sketch component; independent
-   sketches are not needed per accepted set.
-
-Production is gated on **response stability** across the two halves — the fitted
-expected CDF, realized exact W1, effective sample size, and covariate balance —
-not on quota-vector stability, which is expected to be unstable because §2.2's
-fit is non-identifiable. If the halves disagree materially, increase `R`.
-
-### 3.2 Boundaries and responses — `age-bin-response-v1`
-
-```text
-bin_response/
-├── metadata.json
-├── boundary_probabilities.npy   float64 (K+1,)
-├── boundary_ages.npy            float64 (K+1,)  strictly increasing
-├── bin_response.npy             float64 (K, B)  Ghat_j on the analysis grid
-├── bin_response_stderr.npy      float64 (K, B)
-├── bucket_offsets.npy           int64   (K+1,)
-├── bucket_entries.npy           uint32  (N*R,)  SNP row per bucket entry
-├── entry_multiplicity_max.npy   int64   (K,)    max m_ij within the bucket
-├── distinct_candidates.npy      int64   (K,)
-└── total_bucket_mass.npy        int64   (K,)
-```
-
-`bin_response.npy` holds `Ghat_j` as defined in §2.2 — built from the frozen
-bucket multiplicities `m_ij`, with `F_i` taken exactly from the interval store.
-It is meaningful only in combination with the specific draw matrix it was built
-from, whose digest it records and against which it refuses to open.
-
-`K = 200` default, not 1,000. The fit in §2.2 needs enough basis functions to
-span `T`, not fine resolution: `K = 200` already reached an oracle W1 of 3.5
-against an 81-generation threshold. `bin_response.npy` is 184 MB at `K = 1000`,
-`B = 23,000`, so `K` is a tuning knob, not a cost driver. Sweep it at Gate 2.
-
-Global equal-mass boundaries of the aggregate control CDF are the default.
-Target-specific boundaries remain available because rebucketing is cheap, and
-the two should be compared at Gate 2 — but see §0.2 on not over-promising the
-rebucketing cost before it is measured.
-
-Global aggregate CDF construction keeps v1 §7 Phase B: a streaming difference-
-array kernel over the ragged interval arrays, accumulating in float64,
-validating monotonicity, finiteness, and terminal value. Use `np.bincount`
-rather than `np.add.at`; the latter is the slow `ufunc.at` path and appears in
-`_aggregate_uniform_interval_cdf` today.
-
-Boundary compression, half-open conventions, and full support at both ends are
-unchanged from v1 §4.2 and must be tested explicitly.
-
-### 3.3 What is deleted from v1
-
-`weights_by_bin.npy`, `alias_probability.npy`, `alias_index.npy`,
-`effective_sample_size.npy`, the compiled weight and alias kernels, the durable
-per-bin alias build manifest, the active-bin staging layer, and the 350 GiB
-scratch / 512 GB RAM envelope. `ESS_j` is replaced by `distinct_candidates.npy`,
-which is the direct quantity and is exact.
-
-## 4. Pipeline
-
-### 4.1 `build_posterior_draws.py`
-
-Resolve the candidate universe once (v1 §7 Phase A is kept verbatim, including
-`--all-eligible` to avoid parsing a 271 MB text file per build), then stream the
-draw matrix. Publish atomically.
-
-### 4.2 `build_bin_response.py`
-
-Global aggregate CDF, boundaries, bucketing, bucket subsampling, `G_j`
-estimation, diagnostics. Publish atomically. Records the digest of the draw
-matrix it was built from and refuses to open against a different one.
-
-### 4.3 `build_te_targets.py` — batched target construction
-
-v1 §9 batched sampling but not target construction, which
-`te_age_target.build_target` currently does one category at a time with its own
-scratch CDF matrix and bootstrap. Dozens of categories need one manifest, shared
-position resolution, one store open, and per-category seeds derived
-deterministically from a master seed and a stable category label — never from
-manifest row order or worker count. Overlapping categories must be declared, not
-discovered.
-
-### 4.4 `sample_age_matched_controls.py`
-
-Per category: verify provenance digests match; apply the exclusion mask (§5.1);
-fit quotas (§2.2); draw proposals (§2.4); score and accept (§2.5); publish
-atomically with full diagnostics. `sample_age_matched_syn.py` is retained as a
-thin compatibility wrapper until migration completes.
-
-Progress and checkpoint reporting is carried over from v1 §8.3 unchanged; it was
-the right list. Add: fitted-vs-target-mass quota comparison, chosen `lambda`,
-lost mass and lost distinct candidates from exclusion, and both acceptance
-distances.
-
-### 4.5 `sample_many_age_matched_controls.py`
-
-Manifest-driven batch runner, as v1 §9, but the staging problem largely
-evaporates: the draw matrix is ~5.6 GiB and the response matrix ~184 MB, so an
-entire node-local copy is trivial. Partition categories into node-sized batches;
-open the interval store and both derived products once per allocation.
-
-## 5. Scientific gaps v1 did not cover
-
-### 5.1 Control exclusion — required, currently absent
-
-The all-SNP pool contains the target TE SNPs themselves. They must be excluded
-from their own controls. Beyond that, the following are **PI decisions**, and
-the plan implements whichever is chosen rather than guessing:
-
-- exclusion of SNPs within a configurable bp window of the target TE insertion
-  or annotated TE body;
-- exclusion of SNPs in LD with target variants;
-- exclusion of all SNPs belonging to the same TE category, or to any TE.
-
-Implement as a per-category boolean mask applied at bucket-draw time by
-rejection.
-
-**Exclusion changes the response and the fit must follow.** Rejection sampling
-correctly implements the excluded *sampling* distribution, but fitting against
-the unadjusted `bin_response` then predicts the wrong curve. The exclusion-
-adjusted response is
-
-```text
-Ghat_j^(-E) = (sum_{i not in E} m_ij F_i) / (sum_{i not in E} m_ij)
-```
-
-which is obtained **exactly** (conditional on the frozen sketch) by subtracting
-delta terms from the stored numerator and denominator:
-
-```text
-D_j = sum_{i in E} m_ij           H_j = sum_{i in E} m_ij F_i
-```
-
-For the TE SNPs themselves and modest bp windows this is cheap. For large
-window- or LD-based exclusions, `H_j` touches every excluded SNP's full CDF and
-gets expensive; then either recompute affected high-quota bins by a
-category-specific streaming pass, or demonstrate the delta is negligible against
-a declared bound.
-
-Note that lost bucket mass alone is **not** a sufficient diagnostic: a small
-removed mass matters if the removed SNPs have a distinct response. Report `D_j`,
-the norm of the induced change in `Ghat_j`, and the lost distinct-candidate
-count per bin.
-
-### 5.2 Cross-category reuse — a design decision, not an implementation detail
-
-The plan must state whether controls may be shared between replicates of one
-category, between TE families, and how nested or overlapping categories are
-handled. Recommended default: **allow reuse across categories, forbid duplicates
-within a set, and record reuse rates.** Enforcing global disjointness across
-dozens of categories would make extreme-age categories infeasible and would make
-results depend on category processing order. Flagged for PI confirmation.
-
-### 5.3 The acceptance threshold is not comparable across category sizes
-
-§2.5 replaces the single bootstrap criterion; this section records why, and what
-still has to be settled with the PI regardless of which criterion is used.
-
-The bootstrap threshold measures the *target's own* sampling variability, which
-a control set has no obligation to reproduce. It shrinks as `n^-1/2`, so large
-categories get very tight absolute thresholds while categories of tens of SNPs
-get permissive and unstable ones. In the §0.1 measurements it ranged from 279
-generations at `n = 200` to 81 at `n = 2,000` — a 3.4x swing from set size alone.
-
-Required before production:
-
-- a declared minimum category size, with bootstrap uncertainty reported;
-- calibration by simulation at representative `n`, not assumed transferable;
-- a predeclared infeasibility policy — v1 fails with a diagnostic, which is
-  correct, but there must be a scientific fallback (report best achievable W1
-  and its ratio to the threshold, and let the PI decide) rather than an empty
-  result directory;
-- acceptance diagnostics broken out by category size and profile shape.
-
-### 5.4 W1 on a linear age scale is dominated by the old tail
-
-The analysis grid runs to roughly 22.85 million generations at 1,000-generation
-resolution. A W1 in generations therefore weights the ancient tail enormously
-relative to the recent history where TE dynamics are usually interesting. A
-log-age or rank/quantile-scale W1 may be the more appropriate distance. This
-changes thresholds and possibly conclusions. **PI decision**; the code should
-take the distance scale as an explicit parameter and record it.
-
-### 5.5 Age-only matching
-
-Age correlates with allele frequency, local SNP density, recombination rate and
-LD, mappability, genic/intergenic context, and distance to genes. Matching on
-age alone can trade age confounding for genomic-context confounding. The plan
-should state the downstream estimand and which covariates are matched,
-stratified, restricted, or adjusted afterward. The v2 index is a much better
-foundation for this than v1 was: the draw matrix is `(N, R)` and additional
-matching axes extend the bucket key rather than multiplying a 175 GiB table.
-
-## 6. Testing with `run.combined.98.tsz` and `run.combined.99.tsz`
-
-The fixtures referenced in `INTERVAL_STORE_BENCHMARKS.md` used draws 100–102,
-which are not present. Rebuild the test fixture from the two draws that are.
-
-- **`results/interval-2draw-store/`** — a two-draw all-SNP interval store from
-  draws 98 and 99 via the existing `build_snp_interval_store.py` with float32
-  endpoints and `chrom_offsets.combined.txt`. From the measured three-draw build
-  (27.2 M rows, 74.7 M intervals, 24m26s, 34.8 GB peak RSS), expect roughly
-  25–27 M rows, ~50 M intervals, ~1.1 GiB, and under 30 GB peak. **This exceeds
-  comfortable headroom on a 36 GiB laptop — build it on a compute node.**
-- Two draws give `m_i = 2`, so posteriors are far narrower than production's 75.
-  The §0.1 smoothing effect will therefore be *weaker* here than in production.
-  A two-draw fixture that already shows the bias is strong confirmation; one that
-  does not is not a refutation, and Gate 1 must say so explicitly.
-- Derive synthetic TE categories from the fixture by posterior-mean quantile —
-  young-biased, old-biased, broad, and bimodal — at `n` = 100, 1,000, and 10,000,
-  so that all four profile shapes and all three size regimes are covered without
-  waiting for real TE annotations.
-- Real TE position lists, when available, are resolved through
-  `snp_position_resolution.py` exactly as the synonymous list is today.
-
-Unit and property tests are carried over from v1 §10.1 and §10.2 with the alias
-items removed and these added:
-
-- bucket multiplicity converges to `w_ij` as `R` grows;
-- `G_j` subsample estimate converges to the full-bucket aggregate;
-- fitted quotas reproduce `T` better than target-mass quotas whenever `T != G`,
-  and identically when `T == G`;
-- the regularization ladder returns the target-mass solution as `lambda -> inf`;
-- exclusion masks change `{G_j}` by less than the recorded bound;
-- replicate decorrelation: two replicates using disjoint draw-column subsets
-  have lower correlation in their selected sets than two using the same subset;
-- successive-PPS draws match a small float64 reference implementation.
-
-## 7. Questions that must be answered before Gate 2
-
-1. **Interval versus draw weighting.** Equal-per-usable-interval weighting makes
-   `draw_id` irrelevant: a draw contributing several usable mutation
-   observations receives proportionally more posterior weight. Confirm this is
-   scientifically intended rather than inherited. Equal-per-draw weighting
-   changes `w_ij`, `G_j`, and every CDF.
-2. **Exclusion policy** (§5.1).
-3. **Cross-category reuse policy** (§5.2).
-4. **Distance scale** (§5.4).
-5. **Minimum category size and infeasibility policy** (§5.3).
-
-## 8. Gates
-
-Three gates replace v1's five. Nothing here needs a 24–48 hour build.
-
-### Gate 1 — confirm the bias on real data (blocking, cheap)
-
-Implemented: `gate1_smoothing_bias.sbatch` builds the two-draw store from
-`run.combined.98.tsz` and `run.combined.99.tsz` and then runs `gate1_report.py`,
-which measures realized W1 and acceptance for target-mass quotas versus fitted
-quotas across the four synthetic profile shapes and three sizes, and writes
-`results/gate1-smoothing-bias.json`.
-
-The report emits an explicit verdict string — "section 2.2 is REQUIRED", "is NOT
-required", "inconclusive", or "the acceptance criterion itself needs the §2.5
-rework" — and never reports an infeasible or failed design as clearing the
-threshold. Failed draws count against the acceptance rate rather than being
-dropped, and a fitted design that would demand more distinct SNPs than a bin
-holds is reported as infeasible rather than attempted.
-
-This is the decision gate. If target-mass quotas already clear thresholds on
-real data at production draw counts, §2.2 is unnecessary complexity and should
-be dropped. If they do not — which the synthetic evidence predicts — nothing
-else in the plan should be built until the fitted rule is in place.
-
-### Gate 2 — parameter sweep and correctness
-
-Sweep `R` in {16, 32, 64}, `K` in {100, 200, 500, 1000}, global versus
-target-specific boundaries, and the §2.2 design-penalty weights. Correctness
-fixtures against brute-force `interval_cdf`. Benchmark the rebucketing cost that
-§0.2 assumes is cheap.
-
-`R` is gated on **response stability, not quota stability** (§3.1), using: the
-cross-sketch W1 between fitted expected responses; the change in `d*` between
-`R = 32` and `R = 64` and 128; per-bin bucket mass and unique-SNP ESS; proposal
-collision and rejection rates; the exact proposal W1 distribution; and
-exclusion-adjusted versions of all of these. Quota-vector instability is
-expected and is not a failure.
-
-Also measure §2.3's predicted-versus-empirical W1 gap, which is the check on the
-low-depletion approximation.
-
-Deliver measured defaults replacing every default asserted in this document.
-
-### Gate 3 — production pilot
-
-Full draw matrix and response product built on a compute node. Five
-representative real TE categories at small accepted-set counts, then a full
-100-set category. Confirm progress reporting, checkpoint recovery, acceptance
-rate, exact scoring, and end-to-end runtime before launching the manifest.
-
-## 9. Resource envelope
-
-Planning figures, to be replaced by Gate 2 and 3 measurements.
-
-| Product | v1 | v2 |
-| --- | ---: | ---: |
-| canonical interval store | 17 GiB | 17 GiB (unchanged) |
-| temporary weight matrix | 87.5 GiB | none |
-| persistent proposal index | 175 GiB | 5.6 GiB |
-| response matrix | none | 0.18 GiB |
-| peak node-local scratch | 350 GiB | ~40 GiB |
-| RAM | 384–512 GB | ~48 GB |
-| build wall time | 24–48 h | hours |
-| compiled kernel | required | none |
-
-The draw-matrix build is one streaming pass over the same 17 GiB the store build
-already writes, so the 16-hour store-build measurement is the right anchor for
-its extrapolation, not a new class of job.
-
-## 10. Definition of done
-
-1. The canonical interval store is unchanged and fully usable.
-2. Both derived products build reproducibly from declared seeds and refuse to
-   open against mismatched source digests.
-3. Gate 1 has answered whether fitted quotas are required, on real data, and the
-   answer is recorded.
-4. Matched sets contain no duplicate SNPs and honor the category exclusion mask.
-5. Acceptance uses the unchanged exact full-CDF Wasserstein calculation plus the
-   §2.5 acceptance structure, including the point-estimate criterion.
-6. Representative categories across all three size regimes and all four profile
-   shapes show no systematic age bias, with the fitted-versus-target-mass
-   comparison reported for each.
-7. All five §7 questions are answered and recorded in metadata.
-8. A full 100-set category completes within the measured envelope, and the
-   documented batch workflow processes the manifest without rescanning the
-   control universe per category.
-9. Interrupted jobs leave useful progress and resume safely.
+Required per-chain and per-sample diagnostics:
+
+- construction epochs, proposals, accepted swaps, and exact distance path;
+- burn-in proposals, accepted swaps, acceptance rate, and achieved replacement;
+- proposals and accepted swaps between saved samples;
+- exact Wasserstein distance for every saved set;
+- overlap with previous sample, chain entry, and other chain outputs;
+- duplicate proposal count;
+- candidate-CDF time, coarse-score time, and exact-score time;
+- target and control counts by chromosome;
+- per-control reuse across all 100 sets;
+- within-chain autocorrelation of Wasserstein distance and relevant downstream
+  statistics; and
+- warnings when diversity or mixing gates are not met.
+
+All 100 sets must contain exactly `n` unique rows and must pass the exact
+threshold. Any failure prevents final publication.
+
+## 8. Testing
+
+### 8.1 Unit tests
+
+- Incremental CDF update equals full aggregate reconstruction.
+- Incremental Wasserstein score equals `wasserstein_1`.
+- Accepted swaps update row arrays and membership structures consistently.
+- Duplicate and target-row proposals are rejected without changing state.
+- Greedy swaps never increase the chosen search-grid objective.
+- Exact certification rejects coarse false positives.
+- Burn-in uses actual set intersection, not accepted-swap count.
+- Saving requires at least 25% replacement from the previous saved set.
+- Four chains produce exactly 25 ordered outputs each.
+- Every saved set is unique internally and below the exact threshold.
+- Seeds reproduce rows, distances, checkpoints, and resume behavior.
+- Provenance mismatch rejects checkpoint resume.
+- Atomic output refuses overwrite and cleans incomplete staging.
+
+### 8.2 Property tests
+
+On randomized tiny interval stores:
+
+- swap updates remain exact over long randomized sequences;
+- a swap followed by its reverse restores the original aggregate;
+- exact-chain proposal probabilities are symmetric;
+- constrained-chain transitions never leave the feasible region;
+- replacement fractions agree with direct set intersection; and
+- control reuse across sets is allowed while within-set duplication is not.
+
+### 8.3 Statistical tests
+
+Use small systems where all equal-sized subsets can be enumerated:
+
+- compare exact-chain state frequencies with the uniform distribution over the
+  connected feasible component;
+- identify deliberately disconnected feasible examples and verify diagnostics
+  do not claim global uniformity;
+- compare multiple independent chains;
+- measure autocorrelation and effective sample size under different replacement
+  fractions; and
+- show that first-passage construction states are not treated as saved samples.
+
+## 9. Benchmark and validation gates
+
+### Gate 1: deterministic correctness
+
+Pass all unit, property, and enumeration tests. Require exact agreement within
+declared floating-point tolerances and bitwise reproducibility for fixed seeds
+on the supported platform.
+
+### Gate 2: two-draw real-data regression
+
+Turn the four completed pilots into a reproducible benchmark command. Confirm:
+
+- target resolution counts;
+- bootstrap thresholds with fixed seeds;
+- greedy convergence;
+- exact/coarse distance agreement at checkpoints;
+- bounded peak RSS;
+- four-chain checkpoint/resume; and
+- 100 exact-certified outputs for at least one small and one large target.
+
+The exploratory timing numbers are reference observations, not hard regression
+limits until the benchmark harness controls caches and hardware.
+
+### Gate 3: diversity and thinning
+
+For representative small, medium, and large targets, compare 10%, 25%, and 50%
+between-sample replacement. Measure:
+
+- membership overlap distributions;
+- per-SNP inclusion/reuse distribution;
+- Wasserstein autocorrelation and ESS;
+- downstream-statistic autocorrelation and ESS;
+- agreement across four independently initialized chains; and
+- proposals and runtime per saved set.
+
+Retain 50% burn-in and select the smallest between-sample replacement fraction
+that satisfies the documented diversity target. The initial production default
+is 25%.
+
+### Gate 4: full 75-draw store pilot
+
+Before broad production, run the complete workflow on the full interval store
+for at least:
+
+- one target near 500 SNPs;
+- one target near 4,000 SNPs;
+- one target near 35,000 SNPs;
+- a strongly young target;
+- a strongly old or long-tailed target; and
+- a narrow or multimodal target.
+
+Record construction time, chain acceptance rate, time to required membership
+replacement, exact scoring time, RSS, interval-store I/O, checkpoint size, and
+total time for 100 sets.
+
+No-go conditions include failure to construct any chain, inability to reach
+burn-in replacement within budget, severe disagreement among chains, exact
+false certification, or resource use outside the cluster envelope.
+
+### Gate 5: scientific composition audit
+
+For target and saved controls, report chromosome composition and any available
+predeclared covariates. Decide explicitly whether observed imbalance is
+acceptable or requires a new constrained design. Do not retrofit constraints
+silently after seeing downstream results.
+
+### Gate 6: production rollout
+
+Run a modest category batch first. Confirm atomic output, resumption, logging,
+100-set completeness, exact thresholds, and aggregate filesystem load before
+launching all TE datasets.
+
+## 10. Implementation order
+
+### Phase 1: pure swap primitives
+
+- Incremental aggregate and Wasserstein updates.
+- Membership and swap-state invariants.
+- Replacement-fraction calculations.
+- Deterministic seed derivation.
+- Tiny enumeration and property tests.
+
+### Phase 2: greedy constructor
+
+- Blockwise search-grid candidate evaluation.
+- Periodic exact certification and first-passage stopping.
+- Progress, budgets, and failure diagnostics.
+- Two-draw regression benchmark.
+
+### Phase 3: exact constrained chain
+
+- Symmetric proposals and exact feasibility acceptance.
+- 50% burn-in replacement.
+- 25% between-sample replacement.
+- Four chains and 25 outputs per chain.
+- Diversity and mixing diagnostics.
+
+### Phase 4: checkpointed CLI and outputs
+
+- Target/candidate resolution and provenance.
+- Atomic checkpoint/resume.
+- Atomic final publication.
+- Complete metadata and diagnostics.
+
+### Phase 5: production performance
+
+- Candidate CDF batching and bounded caches.
+- Full 75-draw Gate 4 benchmarks.
+- SLURM resource template and batch-category runner only after per-category
+  behavior is measured.
+
+## 11. Definition of done
+
+Version 1 is ready for production only when:
+
+1. the interval store remains unchanged and is the only required large index;
+2. target and candidate resolution is exact and provenance-checked;
+3. four independently seeded chains each produce 25 saved sets;
+4. first-passage construction states are excluded from the requested outputs;
+5. burn-in replaces at least 50% of the entry set;
+6. consecutive saved states replace at least 25% of members;
+7. every saved set contains exactly `n` distinct non-target controls;
+8. all 100 sets pass exact full-grid Wasserstein certification;
+9. checkpoint/resume is exactly reproducible;
+10. diversity, overlap, reuse, and chain diagnostics are retained;
+11. representative full-store targets pass the performance and scientific
+    gates; and
+12. documentation does not claim independence or uniform global sampling beyond
+    what the measured chain diagnostics support.

@@ -1,11 +1,11 @@
 > **SUPERSEDED.** Replaced by
 > [`AGE_MATCHED_CONTROL_SAMPLER_PLAN.md`](AGE_MATCHED_CONTROL_SAMPLER_PLAN.md).
-> Retained because its §0 explains, section by section, what in this document
-> was wrong and why. In short: §4.4's quota rule targets a quantity that
-> acceptance does not score, so this design would have produced near-zero
-> acceptance for any TE category that differs from the genome-wide SNP age
-> profile; and the 175 GiB alias index of §5–7 is not needed to fix it.
-> Do not implement from this file.
+> Real-data pilots showed that direct uniform rejection is ineffective but
+> incremental one-for-one swaps reach the exact Wasserstein threshold quickly
+> for target sizes from roughly 500 to 35,000 SNPs. The replacement design uses
+> only the canonical interval store, generates 100 sets through four stochastic
+> chains, and avoids the 175 GiB alias index proposed below. Do not implement
+> from this file.
 
 # Global-quantile control sampler implementation plan
 
