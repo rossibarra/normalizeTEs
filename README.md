@@ -17,13 +17,24 @@ The supported production path has five stages:
    bootstrap TE targets (§6).
 5. Calculate Φ-SFS against the matched sets (§7).
 
-**Which matching workflow is primary.** Stage 3, the hard-q50 swap sampler, is
-the production matcher and supplies the primary Φ-SFS analysis. Stage 4,
-bootstrap-target matching, propagates uncertainty in the TE age CDF and is
-**experimental**: it is pilot-only until the acceptance gates in
-`BOOTSTRAP_TARGET_MATCHING_PLAN.md` §10 pass, it has no SLURM or manifest
-wiring, and it consumes stage 3's output as its initialization library. Run
-stage 4 in addition to stage 3, never instead of it.
+**Which matching workflow to use, and where this is heading.** Bootstrap-target
+matching (stage 4) is the intended *replacement* for the hard-q50 sampler, not
+a permanent companion to it: hard-q50 defines its tolerance from bootstrap
+uncertainty but does not propagate that uncertainty, so its saved sets occupy a
+narrow shell just inside q50. `BOOTSTRAP_TARGET_MATCHING_PLAN.md` §1 and §4 set
+out the argument.
+
+It is not yet cleared for that role. Eight of the ten acceptance gates in
+§10 of that plan are open — most importantly the full-posterior rerun (the
+pilot used two ARGs), the iid-versus-genomic-block bootstrap decision,
+convergence calibration, and the effective replicate count for Φ-SFS — and the
+stage has no SLURM or manifest wiring.
+
+So, until those gates are met: run stage 4 alongside stage 3 and treat stage 3
+as the reference result. Hard-q50 is retained as a reproducible sensitivity
+analysis through the transition, per §10 gate 10. Stage 4 also consumes stage
+3's output as its initialization library, so stage 3 is a prerequisite either
+way.
 
 Φ-SFS reads either bundle. It selects the per-replicate identifier arrays from
 the bundle's `schema_version`, so no flag distinguishes them.
@@ -339,10 +350,11 @@ must use the actual scientific statistic being tested.
 
 ## 6. Optimize controls against bootstrap TE targets
 
-> **Experimental, pilot-only.** This stage is not part of the supported
-> production path. It has no SLURM or manifest wiring, and the acceptance gates
-> in `BOOTSTRAP_TARGET_MATCHING_PLAN.md` §10 have not been met. The §5 hard-q50
-> sampler remains the production matcher and the primary Φ-SFS input.
+> **Not yet cleared for production.** This is the intended replacement for the
+> §5 sampler, but eight of the ten acceptance gates in
+> `BOOTSTRAP_TARGET_MATCHING_PLAN.md` §10 are still open and it has no SLURM or
+> manifest wiring. Until then, treat §5 as the reference result and this as the
+> uncertainty-propagating analysis run alongside it.
 
 `bootstrap_target_matcher.py` propagates uncertainty in the TE age CDF by
 assigning every control set its own bootstrap TE target. It then performs
@@ -446,10 +458,10 @@ the 100 replicates an inferential interpretation until spatial dependence among
 TE age contributions has been assessed. If iid exchangeability is unsupported,
 a prespecified genomic-block bootstrap must replace it.
 
-The hard-q50 sampler remains the production matcher and the required sensitivity
-analysis during the transition. See `BOOTSTRAP_TARGET_MATCHING_PLAN.md` for the
-statistical design, RNA in-gene pilot, remaining production gates, and
-validation criteria.
+The hard-q50 sampler is retained as the reference result and the required
+sensitivity analysis during the transition, per §10 gate 10. See
+`BOOTSTRAP_TARGET_MATCHING_PLAN.md` for the statistical design, the RNA in-gene
+pilot, the remaining production gates, and validation criteria.
 
 ## 7. Calculate Φ-SFS
 
