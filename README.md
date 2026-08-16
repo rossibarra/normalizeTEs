@@ -320,7 +320,85 @@ dominating the null distribution. The `chain_diversity` metadata provides
 generic age-distance and membership diagnostics, but the decisive mixing check
 must use the actual scientific statistic being tested.
 
-## 6. Calculate Φ-SFS
+## 6. Optimize controls against bootstrap TE targets
+
+`bootstrap_target_matcher.py` propagates uncertainty in the TE age CDF by
+assigning every control set its own bootstrap TE target. It then performs
+exact-grid, improvement-only SNP swaps and saves the best certified state. It
+does not perform the constrained random walk used by the hard-q50 sensitivity
+workflow.
+
+The command consumes an existing hard-match bundle as a library of valid,
+diverse initialization sets:
+
+```bash
+python bootstrap_target_matcher.py \
+  --store age_interval_store \
+  --target targets/in_gene \
+  --seed-sets matches/in_gene \
+  --candidate-rows candidate_rows.npy \
+  --output bootstrap_matches/in_gene \
+  --work-dir "${TMPDIR:?TMPDIR is not set}/bootstrap-in-gene" \
+  --replicates 100 \
+  --closest-restarts 2 \
+  --diverse-restarts 1 \
+  --seed 1002
+```
+
+Use `--all-eligible` instead of `--candidate-rows` only when the intended
+control universe is every eligible non-target SNP. Candidate and store
+identities are validated against the target and seed bundles.
+
+For replicate `r`, the output records:
+
+\[
+B_r=D(T^{(r)},T),\qquad
+E_r=D(S_r,T^{(r)}),\qquad
+O_r=D(S_r,T),\qquad
+R_r=E_r/B_r.
+\]
+
+The provisional optimizer QC requires `R_r < 0.5` and `E_r <= 500`
+generations. Override these with `--qc-max-ratio` and `--qc-max-absolute` only
+under a prespecified calibration. These are convergence diagnostics, not
+independent evidence of biological validity. The scientific propagation check
+is whether the distribution of `O_r` reproduces `B_r` across its center and
+tails.
+
+Defaults use two closest initialization sets plus one randomly selected
+diagnostic diversity start, 10 minimum and 50 maximum exact proposal epochs,
+and five materially stagnant epochs for convergence. Material improvement is
+scaled to `B_r`. Every restart retains its complete best-W1 trace and certified
+best rows/CDF. The published state is the minimum-W1 result across the
+prespecified restarts; selection never uses Φ-SFS.
+
+Completed replicate bundles are saved under the work directory. After an
+interruption, repeat the identical command with `--resume`. Provenance or
+parameter differences are rejected. Successful publication is atomic and
+removes the work directory unless `--keep-work` is supplied.
+
+Canonical outputs include:
+
+- bootstrap counts and target CDFs;
+- selected and per-restart SNP rows/CDFs;
+- `B_r`, `E_r`, `O_r`, `R_r`, QC, and triangle-inequality arrays;
+- full restart traces;
+- `replicates.csv` and `restarts.csv`;
+- chromosome/position and SNP-reuse arrays; and
+- metadata containing input identities, configuration, seeds, and warnings.
+
+The implemented bootstrap is an iid multinomial TE-site bootstrap. Do not give
+the 100 replicates an inferential interpretation until spatial dependence among
+TE age contributions has been assessed. If iid exchangeability is unsupported,
+a prespecified genomic-block bootstrap must replace it. Also assess whether
+W1-repair utility is associated with SNP frequency and estimate an effective
+replicate count from SNP reuse before interpreting Φ-SFS uncertainty.
+
+The original hard-q50 sampler remains the required sensitivity analysis during
+the transition. See `BOOTSTRAP_TARGET_MATCHING_PLAN.md` for the statistical
+design, RNA in-gene pilot, remaining production gates, and validation criteria.
+
+## 7. Calculate Φ-SFS
 
 `phi_sfs.py` compares the unfolded SFS of the target TE set with every
 published matched SNP set. Allele counts come from one polarized, biallelic VCF
@@ -435,7 +513,7 @@ The 100 scores are matched-control replicates, not necessarily 100 independent
 biological replicates. Inspect them by `chain_index` and retain the existing SNP
 reuse diagnostics when interpreting their dispersion.
 
-## 7. Run many TE datasets on Farm/Quobyte
+## 8. Run many TE datasets on Farm/Quobyte
 
 For many categories, create one tab-delimited manifest on Quobyte:
 

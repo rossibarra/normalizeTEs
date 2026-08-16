@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.3.1 — 2026-08-16
+
+- Adds `bootstrap_target_matcher.py`, which assigns every control replicate a
+  reproducible bootstrap TE age CDF and minimizes exact-grid Wasserstein-1
+  distance to that target rather than sampling against one fixed q50 boundary.
+- Uses prespecified closest and diversity restarts, improvement-only SNP swaps,
+  relative material-improvement convergence, and certified best-state output.
+- Records bootstrap counts and targets, complete restart traces, selected and
+  per-restart rows/CDFs, optimizer QC, all three paired W1 distances, matching
+  error ratios, triangle checks, coordinate arrays, and SNP-reuse diagnostics.
+- Adds provenance-locked, atomically written per-replicate work bundles so an
+  interrupted optimization can resume without redrawing bootstrap targets or
+  changing restart identities.
+- Documents that matching-error thresholds diagnose optimizer convergence,
+  while scientific validation requires SNP-to-observed distances to reproduce
+  bootstrap-target-to-observed distances across the center and tails.
+- Retains hard-q50 matching as a sensitivity analysis and records the remaining
+  production gates: linkage-aware bootstrap selection, full-posterior
+  calibration, W1-repair versus SFS bias checks, effective replicate counts,
+  and distributed HPC execution.
+
 ## v0.3.0 — 2026-08-16
 
 - Adds `phi_sfs.py`, a downstream step that compares the unfolded SFS of a

@@ -514,3 +514,39 @@ Before replacing the existing sampler:
 8. Run Phi-SFS while preserving bootstrap-replicate pairing.
 9. Compare scientific conclusions with the existing hard-q50 sensitivity
    analysis before making the new workflow the production default.
+
+## 12. Implementation status
+
+The first local, resumable implementation is provided by
+`bootstrap_target_matcher.py`. It implements:
+
+- deterministic iid multinomial bootstrap counts and complete target CDFs;
+- exact-grid improvement-only swaps;
+- two closest plus one diagnostic diversity restart by default;
+- relative material-improvement convergence with minimum/maximum epoch and
+  patience controls;
+- complete restart traces and best-state certification;
+- relative and absolute optimizer QC without bootstrap redraw;
+- all three W1 distances, ratios, and triangle-inequality validation;
+- provenance-locked per-replicate resume bundles;
+- minimum-W1 selection across prespecified restarts;
+- atomic publication of replicate, restart, position, and reuse artifacts; and
+- compatibility with the existing hard-q50 bundle as the seed library and
+  sensitivity workflow.
+
+The current CLI is a single-node implementation. Its default command and
+output contract are documented in `README.md`. Distributed array-task
+launchers and durable cross-node gather are not yet implemented.
+
+The following remain production gates rather than implemented claims:
+
+1. test spatial dependence and decide between iid and genomic-block bootstrap;
+2. implement a block-bootstrap mode if iid exchangeability is unsupported;
+3. calibrate convergence and QC using the full posterior ARG collection;
+4. quantify W1-repair-utility association with derived-frequency/SFS
+   contribution;
+5. compare best-W1 with near-optimal diversity-aware restart selection;
+6. estimate effective Phi-SFS replicate count from reuse dependence;
+7. implement distributed restart execution and atomic gather for HPC; and
+8. demonstrate center-and-tail concordance of `O_r` with `B_r` on production
+   targets before replacing hard q50.
