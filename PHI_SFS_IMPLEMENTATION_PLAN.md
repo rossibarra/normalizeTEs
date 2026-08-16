@@ -145,13 +145,14 @@ its metadata.
 The analysis must validate that target and matched-control metadata identify
 the same target and compatible source store before calculating an SFS.
 
-### 3.2 Frequency-data source: implementation gate
+### 3.2 Frequency-data source
 
-The SNP-age store identifies sites and their age distributions, but it should
-not be assumed to contain the observed derived count `k` or callable count `n`.
-Before implementation, designate one authoritative frequency-data source for
-both TE and matched SNP sites. This might be the analysis VCF/genotype dataset
-or a specific ARG/tree sequence, but the choice must be explicit.
+The SNP-age store identifies sites and their age distributions but does not
+contain the observed derived count `k` or callable count `n`. The authoritative
+frequency source for both TE and matched SNP sites is the polarized, biallelic
+VCF used for the analysis. A site's frequency is calculated once from the VCF;
+it does not depend on how many posterior ARGs contain that SNP. Posterior ARG
+representation affects the mutation-age distribution and matching stage only.
 
 The source adapter must return, for each canonical site:
 
@@ -159,19 +160,30 @@ The source adapter must return, for each canonical site:
 - a stable site identifier when available;
 - observed callable inbred-individual count `n`;
 - observed derived-allele count `k`;
-- ancestral and derived allele labels or polarization status; and
+- the VCF REF and ALT alleles and their polarization status; and
 - enough provenance to demonstrate that TE and SNP counts came from the same
   samples and filtering rules.
 
-This gate is complete only when the following policies are fixed:
+The implementation uses chromosome and one-based VCF position to resolve the
+project's biallelic records and fails on duplicate records. It supports either
+REF-as-ancestral polarized VCFs or a configurable ancestral INFO field. The
+ancestral allele must equal REF or ALT. When REF is ancestral, `k` is the ALT
+count; when ALT is ancestral, `k` is the REF count.
+
+Each inbred individual contributes one allele: haploid and homozygous diploid
+calls are accepted. A partially or wholly missing genotype is not callable.
+Heterozygous calls either fail or are treated as missing under an explicit CLI
+policy. Sites with fewer than 20 callable individuals are then dropped.
+
+The following validation policies apply:
 
 1. how canonical age-store rows resolve to frequency-source records;
 2. how chromosome offsets are converted back to native coordinates;
 3. how duplicate positions are distinguished;
-4. whether multiallelic sites are excluded or decomposed;
+4. multiallelic sites are rejected;
 5. how recurrent or multiple mutations at one ARG site are treated;
-6. how missing and low-quality genotypes contribute to `n`; and
-7. how ancestral-state or derived-state conflicts are handled.
+6. missing genotypes do not contribute to `n`; and
+7. ancestral-state or derived-state conflicts are rejected.
 
 Resolution must fail clearly on ambiguity. It must not select the first record
 at a duplicated position silently.
@@ -410,7 +422,8 @@ The implementation is ready for production when:
 
 ## 11. Recommended implementation order
 
-1. Decide and document the frequency-data source and resolution policies.
+1. Validate the polarized VCF source and resolution policies on representative
+   target and matched sites.
 2. Implement and test deterministic site-level projection.
 3. Implement target and matched-set accumulation and normalization.
 4. Implement Φ-SFS and its mathematical consistency checks.

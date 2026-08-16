@@ -320,7 +320,68 @@ dominating the null distribution. The `chain_diversity` metadata provides
 generic age-distance and membership diagnostics, but the decisive mixing check
 must use the actual scientific statistic being tested.
 
-## 6. Run many TE datasets on Farm/Quobyte
+## 6. Calculate Φ-SFS
+
+`phi_sfs.py` compares the unfolded SFS of the target TE set with every
+published matched SNP set. Allele counts come from one polarized, biallelic VCF
+rather than from the subset of posterior ARGs in which a site is represented.
+Posterior ARG presence affects age matching, but it does not change a site's
+observed frequency.
+
+The default assumes that the VCF has already been polarized so REF is the
+ancestral allele, as in the SINGER preprocessing workflow. If ancestral alleles
+are instead stored in an INFO field, use `--ancestral-mode info` and optionally
+`--ancestral-info FIELD` (default `AA`).
+
+```bash
+python phi_sfs.py \
+  --target target/all_te \
+  --matches matches/all_te \
+  --vcf variants.polarized.vcf.gz \
+  --output phi_sfs/all_te
+```
+
+Each callable inbred individual contributes one observed allele. Haploid calls
+and homozygous diploid calls are accepted. A missing diploid allele makes that
+individual missing at the site. Heterozygous calls fail by default; pass
+`--heterozygous missing` to exclude heterozygous individuals from that site's
+callable count.
+
+For a site with `k` derived alleles among `n` callable individuals, sites with
+`n < 20` are dropped and eligible sites are projected probabilistically to 20:
+
+\[
+h_j(k,n)=
+\frac{\binom{k}{j}\binom{n-k}{20-j}}{\binom{n}{20}},
+\qquad j=0,\ldots,20.
+\]
+
+Only unfolded bins 1 through 19 enter the comparison. Individual site
+projections are not renormalized after removing endpoint bins. Site
+contributions are first summed within the TE target and within each matched SNP
+set; the two completed spectra are then normalized independently. For target
+spectrum `t` and matched-set spectrum `s_r`, the score is
+
+\[
+\Phi_{\mathrm{SFS},r}
+=\sum_{j=1}^{19}\max(t_j-s_{rj},0)
+=\frac{1}{2}\sum_{j=1}^{19}|t_j-s_{rj}|.
+\]
+
+The output directory contains canonical NumPy arrays for raw and normalized
+spectra, TE-minus-SNP residuals, positive residual contributions, the Φ-SFS
+scores, and aligned chain/sample indices. `replicates.csv` contains filtering,
+endpoint-mass, overlap, score, and identity-check diagnostics. `bins.csv`
+contains the raw and normalized spectra and residual contribution for every
+replicate and bin. `metadata.json` records the VCF hash, polarization policy,
+and input provenance. The output directory must not already exist and is
+published atomically.
+
+The 100 scores are matched-control replicates, not necessarily 100 independent
+biological replicates. Inspect them by `chain_index` and retain the existing SNP
+reuse diagnostics when interpreting their dispersion.
+
+## 7. Run many TE datasets on Farm/Quobyte
 
 For many categories, create one tab-delimited manifest on Quobyte:
 
