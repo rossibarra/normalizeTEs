@@ -167,16 +167,28 @@ This is reuse of an existing, tested pattern, not a redesign. **Benchmark on a
 real production store before launch** — no such store exists in this repo, so
 the constant above is unvalidated.
 
-**Sub-point, settled by measurement.** Codex argued the per-epoch
-`aggregate_cdf` certification (`:229`) is nearly free because
-`aggregate_cdf_at` dispatches to a specialized `_aggregate_uniform_interval_cdf`
-path. Measured on identical rows and grid: `row_cdfs` 139.4 ms versus
-`aggregate_cdf` 128.5 ms for 2,048 rows. The specialized path saves **memory,
-not time** — its own docstring says only "without retaining a SNP-by-grid
-matrix." So per-epoch certification really is roughly half the epoch's CDF
-work, and since plan §5.3 item 6 asks only that it happen *"periodically"*,
-every-epoch is the maximum possible frequency. Reducing it is a further ~2×,
-stacking with the 20×.
+**Sub-point — I was wrong, Codex was right.** I initially claimed per-epoch
+`aggregate_cdf` certification was roughly half the epoch cost and worth
+reducing, citing a microbenchmark showing `row_cdfs` 139.4 ms versus
+`aggregate_cdf` 128.5 ms. That benchmark was invalid: it ran against the
+7-SNP fixture store with row indices repeated 2,048 times, so it measured
+output materialization rather than store work.
+
+Re-measured on a 4,000-SNP store with 400 distinct rows and a 20,938-point
+exact grid:
+
+| operation | per epoch |
+|---|---|
+| proposals, coarse 1,048-pt grid | 9.43 ms |
+| proposals, exact 20,938-pt grid | 27.83 ms |
+| certification, `aggregate_cdf` exact grid | **1.00 ms** |
+
+`aggregate_cdf_at` really does dispatch to a specialized
+`O(intervals + grid)` path, so certification is about a tenth of the epoch,
+not half. Reducing its cadence is not worth trading away the guarantee that
+every recorded `best_distance` is exact. **Resolution: no cadence knob.**
+Certification stays unconditional every epoch, and the only change here is the
+coarse proposal tier.
 
 ---
 

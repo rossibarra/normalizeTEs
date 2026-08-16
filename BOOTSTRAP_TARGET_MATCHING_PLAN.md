@@ -520,8 +520,11 @@ Before replacing the existing sampler:
 The first local, resumable implementation is provided by
 `bootstrap_target_matcher.py`. It implements:
 
-- deterministic iid multinomial bootstrap counts and complete target CDFs;
-- exact-grid improvement-only swaps;
+- deterministic iid multinomial bootstrap counts and complete target CDFs,
+  accumulated in float64 over float32-stored per-site rows;
+- coarse-grid improvement-only swap screening with exact-grid certification of
+  every recorded distance, matching `swap_control_sampler`'s two-tier device
+  (`--search-bin-width`, default 20,000 generations);
 - two closest plus one diagnostic diversity restart by default;
 - relative material-improvement convergence with minimum/maximum epoch and
   patience controls;
@@ -530,13 +533,37 @@ The first local, resumable implementation is provided by
 - all three W1 distances, ratios, and triangle-inequality validation;
 - provenance-locked per-replicate resume bundles;
 - minimum-W1 selection across prespecified restarts;
-- atomic publication of replicate, restart, position, and reuse artifacts; and
+- atomic publication of replicate, restart, position, and reuse artifacts;
 - compatibility with the existing hard-q50 bundle as the seed library and
-  sensitivity workflow.
+  sensitivity workflow; and
+- a published bundle that `phi_sfs.py` can read (section 7): it records the
+  project-wide four-array `target_digest`, including the acceptance threshold,
+  and publishes `replicate_id.npy` as its per-replicate identifier.
+
+### Identifiers are replicate-scoped, deliberately
+
+This stage does **not** publish `chain_index.npy` or `sample_index.npy`. Those
+arrays exist so that a consumer can account for correlation among the ten
+states saved from one swap chain. Bootstrap replicates have no such structure,
+so emitting those columns would assert a within-chain correlation that does not
+exist. `phi_sfs.py` selects identifier arrays from the bundle's
+`schema_version` instead. The dependence that does matter here is shared
+control SNPs, reported through `reuse_row_indices.npy` and `reuse_counts.npy`.
 
 The current CLI is a single-node implementation. Its default command and
 output contract are documented in `README.md`. Distributed array-task
-launchers and durable cross-node gather are not yet implemented.
+launchers and durable cross-node gather are not yet implemented, so this stage
+is labelled experimental and pilot-only in the README and is not part of the
+supported production path.
+
+### Deferred output fields
+
+`restart_initial_rows` is not published. It is recoverable from
+`restart_seed_indices.npy` together with the seed bundle identified by
+`seed_sets` and `seed_sets_digest` in the metadata, so it is derivable rather
+than lost. Everything else listed in section 6 is published, including
+bootstrap and restart seeds, per-restart distances, ratios, QC, runtimes, and
+per-epoch proposal counts.
 
 The following remain production gates rather than implemented claims:
 

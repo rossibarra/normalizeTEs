@@ -3,7 +3,7 @@
 
 Phi-SFS is the total variation distance between the projected, normalized,
 unfolded site frequency spectrum of a TE target set and that of one age-matched
-SNP control set. README section 6 and PHI_SFS_IMPLEMENTATION_PLAN.md section 2
+SNP control set. README section 7 and PHI_SFS_IMPLEMENTATION_PLAN.md section 2
 carry the full derivation.
 
 Input assumptions, all of which are recorded in the output metadata:
@@ -44,6 +44,19 @@ from sample_age_matched_controls import _load_target, _sha256_arrays
 
 
 SCHEMA_VERSION = "phi-sfs-v1"
+
+# Per-replicate identifier arrays published by each supported matched-control
+# schema. The swap sampler saves ten correlated states from each of ten chains,
+# so its replicates are identified by chain and position within that chain. The
+# bootstrap-target matcher produces independent replicates with no chain
+# structure, so it identifies them by replicate alone; inventing chain and
+# sample columns for it would imply a within-chain correlation that does not
+# exist.
+MATCH_IDENTIFIERS = {
+    "swap-age-matched-controls-v1": ("chain_index", "sample_index"),
+    "bootstrap-target-matches-v1": ("replicate_id",),
+}
+
 PROJECTION_SIZE = 20
 RETAINED_BINS = np.arange(1, PROJECTION_SIZE, dtype=np.int64)
 COMPRESSED_SUFFIXES = (".gz", ".bgz", ".bgzf")
@@ -423,8 +436,20 @@ def _load_integers(path: Path, label: str) -> np.ndarray:
     return values.astype(np.int64)
 
 
-def _load_coordinates(target: Path, matches: Path):
-    """Load and cross-validate the target and matched-control site arrays."""
+def _load_coordinates(target: Path, matches: Path, schema: str):
+    """Load and cross-validate the target and matched-control site arrays.
+
+    The per-replicate identifier arrays depend on the matched-control schema;
+    see MATCH_IDENTIFIERS. They are returned as a name-to-array mapping and
+    carried through to the outputs unchanged.
+    """
+    names = MATCH_IDENTIFIERS.get(schema)
+    if names is None:
+        supported = ", ".join(sorted(MATCH_IDENTIFIERS))
+        raise ValueError(
+            f"unsupported matched-control schema_version {schema!r}; "
+            f"expected one of: {supported}"
+        )
     te_chromosomes = np.load(target / "te_chromosomes.npy", allow_pickle=False).astype(str)
     labels = np.load(matches / "chromosome_labels.npy", allow_pickle=False).astype(str)
     te_positions = _load_integers(target / "te_positions.npy", "target positions")
@@ -432,8 +457,10 @@ def _load_coordinates(target: Path, matches: Path):
     positions = _load_integers(matches / "positions.npy", "matched positions")
     codes = _load_integers(matches / "chromosome_codes.npy", "matched chromosome codes")
     rows = _load_integers(matches / "row_indices.npy", "matched row indices")
-    chains = _load_integers(matches / "chain_index.npy", "chain indices")
-    samples = _load_integers(matches / "sample_index.npy", "sample indices")
+    identifiers = {
+        name: _load_integers(matches / f"{name}.npy", f"{name} array")
+        for name in names
+    }
     if te_chromosomes.shape != te_positions.shape or te_chromosomes.ndim != 1:
         raise ValueError("target chromosome and position arrays are not aligned 1-D arrays")
     if te_rows.shape != te_positions.shape:
@@ -444,15 +471,16 @@ def _load_coordinates(target: Path, matches: Path):
         raise ValueError("matched row indices do not align with matched positions")
     if np.any(te_rows < 0) or np.any(rows < 0):
         raise ValueError("row indices must be non-negative")
-    if chains.shape != (positions.shape[0],) or samples.shape != (positions.shape[0],):
-        raise ValueError("chain/sample arrays do not align with matched sets")
+    for name, values in identifiers.items():
+        if values.shape != (positions.shape[0],):
+            raise ValueError(f"{name} array does not align with matched sets")
     if np.any(codes < 0) or np.any(codes >= labels.size):
         raise ValueError("matched chromosome code is out of range")
     ordered = np.sort(rows, axis=1)
     if ordered.shape[1] > 1 and np.any(np.diff(ordered, axis=1) == 0):
         raise ValueError("a matched control set contains duplicate control rows")
     match_chromosomes = labels[codes]
-    return te_chromosomes, te_positions, match_chromosomes, positions, chains, samples
+    return te_chromosomes, te_positions, match_chromosomes, positions, identifiers
 
 
 def _json(path: Path) -> dict:
@@ -504,9 +532,11 @@ def _validate_provenance(target: Path, matches: Path) -> tuple[dict, dict, str]:
 
 def calculate(args: argparse.Namespace) -> None:
     target_meta, match_meta, target_digest = _validate_provenance(args.target, args.matches)
-    te_chrom, te_pos, snp_chrom, snp_pos, chains, samples = _load_coordinates(
-        args.target, args.matches
+    match_schema = match_meta.get("schema_version")
+    te_chrom, te_pos, snp_chrom, snp_pos, identifiers = _load_coordinates(
+        args.target, args.matches, match_schema
     )
+    identifier_names = list(identifiers)
     te_coordinates = list(zip(te_chrom.tolist(), te_pos.tolist()))
     snp_coordinates = [
         list(zip(snp_chrom[row].tolist(), snp_pos[row].tolist()))
@@ -568,8 +598,7 @@ def calculate(args: argparse.Namespace) -> None:
         retained_mass = float(raw.sum())
         rows.append({
             "replicate": replicate,
-            "chain_index": int(chains[replicate]),
-            "sample_index": int(samples[replicate]),
+            **{name: int(identifiers[name][replicate]) for name in identifier_names},
             "input_sites": len(coordinates),
             "eligible_sites": eligible,
             "dropped_n_lt_20": len(coordinates) - eligible,
@@ -602,8 +631,7 @@ def calculate(args: argparse.Namespace) -> None:
             "residual_te_minus_snp.npy": residuals,
             "positive_te_residual.npy": positive,
             "phi_sfs.npy": phi,
-            "chain_index.npy": chains,
-            "sample_index.npy": samples,
+            **{f"{name}.npy": values for name, values in identifiers.items()},
         }
         for name, values in arrays.items():
             np.save(staging / name, values, allow_pickle=False)
@@ -613,7 +641,7 @@ def calculate(args: argparse.Namespace) -> None:
             writer.writerows(rows)
         with (staging / "bins.csv").open("w", newline="", encoding="utf-8") as handle:
             fields = [
-                "replicate", "chain_index", "sample_index", "derived_count_bin",
+                "replicate", *identifier_names, "derived_count_bin",
                 "te_raw", "te_normalized", "snp_raw", "snp_normalized",
                 "te_minus_snp", "positive_te_residual",
             ]
@@ -623,8 +651,10 @@ def calculate(args: argparse.Namespace) -> None:
                 for offset, bin_index in enumerate(RETAINED_BINS):
                     writer.writerow({
                         "replicate": replicate,
-                        "chain_index": int(chains[replicate]),
-                        "sample_index": int(samples[replicate]),
+                        **{
+                            name: int(identifiers[name][replicate])
+                            for name in identifier_names
+                        },
                         "derived_count_bin": int(bin_index),
                         "te_raw": float(te_raw[offset]),
                         "te_normalized": float(te_normalized[offset]),
@@ -657,6 +687,8 @@ def calculate(args: argparse.Namespace) -> None:
             ),
             "target": str(args.target.resolve()),
             "matches": str(args.matches.resolve()),
+            "matches_schema_version": match_schema,
+            "replicate_identifiers": identifier_names,
             "target_digest": target_digest,
             "vcf": str(args.vcf.resolve()),
             "vcf_sha256": vcf_sha256,

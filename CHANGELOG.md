@@ -21,6 +21,40 @@
   calibration, W1-repair versus SFS bias checks, effective replicate counts,
   and distributed HPC execution.
 
+Round 7 review (`CODE_REVIEW_ROUND7.md`) fixes, folded in before release:
+
+- Makes bootstrap-target bundles readable by `phi_sfs.py`. The matcher hashed
+  `target_digest` over three arrays while Φ-SFS recomputes the established
+  four-array digest including the acceptance threshold, so every bundle was
+  rejected; and the bundle published none of the per-replicate identifier
+  arrays Φ-SFS loads. Both are covered by an end-to-end regression test.
+- Publishes `replicate_id.npy` rather than fabricating `chain_index` and
+  `sample_index`. Bootstrap replicates have no chain structure, so those
+  columns would assert a within-chain correlation that does not exist.
+  `phi_sfs.py` now selects identifier arrays from the bundle's
+  `schema_version` and carries them into every output.
+- Screens swaps on a coarse age grid with exact-grid certification of every
+  recorded distance, the same two-tier device `swap_control_sampler.py` uses.
+  The exact grid spans about 22,900 points for the production store; measured
+  3.2× faster on a synthetic production-scale grid with an identical
+  exact-grid result.
+- Accumulates bootstrap target CDFs in float64 over float32-stored per-site
+  rows. A float32 accumulation over tens of thousands of TE sites displaced
+  the bootstrap target and every distance derived from it.
+- Records the interval store directory as `source_store`. The previous
+  `getattr(store, "path", "")` fallback resolved to the repository directory
+  for every run, because interval stores expose `store_dir`.
+- Pins the checkout and NumPy version in the resume identity, so `--resume`
+  cannot silently combine replicate bundles produced by two implementations.
+- Rejects `--output` equal to or nested inside `--work-dir`, which previously
+  published a result and then deleted it while reporting success.
+- Publishes bootstrap and restart seeds, per-restart distances, ratios, QC,
+  runtimes, and per-epoch proposal counts, plus `seed_sets_digest`.
+- Documents which matching workflow is primary, labels bootstrap-target
+  matching experimental and pilot-only, shows the Φ-SFS command for both
+  bundle types, and brings the estimand caveats and the W1-repair-versus-SFS
+  bias risk from the plan into the README.
+
 ## v0.3.0 — 2026-08-16
 
 - Adds `phi_sfs.py`, a downstream step that compares the unfolded SFS of a

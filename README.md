@@ -6,12 +6,27 @@ datasets, posterior ARG draws stored as `.tsz` files, SLURM, and Quobyte.
 
 ## Recommended workflow
 
-The supported production path has three stages:
+The supported production path has five stages:
 
-1. Build one compact all-SNP interval store from all posterior ARG draws.
-2. Build one target distribution and bootstrap threshold for each TE dataset.
+1. Build one compact all-SNP interval store from all posterior ARG draws (§2).
+2. Build one target distribution and bootstrap threshold for each TE dataset
+   (§4).
 3. Generate 100 matched control sets per target with ten independent swap
-   chains, saving ten sets from each chain.
+   chains, saving ten sets from each chain (§5).
+4. *Optional, experimental:* re-match those sets against per-replicate
+   bootstrap TE targets (§6).
+5. Calculate Φ-SFS against the matched sets (§7).
+
+**Which matching workflow is primary.** Stage 3, the hard-q50 swap sampler, is
+the production matcher and supplies the primary Φ-SFS analysis. Stage 4,
+bootstrap-target matching, propagates uncertainty in the TE age CDF and is
+**experimental**: it is pilot-only until the acceptance gates in
+`BOOTSTRAP_TARGET_MATCHING_PLAN.md` §10 pass, it has no SLURM or manifest
+wiring, and it consumes stage 3's output as its initialization library. Run
+stage 4 in addition to stage 3, never instead of it.
+
+Φ-SFS reads either bundle. It selects the per-replicate identifier arrays from
+the bundle's `schema_version`, so no flag distinguishes them.
 
 The interval store is built once and reused for every TE dataset. Do not build
 a dense CDF store first; the dense builder is a legacy alternative, not a
@@ -32,11 +47,13 @@ reported as a mixing diagnostic rather than used as a path-dependent stopping
 rule. Every saved set is recomputed on the exact 1,000-generation grid and must
 remain inside the target threshold.
 
-The 100 saved sets are correlated Monte Carlo states, not 100 independent data
-replicates. Correlation is confined within each ten-set chain; retain
-`chain_index.npy` and `sample_index.npy`, and measure autocorrelation of the
-actual downstream statistic before interpreting the empirical null as having
-100 independent observations.
+The 100 sets saved by stage 3 are correlated Monte Carlo states, not 100
+independent data replicates. Correlation is confined within each ten-set chain;
+retain `chain_index.npy` and `sample_index.npy`, and measure autocorrelation of
+the actual downstream statistic before interpreting the empirical null as having
+100 independent observations. Stage 4 replicates have no chain structure, but
+they are not independent either — they share control SNPs. Neither stage
+delivers 100 effectively independent observations.
 
 ## Input data
 
@@ -322,11 +339,24 @@ must use the actual scientific statistic being tested.
 
 ## 6. Optimize controls against bootstrap TE targets
 
+> **Experimental, pilot-only.** This stage is not part of the supported
+> production path. It has no SLURM or manifest wiring, and the acceptance gates
+> in `BOOTSTRAP_TARGET_MATCHING_PLAN.md` §10 have not been met. The §5 hard-q50
+> sampler remains the production matcher and the primary Φ-SFS input.
+
 `bootstrap_target_matcher.py` propagates uncertainty in the TE age CDF by
 assigning every control set its own bootstrap TE target. It then performs
-exact-grid, improvement-only SNP swaps and saves the best certified state. It
-does not perform the constrained random walk used by the hard-q50 sensitivity
-workflow.
+improvement-only SNP swaps and saves the best certified state. It does not
+perform the constrained random walk used by the §5 workflow.
+
+Swaps are *screened* on a coarse age grid whose width is `--search-bin-width`
+(default 20,000 generations), the same two-tier device `swap_control_sampler.py`
+uses, because the exact analysis grid spans `maximum_above / bin_width` points —
+about 22,900 for the production store — and scoring every proposal there
+dominates the run. Every distance that is recorded, compared, or used by the
+convergence rule is recomputed on the exact grid from the selected rows, so a
+coarse misjudgement costs search efficiency and never the correctness of the
+published state.
 
 The command consumes an existing hard-match bundle as a library of valid,
 diverse initialization sets:
@@ -387,16 +417,39 @@ Canonical outputs include:
 - chromosome/position and SNP-reuse arrays; and
 - metadata containing input identities, configuration, seeds, and warnings.
 
+### What the bootstrap-target Φ-SFS distribution does and does not mean
+
+Read this before interpreting any number from this stage.
+
+- It **holds the observed TE SFS fixed** and varies only which SNPs are matched.
+  It therefore measures how the matched-control comparison responds to
+  uncertainty in the TE *age* CDF, and nothing else.
+- It is **not a bootstrap confidence distribution** for the TE SFS, and **not a
+  p-value**. Do not compute the TE SFS from the resampled TE rows: that would
+  additionally propagate finite-TE-set SFS uncertainty and answer a different
+  question. A joint age-and-SFS bootstrap would be a separately named analysis.
+- 100 replicates give **weak tail resolution**, before any adjustment for
+  control reuse. Estimate an effective replicate count from
+  `reuse_counts.npy` rather than treating the spread as 100 independent draws.
+
+**The main risk to watch.** The optimizer chooses SNP membership to hit a
+precise age CDF. If a SNP's usefulness for repairing W1 is correlated with its
+derived allele frequency, the matching step will itself bias the SFS — which is
+exactly the quantity Φ-SFS measures, so the bias would be invisible in the
+matching diagnostics and appear as signal. Test the association between
+W1-repair utility and derived-frequency contribution before trusting any
+Φ-SFS difference from this stage. `BOOTSTRAP_TARGET_MATCHING_PLAN.md` §8 sets
+out the diagnostic.
+
 The implemented bootstrap is an iid multinomial TE-site bootstrap. Do not give
 the 100 replicates an inferential interpretation until spatial dependence among
 TE age contributions has been assessed. If iid exchangeability is unsupported,
-a prespecified genomic-block bootstrap must replace it. Also assess whether
-W1-repair utility is associated with SNP frequency and estimate an effective
-replicate count from SNP reuse before interpreting Φ-SFS uncertainty.
+a prespecified genomic-block bootstrap must replace it.
 
-The original hard-q50 sampler remains the required sensitivity analysis during
-the transition. See `BOOTSTRAP_TARGET_MATCHING_PLAN.md` for the statistical
-design, RNA in-gene pilot, remaining production gates, and validation criteria.
+The hard-q50 sampler remains the production matcher and the required sensitivity
+analysis during the transition. See `BOOTSTRAP_TARGET_MATCHING_PLAN.md` for the
+statistical design, RNA in-gene pilot, remaining production gates, and
+validation criteria.
 
 ## 7. Calculate Φ-SFS
 
@@ -411,13 +464,42 @@ ancestral allele, as in the SINGER preprocessing workflow. If ancestral alleles
 are instead stored in an INFO field, use `--ancestral-mode info` and optionally
 `--ancestral-info FIELD` (default `AA`).
 
+The primary analysis uses the §5 hard-q50 bundle:
+
 ```bash
 python phi_sfs.py \
-  --target target/all_te \
-  --matches matches/all_te \
+  --target targets/in_gene \
+  --matches matches/in_gene \
   --vcf variants.polarized.vcf.gz \
-  --output phi_sfs/all_te
+  --output phi_sfs/in_gene
 ```
+
+The experimental §6 bundle is passed the same way; nothing else changes:
+
+```bash
+python phi_sfs.py \
+  --target targets/in_gene \
+  --matches bootstrap_matches/in_gene \
+  --vcf variants.polarized.vcf.gz \
+  --output phi_sfs/in_gene_bootstrap
+```
+
+Both bundles must have been built from the target given to `--target`. That is
+enforced, not assumed: `phi_sfs.py` recomputes the target's `target_digest` and
+requires the bundle to record the same value.
+
+The per-replicate identifier columns follow the bundle's `schema_version` and
+are carried into every output:
+
+| bundle | `schema_version` | identifiers |
+|---|---|---|
+| §5 swap sampler | `swap-age-matched-controls-v1` | `chain_index`, `sample_index` |
+| §6 bootstrap matcher | `bootstrap-target-matches-v1` | `replicate_id` |
+
+Bootstrap replicates deliberately have no chain or sample columns. They are
+independent, with none of the within-chain autocorrelation those columns exist
+to expose, so inventing them would imply a correlation structure that is not
+there.
 
 Plain, `.gz`, and `.bgz`/`.bgzf` VCFs are all accepted. The scan reports
 progress periodically; pass `--quiet` to suppress it.
@@ -510,8 +592,11 @@ as the target and matched-control steps. The output directory must not already
 exist and is published atomically.
 
 The 100 scores are matched-control replicates, not necessarily 100 independent
-biological replicates. Inspect them by `chain_index` and retain the existing SNP
-reuse diagnostics when interpreting their dispersion.
+biological replicates. For a §5 bundle, inspect them by `chain_index`, because
+the ten states saved from each chain are correlated. For a §6 bundle there is no
+chain structure to inspect; the dependence to worry about there is shared
+control SNPs. Either way, retain the SNP reuse diagnostics when interpreting
+their dispersion.
 
 ## 8. Run many TE datasets on Farm/Quobyte
 

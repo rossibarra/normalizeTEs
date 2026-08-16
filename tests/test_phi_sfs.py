@@ -196,6 +196,7 @@ def _write_bundle(root: Path, *, positions=None, row_indices=None, target_digest
         "wasserstein_threshold_generations": threshold,
     }))
     (matches / "metadata.json").write_text(json.dumps({
+        "schema_version": "swap-age-matched-controls-v1",
         "source_store_content_sha256": "store",
         "source_catalog_sha256": "catalog",
         "complete": True,

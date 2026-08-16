@@ -7,7 +7,6 @@ import argparse
 import csv
 import hashlib
 import json
-import math
 import os
 import shutil
 import sys
@@ -15,20 +14,20 @@ import tempfile
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Callable, Sequence
 
 import numpy as np
 
 from release_provenance import software_provenance
-from sample_age_matched_controls import _sha256_arrays
+from sample_age_matched_controls import _load_target, _sha256_arrays
 from snp_age_store import is_interval_store, open_snp_age_store, store_schema
 from swap_control_sampler import (
     aggregate_cdf,
     analysis_points,
     eligible_candidates,
     incremental_cdf,
-    replacement_fraction,
     row_cdfs,
+    search_grid,
 )
 from te_age_target import wasserstein_1
 
@@ -49,6 +48,7 @@ class OptimizerConfig:
     absolute_tolerance: float = 1e-8
     relative_tolerance: float = 1e-12
     cdf_block_rows: int = 256
+    search_bin_width: int = 20_000
     qc_max_ratio: float = 0.5
     qc_max_absolute: float = 500.0
     algorithm_version: str = ALGORITHM_VERSION
@@ -64,6 +64,8 @@ class OptimizerConfig:
             raise ValueError("epochs must satisfy 0 < min <= max")
         if self.patience <= 0 or self.cdf_block_rows <= 0:
             raise ValueError("patience and CDF block size must be positive")
+        if self.search_bin_width <= 0:
+            raise ValueError("search width must be positive")
         if self.material_improvement_ratio < 0:
             raise ValueError("material improvement ratio must be nonnegative")
         if self.absolute_tolerance < 0 or self.relative_tolerance < 0:
@@ -87,6 +89,7 @@ class RestartResult:
     accepted: int
     termination: str
     trace: list[dict[str, float | int]]
+    elapsed_seconds: float = 0.0
 
 
 def derive_seed(global_seed: int, target_digest: str, replicate: int,
@@ -106,18 +109,36 @@ def bootstrap_counts(n_sites: int, rng: np.random.Generator) -> np.ndarray:
     return rng.multinomial(n_sites, probabilities).astype(np.uint32)
 
 
-def bootstrap_cdf(counts: np.ndarray, cdf_rows: np.ndarray) -> np.ndarray:
+def bootstrap_cdf(counts: np.ndarray, cdf_rows: np.ndarray,
+                  *, block_rows: int = 4096) -> np.ndarray:
+    """Return the count-weighted mean CDF, accumulated in float64.
+
+    `cdf_rows` is stored as float32 to bound memory at production TE-set
+    sizes, but the weighted sum runs over one row per TE site and must not
+    accumulate at that precision: at 35,000 sites a float32 accumulation
+    carries roughly 1e-5 relative error, which displaces the bootstrap target
+    and every distance derived from it. Blocks keep the float64 promotion
+    bounded rather than materializing a float64 copy of the whole matrix.
+    """
     weights = np.asarray(counts)
     rows = np.asarray(cdf_rows)
     if weights.ndim != 1 or rows.ndim != 2 or rows.shape[0] != weights.size:
         raise ValueError("bootstrap counts and TE CDF rows are not aligned")
     if not np.issubdtype(weights.dtype, np.integer) or np.any(weights < 0):
         raise ValueError("bootstrap counts must be nonnegative integers")
+    if block_rows <= 0:
+        raise ValueError("block_rows must be positive")
     total = int(weights.sum(dtype=np.uint64))
     if total <= 0:
         raise ValueError("bootstrap counts sum to zero")
-    weight_dtype = np.float32 if rows.dtype == np.float32 else np.float64
-    return np.asarray(weights.astype(weight_dtype) @ rows / total, dtype=np.float64)
+    accumulated = np.zeros(rows.shape[1], dtype=np.float64)
+    for start in range(0, rows.shape[0], block_rows):
+        stop = min(start + block_rows, rows.shape[0])
+        block = weights[start:stop]
+        if not block.any():
+            continue
+        accumulated += block.astype(np.float64) @ rows[start:stop].astype(np.float64)
+    return accumulated / total
 
 
 def select_seed_indices(
@@ -155,14 +176,32 @@ def optimize_restart(
     age_bins: np.ndarray,
     bootstrap_distance: float,
     *,
+    coarse_target: np.ndarray,
+    coarse_ages: np.ndarray,
+    coarse_points: np.ndarray,
     seed_index: int,
     restart_kind: str,
     seed: int,
     config: OptimizerConfig,
     progress: Callable[[str], None] | None = None,
 ) -> RestartResult:
-    """Run exact-grid improvement-only swaps and retain the best state."""
+    """Screen swaps on a coarse grid; certify and report on the exact grid.
+
+    Proposals are scored against the coarse-grid bootstrap target, because the
+    exact analysis grid spans `maximum_above / bin_width` points — about 22,900
+    for the production store — and scoring every proposal there dominates the
+    run. `swap_control_sampler` already uses this two-tier design; the coarse
+    width is `config.search_bin_width`, and setting it to the exact grid width
+    makes the two grids identical.
+
+    Every distance that is recorded, compared against `best_distance`, or used
+    by the convergence rule is an EXACT-grid distance recomputed from the
+    selected rows. The coarse grid only decides which swaps to try, so a coarse
+    misjudgement costs search efficiency, never correctness of the published
+    state.
+    """
     emit = progress or (lambda _: None)
+    started = time.perf_counter()
     selected = np.asarray(initial_rows, dtype=np.int64).copy()
     n = selected.size
     if n == 0 or np.unique(selected).size != n:
@@ -172,15 +211,17 @@ def optimize_restart(
         raise ValueError("initial rows are outside the candidate universe")
     points = analysis_points(age_bins)
     cache = row_cdfs(
-        store, selected, points,
+        store, selected, coarse_points,
         block_rows=config.cdf_block_rows, dtype=np.dtype("float64"),
     )
     current = cache.mean(axis=0, dtype=np.float64)
-    current_distance = wasserstein_1(current, bootstrap_target, age_bins)
-    initial_distance = current_distance
-    best_distance = current_distance
+    current_distance = wasserstein_1(current, coarse_target, coarse_ages)
+
+    certified = aggregate_cdf(store, selected, points)
+    exact_distance = wasserstein_1(certified, bootstrap_target, age_bins)
+    initial_distance = exact_distance
+    best_distance = exact_distance
     best_rows = selected.copy()
-    best_cdf = current.copy()
     selected_set = set(map(int, selected))
     rng = np.random.default_rng(seed)
     trace: list[dict[str, float | int]] = []
@@ -197,7 +238,7 @@ def optimize_restart(
         for start in range(0, n, config.cdf_block_rows):
             stop = min(start + config.cdf_block_rows, n)
             new_cdfs = row_cdfs(
-                store, proposed[start:stop], points,
+                store, proposed[start:stop], coarse_points,
                 block_rows=config.cdf_block_rows, dtype=np.dtype("float64"),
             )
             for local, proposal_index in enumerate(range(start, stop)):
@@ -209,9 +250,7 @@ def optimize_restart(
                     continue
                 old = int(selected[slot])
                 trial = incremental_cdf(current, cache[slot], new_cdfs[local], n)
-                trial_distance = wasserstein_1(
-                    trial, bootstrap_target, age_bins
-                )
+                trial_distance = wasserstein_1(trial, coarse_target, coarse_ages)
                 tolerance = max(
                     config.absolute_tolerance,
                     config.relative_tolerance * max(current_distance, 1.0),
@@ -226,16 +265,21 @@ def optimize_restart(
                     epoch_accepted += 1
                     accepted += 1
 
+        # Reset incremental drift from the per-row cache; no store access.
+        current = cache.mean(axis=0, dtype=np.float64)
+        current_distance = wasserstein_1(current, coarse_target, coarse_ages)
+
+        # Exact certification every epoch: measured at ~1 ms against ~9 ms
+        # for the epoch's coarse proposals, because aggregate_cdf_at uses a
+        # specialised O(intervals + grid) path rather than materialising a
+        # row-by-grid matrix. Certifying less often would trade the guarantee
+        # that every recorded best_distance is exact for roughly a tenth of
+        # the epoch cost.
         certified = aggregate_cdf(store, selected, points)
-        certified_distance = wasserstein_1(
-            certified, bootstrap_target, age_bins
-        )
-        current = certified
-        current_distance = certified_distance
-        if certified_distance < best_distance:
-            best_distance = certified_distance
+        exact_distance = wasserstein_1(certified, bootstrap_target, age_bins)
+        if exact_distance < best_distance:
+            best_distance = exact_distance
             best_rows = selected.copy()
-            best_cdf = certified.copy()
         improvement = before - best_distance
         trace.append({
             "epoch": epoch,
@@ -264,23 +308,23 @@ def optimize_restart(
         certified_best_distance, best_distance, rtol=1e-10, atol=1e-8
     ):
         raise RuntimeError("best-state certification changed its W1 distance")
-    best_cdf = certified_best
     return RestartResult(
         seed_index=seed_index,
         restart_kind=restart_kind,
         seed=seed,
         rows=best_rows,
-        cdf=best_cdf,
+        cdf=certified_best,
         initial_distance=initial_distance,
         best_distance=certified_best_distance,
         match_to_observed=wasserstein_1(
-            best_cdf, observed_target, age_bins
+            certified_best, observed_target, age_bins
         ),
         epochs=len(trace),
         proposals=proposals,
         accepted=accepted,
         termination=termination,
         trace=trace,
+        elapsed_seconds=time.perf_counter() - started,
     )
 
 
@@ -321,17 +365,20 @@ def validate_restart_result(
         raise ValueError("restart result best-distance trace is invalid")
 
 
-def _load_target(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
-    rows = np.load(path / "te_row_indices.npy", allow_pickle=False).astype(np.int64)
-    cdf = np.load(path / "target_cdf.npy", allow_pickle=False).astype(np.float64)
-    ages = np.load(path / "age_bins.npy", allow_pickle=False).astype(np.float64)
-    with (path / "metadata.json").open(encoding="utf-8") as handle:
-        metadata = json.load(handle)
-    if rows.ndim != 1 or rows.size == 0 or np.unique(rows).size != rows.size:
-        raise ValueError("target rows must be nonempty and unique")
-    if cdf.shape != ages.shape or cdf.ndim != 1 or cdf.size < 2:
-        raise ValueError("target CDF and age grid are incompatible")
-    return rows, cdf, ages, metadata
+def target_digest_for(path: Path) -> tuple[str, np.ndarray, np.ndarray, np.ndarray, dict]:
+    """Return the project-wide target digest and the target arrays behind it.
+
+    The digest must be byte-identical to the one `sample_age_matched_controls`
+    records and `phi_sfs` recomputes, or the published bundle cannot be read
+    downstream. It therefore uses that module's own loader and hash helper —
+    including the acceptance threshold, which is part of the established
+    four-array contract — rather than a local reimplementation.
+    """
+    rows, cdf, ages, threshold, metadata = _load_target(path)
+    digest = _sha256_arrays(
+        rows, cdf, ages, np.asarray([threshold], dtype=np.float64)
+    )
+    return digest, rows, cdf, ages, metadata
 
 
 def _load_seed_bundle(path: Path) -> tuple[np.ndarray, np.ndarray, dict]:
@@ -391,6 +438,7 @@ def _save_replicate_bundle(
             "accepted": result.accepted,
             "termination": result.termination,
             "trace": result.trace,
+            "elapsed_seconds": result.elapsed_seconds,
         })
     temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -458,6 +506,7 @@ def _load_replicate_bundle(
             accepted=int(record["accepted"]),
             termination=str(record["termination"]),
             trace=list(record["trace"]),
+            elapsed_seconds=float(record["elapsed_seconds"]),
         ))
     return results
 
@@ -474,11 +523,15 @@ def _write_outputs(
     counts: np.ndarray,
     bootstrap_targets: np.ndarray,
     bootstrap_distances: np.ndarray,
+    bootstrap_seeds: np.ndarray,
     all_restarts: list[list[RestartResult]],
     selected_restart: np.ndarray,
     config: OptimizerConfig,
     global_seed: int,
     candidate_digest: str | None,
+    seed_sets_digest: str,
+    target_digest: str,
+    store_dir: Path,
     elapsed: float,
 ) -> None:
     if output.exists():
@@ -526,14 +579,46 @@ def _write_outputs(
         )
         trace_improvement = np.full_like(trace_distance, np.nan)
         trace_accepted = np.full_like(trace_distance, -1, dtype=np.int64)
+        trace_proposals = np.full_like(trace_accepted, -1)
         for r, replicate in enumerate(all_restarts):
             for j, result in enumerate(replicate):
                 for e, record in enumerate(result.trace):
                     trace_distance[r, j, e] = float(record["best_distance"])
                     trace_improvement[r, j, e] = float(record["improvement"])
                     trace_accepted[r, j, e] = int(record["accepted"])
+                    trace_proposals[r, j, e] = int(record["proposals"])
+
+        # Per-restart diagnostics, so a rejected restart can be inspected
+        # without retaining the work directory.
+        def per_restart(getter, dtype=np.float64):
+            return np.asarray(
+                [[getter(result) for result in replicate] for replicate in all_restarts],
+                dtype=dtype,
+            )
+
+        restart_best = per_restart(lambda result: result.best_distance)
+        restart_observed = per_restart(lambda result: result.match_to_observed)
+        restart_ratio = np.divide(
+            restart_best, bootstrap_distances[:, None],
+            out=np.full_like(restart_best, np.inf),
+            where=bootstrap_distances[:, None] > 0,
+        )
 
         arrays = {
+            "replicate_id.npy": np.arange(replicate_count, dtype=np.int64),
+            "bootstrap_seeds.npy": np.asarray(bootstrap_seeds, dtype=np.uint64),
+            "restart_seeds.npy": per_restart(lambda r: r.seed, np.uint64),
+            "restart_seed_indices.npy": per_restart(lambda r: r.seed_index, np.int64),
+            "restart_initial_w1.npy": per_restart(lambda r: r.initial_distance),
+            "restart_match_to_bootstrap_w1.npy": restart_best,
+            "restart_match_to_observed_w1.npy": restart_observed,
+            "restart_matching_error_ratio.npy": restart_ratio,
+            "restart_qc_pass.npy": (
+                (restart_ratio < config.qc_max_ratio)
+                & (restart_best <= config.qc_max_absolute)
+            ),
+            "restart_elapsed_seconds.npy": per_restart(lambda r: r.elapsed_seconds),
+            "restart_trace_proposals.npy": trace_proposals,
             "row_indices.npy": rows,
             "cdfs.npy": cdfs,
             "target_cdf.npy": observed_target,
@@ -625,12 +710,14 @@ def _write_outputs(
             "creation_command": " ".join(sys.argv),
             "target": str(target_path.resolve()),
             "seed_sets": str(seed_path.resolve()),
-            "source_store": str(Path(getattr(store, "path", "")).resolve()),
+            "source_store": str(Path(store_dir).resolve()),
             "source_store_schema": store_schema(store),
             "source_catalog_sha256": getattr(store, "metadata", {}).get("catalog_sha256"),
             "source_store_content_sha256": getattr(store, "metadata", {}).get("content_sha256"),
-            "target_digest": _sha256_arrays(target_rows, observed_target, age_bins),
+            "target_digest": target_digest,
             "candidate_rows_digest": candidate_digest,
+            "seed_sets_digest": seed_sets_digest,
+            "replicate_identifiers": ["replicate_id"],
             "global_seed": global_seed,
             "replicates": replicate_count,
             "set_size": int(target_rows.size),
@@ -670,6 +757,7 @@ def run(args: argparse.Namespace) -> None:
         patience=args.patience,
         material_improvement_ratio=args.material_improvement_ratio,
         cdf_block_rows=args.cdf_block_rows,
+        search_bin_width=args.search_bin_width,
         qc_max_ratio=args.qc_max_ratio,
         qc_max_absolute=args.qc_max_absolute,
     )
@@ -679,7 +767,9 @@ def run(args: argparse.Namespace) -> None:
     store = open_snp_age_store(args.store)
     if not is_interval_store(store):
         raise ValueError("bootstrap-target optimization requires an interval store")
-    target_rows, observed_target, age_bins, target_meta = _load_target(args.target)
+    target_digest, target_rows, observed_target, age_bins, target_meta = (
+        target_digest_for(args.target)
+    )
     seed_rows, seed_cdfs, seed_meta = _load_seed_bundle(args.seed_sets)
     _validate_inputs(store, target_meta, seed_meta)
     if seed_rows.shape[1] != target_rows.size or seed_cdfs.shape[1:] != observed_target.shape:
@@ -690,6 +780,12 @@ def run(args: argparse.Namespace) -> None:
     if not np.all(np.isin(seed_rows, candidates)):
         raise ValueError("one or more seed rows are outside the candidate universe")
     points = analysis_points(age_bins)
+    exact_step = float(age_bins[1] - age_bins[0])
+    if config.search_bin_width < exact_step:
+        raise ValueError("search_bin_width cannot be finer than the exact target grid")
+    coarse_ages, coarse_points = search_grid(
+        float(store.metadata["maximum_above"]), config.search_bin_width
+    )
     te_cdf_rows = row_cdfs(
         store, target_rows, points,
         block_rows=config.cdf_block_rows, dtype=np.dtype("float32"),
@@ -697,18 +793,35 @@ def run(args: argparse.Namespace) -> None:
     reconstructed = te_cdf_rows.mean(axis=0, dtype=np.float64)
     if not np.allclose(reconstructed, observed_target, rtol=1e-6, atol=1e-7):
         raise ValueError("target CDF does not match exact TE-row reconstruction")
-    target_digest = _sha256_arrays(target_rows, observed_target, age_bins)
+    te_coarse_rows = row_cdfs(
+        store, target_rows, coarse_points,
+        block_rows=config.cdf_block_rows, dtype=np.dtype("float32"),
+    )
     work_dir = (
         args.work_dir if args.work_dir is not None
         else args.output.with_name(f".{args.output.name}.work")
     )
+    resolved_work, resolved_output = work_dir.resolve(), args.output.resolve()
+    if resolved_work == resolved_output:
+        raise ValueError("--work-dir and --output must be different paths")
+    if resolved_output.is_relative_to(resolved_work):
+        raise ValueError("--output must not be inside --work-dir; it would be "
+                         "published and then deleted with the work directory")
+    if resolved_work.is_relative_to(resolved_output):
+        raise ValueError("--work-dir must not be inside --output")
+    seed_sets_digest = _sha256_arrays(seed_rows, seed_cdfs)
     identity = {
         "schema_version": SCHEMA_VERSION,
         "algorithm_version": ALGORITHM_VERSION,
+        # A resumed run must not mix bundles produced by two implementations,
+        # so the identity pins the checkout and NumPy, not just the declared
+        # algorithm version.
+        "software": software_provenance(),
+        "numpy_version": np.__version__,
         "target_digest": target_digest,
         "source_store_content_sha256": getattr(store, "metadata", {}).get("content_sha256"),
         "candidate_rows_digest": candidate_digest,
-        "seed_sets_digest": _sha256_arrays(seed_rows, seed_cdfs),
+        "seed_sets_digest": seed_sets_digest,
         "global_seed": args.seed,
         "config": asdict(config),
     }
@@ -734,16 +847,19 @@ def run(args: argparse.Namespace) -> None:
         (config.replicates, observed_target.size), dtype=np.float64
     )
     bootstrap_distances = np.empty(config.replicates, dtype=np.float64)
+    bootstrap_seeds = np.empty(config.replicates, dtype=np.uint64)
     all_restarts: list[list[RestartResult]] = []
     selected_restart = np.empty(config.replicates, dtype=np.int64)
 
     for replicate in range(config.replicates):
         bootstrap_seed = derive_seed(args.seed, target_digest, replicate)
+        bootstrap_seeds[replicate] = bootstrap_seed
         bootstrap_rng = np.random.default_rng(bootstrap_seed)
         counts[replicate] = bootstrap_counts(target_rows.size, bootstrap_rng)
         bootstrap_targets[replicate] = bootstrap_cdf(
             counts[replicate], te_cdf_rows
         )
+        coarse_target = bootstrap_cdf(counts[replicate], te_coarse_rows)
         bootstrap_distances[replicate] = wasserstein_1(
             bootstrap_targets[replicate], observed_target, age_bins
         )
@@ -780,6 +896,9 @@ def run(args: argparse.Namespace) -> None:
                     store, candidates, seed_rows[seed_index],
                     bootstrap_targets[replicate], observed_target, age_bins,
                     bootstrap_distances[replicate],
+                    coarse_target=coarse_target,
+                    coarse_ages=coarse_ages,
+                    coarse_points=coarse_points,
                     seed_index=seed_index,
                     restart_kind=kind,
                     seed=restart_seed,
@@ -827,11 +946,15 @@ def run(args: argparse.Namespace) -> None:
         counts=counts,
         bootstrap_targets=bootstrap_targets,
         bootstrap_distances=bootstrap_distances,
+        bootstrap_seeds=bootstrap_seeds,
         all_restarts=all_restarts,
         selected_restart=selected_restart,
         config=config,
         global_seed=args.seed,
         candidate_digest=candidate_digest,
+        seed_sets_digest=seed_sets_digest,
+        target_digest=target_digest,
+        store_dir=getattr(store, "store_dir", args.store),
         elapsed=time.perf_counter() - started,
     )
     if not args.keep_work:
@@ -858,6 +981,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--patience", type=int, default=5)
     parser.add_argument("--material-improvement-ratio", type=float, default=1e-3)
     parser.add_argument("--cdf-block-rows", type=int, default=256)
+    parser.add_argument(
+        "--search-bin-width", type=int, default=20_000,
+        help="coarse grid width in generations used to screen swaps; every "
+             "reported distance is still certified on the exact grid",
+    )
     parser.add_argument("--qc-max-ratio", type=float, default=0.5)
     parser.add_argument("--qc-max-absolute", type=float, default=500.0)
     parser.add_argument("--seed", type=int, default=0)
