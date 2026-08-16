@@ -1,4 +1,4 @@
-# normalizeTE v0.2.1
+# normalizeTE v0.3.1
 
 normalizeTE generates SNP control sets whose posterior age distributions match
 an observed TE variant dataset. The production workflow is designed for many TE
@@ -128,8 +128,9 @@ git checkout COMMIT_HASH
 `v0.1.0` is the tagged q95 baseline. Version `0.2.0` introduced the bootstrap
 median (q50), fixed accepted-swap sweeps, and the 10-chain distributed
 workflow. Version `0.2.1` adds adaptive construction and stronger distributed
-integrity checks. Release changes are summarized in
-[CHANGELOG.md](CHANGELOG.md).
+integrity checks. Version `0.3.0` adds the Φ-SFS analysis step (§7). Version
+`0.3.1` adds bootstrap-target matching (§6), which is not yet cleared for
+production. Release changes are summarized in [CHANGELOG.md](CHANGELOG.md).
 
 ## 2. Build the compact all-SNP interval store
 
