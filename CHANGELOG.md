@@ -1,5 +1,42 @@
 # Changelog
 
+## v0.3.0 — 2026-08-16
+
+- Adds `phi_sfs.py`, a downstream step that compares the unfolded SFS of a
+  target TE set with each of its 100 age-matched SNP control sets. Allele
+  counts come from one polarized biallelic VCF; eligible sites are those with
+  at least 20 callable inbred individuals, each projected to 20 by exact
+  hypergeometric expectation over bins 0 through 20, with bins 1 through 19
+  retained and never renormalized per site.
+- Defines Φ-SFS as the total variation distance between the two projected,
+  normalized spectra, computes three equivalent forms, and reports their
+  disagreement as `identity_max_abs_error`.
+- Requires the matched-control bundle to have been built from the supplied
+  target: `target_digest` is recomputed from the target directory with the
+  matcher's own loader and hash helper and must match. Store hashes alone
+  cannot establish this, so a control bundle from another TE category was
+  previously accepted silently.
+- Validates row-index and coordinate arrays for shape alignment, integer
+  dtype, non-negativity, and within-set duplicate controls, and rejects a
+  matched bundle that is not marked complete.
+- Reports `retained_fraction` and `endpoint_fraction` per set and for the
+  target, because final normalization hides differences in eligible-site count
+  and total retained polymorphic mass.
+- Records `release_provenance.software_provenance()`, the creation command,
+  NumPy version, and creation time in the result metadata, matching every
+  other durable output in the pipeline.
+- Scans the VCF about five times faster on a representative 200-sample file:
+  CHROM and POS are parsed with a bounded split before the coordinate test,
+  genotypes are memoized, sites are projected once per distinct `(k, n)` pair
+  and gathered per set by weighted matrix product, and the VCF digest is
+  accumulated during the single scan instead of a second full read. Published
+  arrays are unchanged to within 1e-13.
+- Documents the input assumptions the step does not re-derive: records are
+  assumed biallelic, the FILTER column is ignored, and ancestral alleles are
+  compared case-sensitively so a lowercase low-confidence call is rejected
+  rather than silently folded.
+- Accepts `.bgz` and `.bgzf` input, reports scan progress, and adds `--quiet`.
+
 ## v0.2.1 — 2026-08-15
 
 - Adaptively halves a plateaued coarse construction grid down to exact target

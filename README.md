@@ -341,11 +341,38 @@ python phi_sfs.py \
   --output phi_sfs/all_te
 ```
 
-Each callable inbred individual contributes one observed allele. Haploid calls
-and homozygous diploid calls are accepted. A missing diploid allele makes that
-individual missing at the site. Heterozygous calls fail by default; pass
-`--heterozygous missing` to exclude heterozygous individuals from that site's
-callable count.
+Plain, `.gz`, and `.bgz`/`.bgzf` VCFs are all accepted. The scan reports
+progress periodically; pass `--quiet` to suppress it.
+
+Before reading the VCF, `phi_sfs.py` recomputes the target's `target_digest`
+and requires it to equal the one recorded in `matches/metadata.json`. This is
+what proves the matched sets were sampled for *this* target: the store hashes
+alone cannot, because every target built from one SNP store shares them. A
+matched bundle from a different TE category is rejected rather than silently
+compared.
+
+### Site assumptions
+
+These are assumptions about the input, not things the script derives. Each one
+is also recorded in the output `metadata.json`.
+
+- **Biallelic.** Records are assumed biallelic, which is what the upstream
+  preprocessing produces. A comma in ALT is treated as an error rather than
+  split into separate alleles here.
+- **FILTER is ignored.** The declared input is the already-filtered
+  preprocessing VCF, so every record at a requested coordinate is used
+  regardless of its FILTER value.
+- **Ancestral alleles are compared case-sensitively.** A lowercase INFO value
+  conventionally marks a low-confidence ancestral call, so it is rejected with
+  a clear error rather than folded to upper case and quietly admitted.
+- **One allele per individual.** Each callable inbred individual contributes
+  one observed allele. Haploid calls and homozygous diploid calls are accepted.
+  A missing diploid allele makes that individual missing at the site.
+  Heterozygous calls fail by default; pass `--heterozygous missing` to exclude
+  heterozygous individuals from that site's callable count.
+
+Every requested site must be present in the VCF; the run fails listing the
+missing coordinates rather than analyzing a subset.
 
 For a site with `k` derived alleles among `n` callable individuals, sites with
 `n < 20` are dropped and eligible sites are projected probabilistically to 20:
@@ -357,25 +384,52 @@ h_j(k,n)=
 \]
 
 Only unfolded bins 1 through 19 enter the comparison. Individual site
-projections are not renormalized after removing endpoint bins. Site
-contributions are first summed within the TE target and within each matched SNP
-set; the two completed spectra are then normalized independently. For target
-spectrum `t` and matched-set spectrum `s_r`, the score is
+projections are **not** renormalized after removing endpoint bins, so a site
+contributes `1 - h_0 - h_20` rather than one: a site whose derived count is
+likely to project to 0 or 20 supplies proportionally less polymorphic mass,
+which is the intended weighting. Site contributions are first summed within the
+TE target and within each matched SNP set; the two completed spectra are then
+normalized independently. For target spectrum `t` and matched-set spectrum
+`s_r`, the score is
 
 \[
 \Phi_{\mathrm{SFS},r}
 =\sum_{j=1}^{19}\max(t_j-s_{rj},0)
-=\frac{1}{2}\sum_{j=1}^{19}|t_j-s_{rj}|.
+=\sum_{j=1}^{19}\max(s_{rj}-t_j,0)
+=\frac{1}{2}\sum_{j=1}^{19}|t_j-s_{rj}|
+=1-\sum_{j=1}^{19}\min(t_j,s_{rj}).
 \]
+
+All four forms are equal because both spectra sum to one. **Φ-SFS is therefore
+the total variation distance between the two projected, normalized spectra** —
+it is not a bespoke quantity, and the standard properties of that distance
+apply. In particular `0 ≤ Φ-SFS ≤ 1`, and the statistic is *symmetric* in its
+two arguments even though the stored bin-level residuals are oriented as TE
+minus SNP. Zero means the two spectra coincide; one means they share no mass in
+any bin. The last form makes the "non-overlap" reading literal: `1 - Φ` is
+exactly the mass the two spectra hold in common.
+
+The script computes the first three forms independently and checks that they
+agree, reporting the discrepancy as `identity_max_abs_error`.
+
+**Interpretation caveat.** Normalizing each spectrum discards its absolute
+scale, so two sets with very different eligible-site counts, missingness, or
+endpoint mass can produce identical spectra. Those differences are invisible in
+Φ and must be inspected separately: `replicates.csv` reports `input_sites`,
+`eligible_sites`, `dropped_n_lt_20`, and both `retained_fraction` and
+`endpoint_fraction` for every set, with the matching `target_*` values in
+`metadata.json`. A target and a control set whose retained fractions differ
+substantially are not really comparable, however small Φ is.
 
 The output directory contains canonical NumPy arrays for raw and normalized
 spectra, TE-minus-SNP residuals, positive residual contributions, the Φ-SFS
 scores, and aligned chain/sample indices. `replicates.csv` contains filtering,
 endpoint-mass, overlap, score, and identity-check diagnostics. `bins.csv`
 contains the raw and normalized spectra and residual contribution for every
-replicate and bin. `metadata.json` records the VCF hash, polarization policy,
-and input provenance. The output directory must not already exist and is
-published atomically.
+replicate and bin. `metadata.json` records the VCF hash, the site assumptions
+above, the recomputed `target_digest`, and the same software and Git provenance
+as the target and matched-control steps. The output directory must not already
+exist and is published atomically.
 
 The 100 scores are matched-control replicates, not necessarily 100 independent
 biological replicates. Inspect them by `chain_index` and retain the existing SNP

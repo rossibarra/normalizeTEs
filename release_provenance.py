@@ -8,7 +8,7 @@ from typing import Any
 
 
 PROJECT_NAME = "normalizeTE"
-PROJECT_VERSION = "0.2.1"
+PROJECT_VERSION = "0.3.0"
 
 
 def _git(repo_root: Path, *arguments: str) -> str | None:

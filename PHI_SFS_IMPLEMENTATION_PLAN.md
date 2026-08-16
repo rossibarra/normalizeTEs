@@ -145,6 +145,28 @@ its metadata.
 The analysis must validate that target and matched-control metadata identify
 the same target and compatible source store before calculating an SFS.
 
+Comparing store hashes is necessary but **not sufficient** for this: every
+target built from one SNP store shares them, so store identity alone cannot
+distinguish a matched bundle sampled for this target from one sampled for a
+different TE category. The binding check is `target_digest`, which the matcher
+computes over the target's row indices, mean CDF, age grid, and acceptance
+threshold. The analysis recomputes it from the target directory — using the
+matcher's own loader and hash helper, so the two cannot drift apart — and
+requires equality. It also requires the matched bundle to be marked complete.
+
+The store hashes must be present in both bundles and must agree, which rejects
+a hand-built or truncated bundle carrying no store identity at all. They are
+not required to be non-null. `content_sha256` already subsumes
+`catalog_sha256`, and the dense store records neither, so requiring a non-null
+digest would make this the only step that rejects a dense-store bundle the
+matcher itself accepts.
+
+Row indices are validated but not re-resolved. `te_row_indices.npy` and
+`row_indices.npy` must align in shape with their coordinate arrays, must be
+non-negative, and must contain no duplicate control within a set. Re-resolving
+coordinates against the interval store would make this otherwise store-free
+step depend on the store for a failure mode these checks already cover.
+
 ### 3.2 Frequency-data source
 
 The SNP-age store identifies sites and their age distributions but does not
@@ -207,9 +229,22 @@ The internal design should separate five responsibilities:
 5. **Output and provenance**: write atomic, machine-readable result artifacts
    with complete input identities and analysis parameters.
 
-Resolve and project unique SNP store rows once, then gather their projection
-vectors with `row_indices.npy`. This avoids repeating genotype lookup and
-hypergeometric calculations when controls are reused across matched sets.
+Resolve and project unique sites once, then gather their projection vectors per
+matched set. This avoids repeating genotype lookup and hypergeometric
+calculations when controls are reused across matched sets.
+
+The implementation caches one level deeper than "unique row": it keys the
+projection cache on the distinct `(k, n)` pair rather than on the site, because
+`h_j(k,n)` depends only on those two numbers. Many sites share a pair, so the
+number of hypergeometric evaluations is bounded by the number of distinct
+`(k, n)` combinations rather than by the number of sites — on representative
+data this is hundreds of evaluations for millions of site slots.
+
+Accumulation then gathers by that cache row: each set counts how many of its
+eligible sites map to each distinct pair and takes one matrix product against
+the `(n_distinct, 19)` projection matrix, rather than adding one length-19
+vector per site. Measured at 100 sets by 10,000 sites, this is about 8 times
+faster than per-site accumulation and numerically identical to within 1e-13.
 
 ## 5. Processing workflow
 
@@ -272,23 +307,28 @@ Write a new result directory atomically. At minimum, include the following.
 
 ### 6.1 Replicate-level table
 
-One row per matched SNP set with:
+One row per matched SNP set. `replicates.csv` carries, in order:
 
-- target label;
-- matched-set index;
-- chain index;
-- sample index;
-- input SNP count;
-- eligible SNP count;
-- count dropped for `n < 20`;
-- counts rejected for each other reason;
-- raw retained polymorphic projection mass;
-- projected bin-0 and bin-20 mass;
-- `Φ_SFS`;
-- overlap, `1 - Φ_SFS`;
-- reverse-positive residual sum;
-- half-L1 value; and
-- numerical consistency differences.
+- `replicate`, the matched-set index;
+- `chain_index` and `sample_index`;
+- `input_sites` and `eligible_sites`;
+- `dropped_n_lt_20`;
+- `retained_mass`, the raw retained polymorphic projection mass;
+- `endpoint_mass`, the excluded bin-0 plus bin-20 mass;
+- `retained_fraction` and `endpoint_fraction`, each divided by
+  `eligible_sites`, because the absolute masses are not comparable across sets
+  with different eligible-site counts;
+- `phi_sfs`;
+- `overlap`, `1 - Φ_SFS`;
+- `reverse_positive` and `half_l1`; and
+- `identity_max_abs_error`, the largest disagreement among the three forms.
+
+There is no per-set count of sites "rejected for each other reason": every
+rejection cause other than `n < 20` — multiallelic ALT, unresolvable ancestral
+state, heterozygosity under the `error` policy, an absent record — is a hard
+failure of the whole run rather than a silent per-site exclusion, so such a
+count would be identically zero. The target label is not duplicated into the
+table; the target identity lives once in `metadata.json`.
 
 ### 6.2 Bin-level table
 
@@ -432,3 +472,56 @@ The implementation is ready for production when:
    duplicate positions, and matched-set metadata.
 7. Run a small real-data pilot and inspect filtering, endpoint mass, chain
    behavior, SNP reuse, and residual-by-bin diagnostics before full production.
+
+## 12. Implementation status
+
+Recorded after the round 6 review (`CODE_REVIEW_ROUND6.md`) so that this plan
+does not imply guarantees the code does not provide.
+
+### Implemented
+
+Sections 2 through 4, 5 phases A through D, 6.1 through 6.4, and 7 are
+implemented in `phi_sfs.py`. This includes `target_digest` binding of the
+matched bundle to the target, row-index alignment and duplicate checks, the
+distinct-`(k, n)` projection cache and gathered accumulation, retained and
+endpoint fractions, single-pass VCF digesting, and the standard
+`release_provenance` software and Git provenance carried by every other durable
+output in this pipeline.
+
+Section 8's projection, spectrum, and Φ-SFS test groups are covered in
+`tests/test_phi_sfs.py`, including a random-subsampling cross-check of the
+closed-form projection and hand-calculated end-to-end scores.
+
+### Deferred
+
+These were specified above but are **not** implemented. They are optional
+analysis conveniences, not correctness requirements, and each is derivable from
+the published arrays.
+
+1. **Phase E summary statistics** (section 5). The mean, median, standard
+   deviation, range, and quantiles of the 100 Φ-SFS values are not written to
+   `metadata.json`. Compute them from `phi_sfs.npy`, which is published with
+   aligned `chain_index.npy` and `sample_index.npy`.
+2. **Phase E chain diagnostics** (section 5) and the plots in section 9. The
+   inputs are published; the plotting is left to downstream analysis.
+3. **Automatic flagging of large retained-fraction differences** (section 7).
+   The fractions are now reported per set and for the target, but nothing
+   compares them and warns. Inspect `retained_fraction` in `replicates.csv`
+   against `target_retained_fraction` in `metadata.json`.
+4. **Ancestral-state confidence sensitivity analysis** (section 9). Explicitly
+   scoped as a later extension in the original plan. Lowercase ancestral
+   annotations are currently rejected rather than treated as a confidence
+   tier.
+
+### Deliberately rejected
+
+1. **Enforcing `FILTER = PASS`.** The declared input is the already-filtered
+   preprocessing VCF. Skipping non-PASS records would reclassify them as
+   "requested sites absent from the VCF" and fail the run with a misleading
+   error. FILTER is ignored, and the policy is recorded in the output metadata.
+2. **Rejecting non-single-base REF/ALT.** Multiallelic records are excluded
+   upstream, so the biallelic property is an input assumption, documented in
+   the README and the output metadata rather than re-derived here.
+3. **Concurrent-writer hardening of the output publication.** The
+   `mkdtemp` plus `os.replace` pattern matches `te_age_target.write_target` and
+   the matcher; the manifest design already requires unique output directories.
