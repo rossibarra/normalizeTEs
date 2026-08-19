@@ -776,6 +776,40 @@ antisymmetric contrast that folding destroys, and because the same model is
 applied to arms with different frequency spectra it reproduces the differential
 effect rather than cancelling it.
 
+**Measured, on chr10.** `probe_polarity_sensitivity.py` runs this against the
+real projection and scoring code, polarizing by the ARG's own majority ancestral
+call and re-scoring under flips at the fitted frequency-dependent rate:
+
+| mean flip probability | Φ median | 95% interval | shift from observed |
+|---:|---:|---|---:|
+| 0.110 (matches the TE truth-set rate) | 0.1232 | [0.1165, 0.1309] | **−15.0%** |
+| 0.186 | 0.1086 | [0.1003, 0.1163] | −25.1% |
+| 0.310 (frequency-shortfall upper bound) | 0.0844 | [0.0754, 0.0939] | −41.7% |
+
+Observed Φ is 0.1449 with polarity as called.
+
+Two things follow, and the first reverses how this risk was framed above.
+
+**Polarization error attenuates Φ; it does not manufacture it.** Flipping pushes
+both spectra toward folded and shrinks their difference, monotonically across
+all three rates. So the error costs power rather than creating false signal, and
+**the observed Φ is a floor rather than a ceiling** — with perfect polarity the
+TE-versus-control difference would be larger. A positive result is therefore
+robust to this bias; a null result is not, and must not be read as evidence of
+no difference.
+
+**The effect is first-order, not a rounding detail.** At the realistic rate it
+is a 15% attenuation. C5's `--ancestral-mode` should carry the perturbation
+machinery from the start rather than have it added later, and every reported Φ
+should be accompanied by its attenuation interval.
+
+Caveats that travel with these numbers: chromosome 10 only, and the control arm
+is a frequency-blind random SNP sample rather than an age-matched set, so 0.1449
+is not the scientific Φ. Read the table as a sensitivity magnitude. The
+independent-flip model is also an approximation — real polarization error is
+systematic in frequency rather than independent across sites — which is a
+further reason to treat the attenuation as indicative rather than exact.
+
 Report the folded statistic too, but only as one-directional evidence: a *large*
 folded Φ in the same direction is positive evidence the result survives
 polarization-invariant measurement. A small one is uninformative.
