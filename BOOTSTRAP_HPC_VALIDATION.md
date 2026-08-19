@@ -985,6 +985,63 @@ matching discrete site sets to a precise CDF. Document it as a limitation of
 the stage (gates 5 and 9 above), do not spend compute chasing it, and do not
 build a new search algorithm for it.
 
+### ARG inference error is not propagated, and the optimizer selects on it
+
+The bootstrap resamples *which TE sites were drawn*. It holds the inferred ages
+fixed, so **ARG inference uncertainty is not propagated at all** by this stage.
+That would be tolerable if the ARG were reliable or if the 75-draw spread stood
+in for its error. Neither holds cleanly.
+
+**The ARG's error rate is measurable.** On chr10 TE sites, where insertion-is-
+derived gives ground truth, the ARG calls polarity wrong at 13.6% of sites and
+9.2% of sites where all 75 draws agree (see C5 below).
+
+**The across-draw posterior is directionally informative but not calibrated.**
+Splitting the same TE sites by whether the ARG got polarity right:
+
+| | n | median age-posterior SD |
+|---|---:|---:|
+| ARG polarity correct | 6,870 | 56,910 gen |
+| ARG polarity wrong | 1,048 | 116,119 gen (**2.04x**) |
+
+| polarity confidence | median age-posterior SD |
+|---|---:|
+| `p >= 0.99` | 42,416 gen |
+| `p < 0.90` | 176,907 gen |
+
+A wide posterior is a real 4x signal that the ARG is unsure. But among the
+narrow-posterior sites the ARG is still only ~90.8% correct, so narrow means
+*better*, not *right*, and across-draw spread understates true error.
+
+**The optimizer selects on posterior width, and in the opposite direction from
+the obvious worry.** Median across-draw age SD:
+
+| set | n sampled | median SD | ratio to TE |
+|---|---:|---:|---:|
+| TE target | 4,067 | 24,036 | 1.000 |
+| §5 hard-q50 controls | 6,000 | 20,002 | 0.832 |
+| §6 bootstrap controls | 6,000 | 14,897 | **0.620** |
+
+Controls are *better* determined than the TEs they match, and the optimizer
+selects markedly narrower posteriors than the random-walk sampler does. This is
+not incidental: a site with a narrow posterior has a sharper CDF and is more
+useful for shaping an aggregate CDF precisely, so an optimizer targeting a
+precise CDF will prefer them. **It is a plausible mechanism for the gate 7
+diversity deficit** — the useful subpopulation is smaller than the eligible one.
+
+The consequence is structural rather than a tuning issue. Matching operates on
+posterior-*mean* CDFs, so it matches the convolution of true ages with inference
+uncertainty, not the true age distribution. When the target carries more
+per-site smearing than the controls, the optimizer can only reproduce the
+target's smeared CDF by spreading the controls' *true* ages more widely than the
+TEs' true ages are spread. Age matching on posterior means is therefore not the
+same as age matching, and the gap grows with the difference in posterior width
+between the arms.
+
+Worth testing before this stage is adopted: posterior width as a matching
+covariate alongside age, and whether the §5/§6 difference in selected width
+changes any downstream conclusion.
+
 ### T5 — production run, 100 replicates: **complete**
 
 `results/bootstrap_matches/in_gene_75draw`, 100 replicates x 3 restarts,
