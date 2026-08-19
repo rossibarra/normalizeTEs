@@ -751,14 +751,34 @@ worse than doing nothing, because confidence is itself frequency-dependent and
 the restriction would bias the frequency spectrum directly -- the quantity being
 measured.
 
-**What to do instead: a folded sensitivity analysis.** Fold both spectra
-(`k -> min(k, n-k)`) and recompute Φ. Folding is polarization-invariant by
-construction, so if the folded comparison supports the same conclusion, no
-polarization artifact is driving the result. It costs one extra pass over
-spectra that are already computed, needs no new inference, and does not require
-the bias to be removed -- only bounded. The unfolded statistic stays primary,
-since folding gives up the direction of any SFS shift; the folded run is the
-control.
+**What to do instead: perturb the polarity, not the spectrum.** Folding
+(`k -> min(k, n-k)`) is polarization-invariant, but it merges bin `j` with bin
+`20-j` and therefore cancels *antisymmetric* differences exactly. An excess of
+rare derived alleles paired with a deficit of common ones -- the purifying-
+selection signature, and the most likely real result -- folds to nothing. A null
+folded result would not distinguish "no polarization artifact" from "folding
+removed the signal", so it only supports a conclusion in one direction.
+
+Use a polarity-perturbation sensitivity analysis instead. It keeps all 19 bins:
+
+1. Fit the polarization error rate as a function of minor-allele frequency from
+   the table above (77.5% at minor frequency below 0.05 falling to 54.7% near
+   0.5, with the TE truth set bounding the absolute rate).
+2. For each of many draws, flip each site's polarity independently with its
+   fitted frequency-dependent probability, and recompute Φ for the target and
+   every control set.
+3. Report the spread of Φ under that perturbation beside the observed value.
+
+This answers the question that actually matters -- *how far could polarization
+error move the answer* -- rather than whether a lower-powered statistic agrees.
+It uses the measured error model rather than assuming one, it retains the
+antisymmetric contrast that folding destroys, and because the same model is
+applied to arms with different frequency spectra it reproduces the differential
+effect rather than cancelling it.
+
+Report the folded statistic too, but only as one-directional evidence: a *large*
+folded Φ in the same direction is positive evidence the result survives
+polarization-invariant measurement. A small one is uninformative.
 
 The bias does **not** cancel between arms. TEs and their matched controls have
 different frequency spectra by construction, and the polarization lean is
