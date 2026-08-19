@@ -1,0 +1,78 @@
+{
+  "config": {
+    "store": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/all_te_snp_age_interval_store",
+    "matches": "results/bootstrap_matches/in_gene_75draw",
+    "candidate_rows": "results/candidate-rows-75draw.npy",
+    "target": "results/targets/in_gene_75draw",
+    "replicates": [
+      14,
+      44,
+      51,
+      65
+    ],
+    "slots": 300,
+    "candidates": 400,
+    "anchors": 3000,
+    "search_bin_width": 20000.0,
+    "output": "results/pair-swap-probe.json",
+    "seed": 11
+  },
+  "results": [
+    {
+      "replicate": 14,
+      "base_coarse_w1": 85.36067280294546,
+      "base_exact_w1": 313.68398741633393,
+      "best_single_coarse_w1": 84.94852949119013,
+      "single_improves": true,
+      "single_gain": 0.4121433117553295,
+      "best_pair_coarse_w1": 84.63622014519072,
+      "pair_improves": true,
+      "pair_gain": 0.724452657754739,
+      "pair_beats_best_single": true,
+      "pair_exact_w1": 312.9157465592934,
+      "exact_gain": 0.7682408570405528
+    },
+    {
+      "replicate": 44,
+      "base_coarse_w1": 63.555916477119325,
+      "base_exact_w1": 315.7777582324631,
+      "best_single_coarse_w1": 62.367326154045756,
+      "single_improves": true,
+      "single_gain": 1.1885903230735693,
+      "best_pair_coarse_w1": 62.086899247670004,
+      "pair_improves": true,
+      "pair_gain": 1.469017229449321,
+      "pair_beats_best_single": true,
+      "pair_exact_w1": 313.9978986187467,
+      "exact_gain": 1.7798596137163827
+    },
+    {
+      "replicate": 51,
+      "base_coarse_w1": 43.08158560919928,
+      "base_exact_w1": 222.93365873647315,
+      "best_single_coarse_w1": 41.97478582063233,
+      "single_improves": true,
+      "single_gain": 1.1067997885669527,
+      "best_pair_coarse_w1": 40.424473397400405,
+      "pair_improves": true,
+      "pair_gain": 2.657112211798875,
+      "pair_beats_best_single": true,
+      "pair_exact_w1": 220.63879347032395,
+      "exact_gain": 2.294865266149202
+    },
+    {
+      "replicate": 65,
+      "base_coarse_w1": 82.09112800700468,
+      "base_exact_w1": 336.4504774673383,
+      "best_single_coarse_w1": 79.80090348063851,
+      "single_improves": true,
+      "single_gain": 2.290224526366174,
+      "best_pair_coarse_w1": 79.0878315365299,
+      "pair_improves": true,
+      "pair_gain": 3.0032964704747798,
+      "pair_beats_best_single": true,
+      "pair_exact_w1": 333.440729441893,
+      "exact_gain": 3.009748025445333
+    }
+  ]
+}

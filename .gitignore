@@ -14,3 +14,22 @@ __pycache__/
 .idea/
 .vscode/
 .claude/settings.local.json
+
+# Posterior ARG draws and interval stores (GB-scale, live on Quobyte)
+*.tsz
+results/interval-gate3-3draw-store/
+results/ancestral-75draw/*.npy
+results/ancestral-smoke-1draw/
+results/work-*/
+
+# Large result arrays: row indices, CDFs, per-site ancestral counts.
+# JSON provenance and metadata beside them are kept.
+results/**/*.npy
+results/*.npy
+
+# SLURM logs
+results/*.out
+results/*.err
+
+# Position lists are inputs staged from the upstream analysis directory
+*.pos.txt

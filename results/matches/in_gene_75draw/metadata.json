@@ -1,0 +1,1025 @@
+{
+  "algorithm_version": "swap-age-controls-v2.1-adaptive-construction",
+  "candidate_rows": "/quobyte/jrigrp/jri/projects/normalizeTEs/results/candidate-rows-75draw.npy",
+  "chain_construction": [
+    {
+      "accepted_swaps": 5898,
+      "config": {
+        "algorithm_version": "swap-age-controls-v2.1-adaptive-construction",
+        "burnin_accepted_sweeps": 1.0,
+        "cdf_block_rows": 256,
+        "exact_check_accepted": 1000,
+        "max_chain_proposals": 10000000,
+        "max_construction_epochs": 50,
+        "max_exact_plateau_epochs": 3,
+        "progress_every": 100000,
+        "sample_accepted_sweeps": 1.0,
+        "search_bin_width": 20000,
+        "sets_per_chain": 10
+      },
+      "duplicate_proposals": 1,
+      "elapsed_seconds": 1371.4176057660952,
+      "entry_wasserstein": 936.4976350142127,
+      "final_search_bin_width": 20000,
+      "history": [
+        {
+          "accepted_swaps": 1991,
+          "coarse_wasserstein": 177134.60060650605,
+          "epoch": 1,
+          "exact_wasserstein": 176667.0435289993,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 1349,
+          "coarse_wasserstein": 76718.89835270272,
+          "epoch": 2,
+          "exact_wasserstein": 76401.29396725765,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 991,
+          "coarse_wasserstein": 33047.653535867736,
+          "epoch": 3,
+          "exact_wasserstein": 32866.408726946844,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 782,
+          "coarse_wasserstein": 8935.73019067728,
+          "epoch": 4,
+          "exact_wasserstein": 8894.547725251123,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 785,
+          "coarse_wasserstein": 736.7959407329649,
+          "epoch": 5,
+          "exact_wasserstein": 936.4976350142127,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        }
+      ],
+      "proposals": 20335,
+      "search_refinements": [],
+      "walk_accepted_swaps": 40670,
+      "walk_duplicate_redraws": 20,
+      "walk_proposals": 133038
+    },
+    {
+      "accepted_swaps": 5815,
+      "config": {
+        "algorithm_version": "swap-age-controls-v2.1-adaptive-construction",
+        "burnin_accepted_sweeps": 1.0,
+        "cdf_block_rows": 256,
+        "exact_check_accepted": 1000,
+        "max_chain_proposals": 10000000,
+        "max_construction_epochs": 50,
+        "max_exact_plateau_epochs": 3,
+        "progress_every": 100000,
+        "sample_accepted_sweeps": 1.0,
+        "search_bin_width": 20000,
+        "sets_per_chain": 10
+      },
+      "duplicate_proposals": 2,
+      "elapsed_seconds": 1930.9546196023002,
+      "entry_wasserstein": 810.0809260268388,
+      "final_search_bin_width": 20000,
+      "history": [
+        {
+          "accepted_swaps": 1976,
+          "coarse_wasserstein": 186934.1951764159,
+          "epoch": 1,
+          "exact_wasserstein": 186476.89480635204,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 1336,
+          "coarse_wasserstein": 80832.10918066675,
+          "epoch": 2,
+          "exact_wasserstein": 80529.44818447843,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 1008,
+          "coarse_wasserstein": 35238.728626588585,
+          "epoch": 3,
+          "exact_wasserstein": 35086.57030297605,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 781,
+          "coarse_wasserstein": 10118.57544971935,
+          "epoch": 4,
+          "exact_wasserstein": 10101.738118426172,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 714,
+          "coarse_wasserstein": 665.802531671037,
+          "epoch": 5,
+          "exact_wasserstein": 810.0809260268388,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        }
+      ],
+      "proposals": 20335,
+      "search_refinements": [],
+      "walk_accepted_swaps": 40670,
+      "walk_duplicate_redraws": 27,
+      "walk_proposals": 133707
+    },
+    {
+      "accepted_swaps": 6009,
+      "config": {
+        "algorithm_version": "swap-age-controls-v2.1-adaptive-construction",
+        "burnin_accepted_sweeps": 1.0,
+        "cdf_block_rows": 256,
+        "exact_check_accepted": 1000,
+        "max_chain_proposals": 10000000,
+        "max_construction_epochs": 50,
+        "max_exact_plateau_epochs": 3,
+        "progress_every": 100000,
+        "sample_accepted_sweeps": 1.0,
+        "search_bin_width": 20000,
+        "sets_per_chain": 10
+      },
+      "duplicate_proposals": 2,
+      "elapsed_seconds": 1927.3579583577812,
+      "entry_wasserstein": 698.139835522407,
+      "final_search_bin_width": 20000,
+      "history": [
+        {
+          "accepted_swaps": 2060,
+          "coarse_wasserstein": 181449.64927663896,
+          "epoch": 1,
+          "exact_wasserstein": 180970.0716136627,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 1353,
+          "coarse_wasserstein": 77171.49510755872,
+          "epoch": 2,
+          "exact_wasserstein": 76862.32961133379,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 1028,
+          "coarse_wasserstein": 32533.201107211007,
+          "epoch": 3,
+          "exact_wasserstein": 32401.25951058423,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 793,
+          "coarse_wasserstein": 9109.784673349584,
+          "epoch": 4,
+          "exact_wasserstein": 9133.363367711394,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 775,
+          "coarse_wasserstein": 504.1409198988234,
+          "epoch": 5,
+          "exact_wasserstein": 698.139835522407,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        }
+      ],
+      "proposals": 20335,
+      "search_refinements": [],
+      "walk_accepted_swaps": 40670,
+      "walk_duplicate_redraws": 29,
+      "walk_proposals": 132969
+    },
+    {
+      "accepted_swaps": 5835,
+      "config": {
+        "algorithm_version": "swap-age-controls-v2.1-adaptive-construction",
+        "burnin_accepted_sweeps": 1.0,
+        "cdf_block_rows": 256,
+        "exact_check_accepted": 1000,
+        "max_chain_proposals": 10000000,
+        "max_construction_epochs": 50,
+        "max_exact_plateau_epochs": 3,
+        "progress_every": 100000,
+        "sample_accepted_sweeps": 1.0,
+        "search_bin_width": 20000,
+        "sets_per_chain": 10
+      },
+      "duplicate_proposals": 4,
+      "elapsed_seconds": 1913.6035500988364,
+      "entry_wasserstein": 771.54485162141,
+      "final_search_bin_width": 20000,
+      "history": [
+        {
+          "accepted_swaps": 1979,
+          "coarse_wasserstein": 189482.1574671428,
+          "epoch": 1,
+          "exact_wasserstein": 189009.36372127294,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 1348,
+          "coarse_wasserstein": 80148.35385322142,
+          "epoch": 2,
+          "exact_wasserstein": 79830.47154931999,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 973,
+          "coarse_wasserstein": 33901.87178992155,
+          "epoch": 3,
+          "exact_wasserstein": 33737.74790058814,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 831,
+          "coarse_wasserstein": 8987.077852692471,
+          "epoch": 4,
+          "exact_wasserstein": 8964.319912185994,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 704,
+          "coarse_wasserstein": 599.0956118120839,
+          "epoch": 5,
+          "exact_wasserstein": 771.54485162141,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        }
+      ],
+      "proposals": 20335,
+      "search_refinements": [],
+      "walk_accepted_swaps": 40670,
+      "walk_duplicate_redraws": 22,
+      "walk_proposals": 132493
+    },
+    {
+      "accepted_swaps": 5931,
+      "config": {
+        "algorithm_version": "swap-age-controls-v2.1-adaptive-construction",
+        "burnin_accepted_sweeps": 1.0,
+        "cdf_block_rows": 256,
+        "exact_check_accepted": 1000,
+        "max_chain_proposals": 10000000,
+        "max_construction_epochs": 50,
+        "max_exact_plateau_epochs": 3,
+        "progress_every": 100000,
+        "sample_accepted_sweeps": 1.0,
+        "search_bin_width": 20000,
+        "sets_per_chain": 10
+      },
+      "duplicate_proposals": 4,
+      "elapsed_seconds": 1865.5632864935324,
+      "entry_wasserstein": 835.4909088438575,
+      "final_search_bin_width": 20000,
+      "history": [
+        {
+          "accepted_swaps": 2025,
+          "coarse_wasserstein": 187968.16633155782,
+          "epoch": 1,
+          "exact_wasserstein": 187486.5121068602,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 1335,
+          "coarse_wasserstein": 81865.9547682786,
+          "epoch": 2,
+          "exact_wasserstein": 81552.37369658326,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 1019,
+          "coarse_wasserstein": 37596.268636258515,
+          "epoch": 3,
+          "exact_wasserstein": 37431.13822151358,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 829,
+          "coarse_wasserstein": 11242.608890936079,
+          "epoch": 4,
+          "exact_wasserstein": 11219.647767345348,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 723,
+          "coarse_wasserstein": 708.8770966213553,
+          "epoch": 5,
+          "exact_wasserstein": 835.4909088438575,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        }
+      ],
+      "proposals": 20335,
+      "search_refinements": [],
+      "walk_accepted_swaps": 40670,
+      "walk_duplicate_redraws": 38,
+      "walk_proposals": 131733
+    },
+    {
+      "accepted_swaps": 5972,
+      "config": {
+        "algorithm_version": "swap-age-controls-v2.1-adaptive-construction",
+        "burnin_accepted_sweeps": 1.0,
+        "cdf_block_rows": 256,
+        "exact_check_accepted": 1000,
+        "max_chain_proposals": 10000000,
+        "max_construction_epochs": 50,
+        "max_exact_plateau_epochs": 3,
+        "progress_every": 100000,
+        "sample_accepted_sweeps": 1.0,
+        "search_bin_width": 20000,
+        "sets_per_chain": 10
+      },
+      "duplicate_proposals": 5,
+      "elapsed_seconds": 1705.0738142086193,
+      "entry_wasserstein": 902.606353749501,
+      "final_search_bin_width": 20000,
+      "history": [
+        {
+          "accepted_swaps": 2008,
+          "coarse_wasserstein": 181087.34775013875,
+          "epoch": 1,
+          "exact_wasserstein": 180589.77379139472,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 1379,
+          "coarse_wasserstein": 79380.88657181572,
+          "epoch": 2,
+          "exact_wasserstein": 79039.87514653239,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 1007,
+          "coarse_wasserstein": 33425.4513628255,
+          "epoch": 3,
+          "exact_wasserstein": 33222.20479491015,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 869,
+          "coarse_wasserstein": 8689.111442870777,
+          "epoch": 4,
+          "exact_wasserstein": 8645.299648799455,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 709,
+          "coarse_wasserstein": 730.9000338969463,
+          "epoch": 5,
+          "exact_wasserstein": 902.606353749501,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        }
+      ],
+      "proposals": 20335,
+      "search_refinements": [],
+      "walk_accepted_swaps": 40670,
+      "walk_duplicate_redraws": 26,
+      "walk_proposals": 130694
+    },
+    {
+      "accepted_swaps": 6071,
+      "config": {
+        "algorithm_version": "swap-age-controls-v2.1-adaptive-construction",
+        "burnin_accepted_sweeps": 1.0,
+        "cdf_block_rows": 256,
+        "exact_check_accepted": 1000,
+        "max_chain_proposals": 10000000,
+        "max_construction_epochs": 50,
+        "max_exact_plateau_epochs": 3,
+        "progress_every": 100000,
+        "sample_accepted_sweeps": 1.0,
+        "search_bin_width": 20000,
+        "sets_per_chain": 10
+      },
+      "duplicate_proposals": 4,
+      "elapsed_seconds": 1483.26732415054,
+      "entry_wasserstein": 683.1508676490712,
+      "final_search_bin_width": 20000,
+      "history": [
+        {
+          "accepted_swaps": 2050,
+          "coarse_wasserstein": 191851.8164087813,
+          "epoch": 1,
+          "exact_wasserstein": 191397.04423496794,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 1383,
+          "coarse_wasserstein": 81878.24690800041,
+          "epoch": 2,
+          "exact_wasserstein": 81563.39959357539,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 1043,
+          "coarse_wasserstein": 34337.47217849092,
+          "epoch": 3,
+          "exact_wasserstein": 34176.90321592302,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 836,
+          "coarse_wasserstein": 9213.30349448763,
+          "epoch": 4,
+          "exact_wasserstein": 9196.282372847638,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 759,
+          "coarse_wasserstein": 416.3636748297484,
+          "epoch": 5,
+          "exact_wasserstein": 683.1508676490712,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        }
+      ],
+      "proposals": 20335,
+      "search_refinements": [],
+      "walk_accepted_swaps": 40670,
+      "walk_duplicate_redraws": 26,
+      "walk_proposals": 131884
+    },
+    {
+      "accepted_swaps": 6104,
+      "config": {
+        "algorithm_version": "swap-age-controls-v2.1-adaptive-construction",
+        "burnin_accepted_sweeps": 1.0,
+        "cdf_block_rows": 256,
+        "exact_check_accepted": 1000,
+        "max_chain_proposals": 10000000,
+        "max_construction_epochs": 50,
+        "max_exact_plateau_epochs": 3,
+        "progress_every": 100000,
+        "sample_accepted_sweeps": 1.0,
+        "search_bin_width": 20000,
+        "sets_per_chain": 10
+      },
+      "duplicate_proposals": 3,
+      "elapsed_seconds": 1762.7252358533442,
+      "entry_wasserstein": 823.8022520244255,
+      "final_search_bin_width": 20000,
+      "history": [
+        {
+          "accepted_swaps": 2090,
+          "coarse_wasserstein": 182030.0798963191,
+          "epoch": 1,
+          "exact_wasserstein": 181559.09107831997,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 1364,
+          "coarse_wasserstein": 78298.04637750138,
+          "epoch": 2,
+          "exact_wasserstein": 77980.47639822096,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 1075,
+          "coarse_wasserstein": 32249.36862008281,
+          "epoch": 3,
+          "exact_wasserstein": 32085.43644774439,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 840,
+          "coarse_wasserstein": 8347.023633381166,
+          "epoch": 4,
+          "exact_wasserstein": 8329.321602265945,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 735,
+          "coarse_wasserstein": 630.3219784816416,
+          "epoch": 5,
+          "exact_wasserstein": 823.8022520244255,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        }
+      ],
+      "proposals": 20335,
+      "search_refinements": [],
+      "walk_accepted_swaps": 40670,
+      "walk_duplicate_redraws": 20,
+      "walk_proposals": 132900
+    },
+    {
+      "accepted_swaps": 5958,
+      "config": {
+        "algorithm_version": "swap-age-controls-v2.1-adaptive-construction",
+        "burnin_accepted_sweeps": 1.0,
+        "cdf_block_rows": 256,
+        "exact_check_accepted": 1000,
+        "max_chain_proposals": 10000000,
+        "max_construction_epochs": 50,
+        "max_exact_plateau_epochs": 3,
+        "progress_every": 100000,
+        "sample_accepted_sweeps": 1.0,
+        "search_bin_width": 20000,
+        "sets_per_chain": 10
+      },
+      "duplicate_proposals": 0,
+      "elapsed_seconds": 1617.605609530583,
+      "entry_wasserstein": 749.1754475652683,
+      "final_search_bin_width": 20000,
+      "history": [
+        {
+          "accepted_swaps": 2062,
+          "coarse_wasserstein": 178321.06121028977,
+          "epoch": 1,
+          "exact_wasserstein": 177821.09246922767,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 1302,
+          "coarse_wasserstein": 80808.54461036727,
+          "epoch": 2,
+          "exact_wasserstein": 80463.78453167682,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 1034,
+          "coarse_wasserstein": 32481.23157169589,
+          "epoch": 3,
+          "exact_wasserstein": 32289.896486024343,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 851,
+          "coarse_wasserstein": 7576.620224937335,
+          "epoch": 4,
+          "exact_wasserstein": 7521.239194843345,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 709,
+          "coarse_wasserstein": 483.0816299618591,
+          "epoch": 5,
+          "exact_wasserstein": 749.1754475652683,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        }
+      ],
+      "proposals": 20335,
+      "search_refinements": [],
+      "walk_accepted_swaps": 40670,
+      "walk_duplicate_redraws": 28,
+      "walk_proposals": 131530
+    },
+    {
+      "accepted_swaps": 5888,
+      "config": {
+        "algorithm_version": "swap-age-controls-v2.1-adaptive-construction",
+        "burnin_accepted_sweeps": 1.0,
+        "cdf_block_rows": 256,
+        "exact_check_accepted": 1000,
+        "max_chain_proposals": 10000000,
+        "max_construction_epochs": 50,
+        "max_exact_plateau_epochs": 3,
+        "progress_every": 100000,
+        "sample_accepted_sweeps": 1.0,
+        "search_bin_width": 20000,
+        "sets_per_chain": 10
+      },
+      "duplicate_proposals": 4,
+      "elapsed_seconds": 1711.2374373078346,
+      "entry_wasserstein": 951.8089948900108,
+      "final_search_bin_width": 20000,
+      "history": [
+        {
+          "accepted_swaps": 2020,
+          "coarse_wasserstein": 182615.53464020084,
+          "epoch": 1,
+          "exact_wasserstein": 182139.32982943166,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 1319,
+          "coarse_wasserstein": 77333.14488027821,
+          "epoch": 2,
+          "exact_wasserstein": 77010.30849083664,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 998,
+          "coarse_wasserstein": 31869.284800027355,
+          "epoch": 3,
+          "exact_wasserstein": 31695.468766390015,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 808,
+          "coarse_wasserstein": 9192.538331510366,
+          "epoch": 4,
+          "exact_wasserstein": 9162.125840474573,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        },
+        {
+          "accepted_swaps": 743,
+          "coarse_wasserstein": 753.274146621623,
+          "epoch": 5,
+          "exact_wasserstein": 951.8089948900108,
+          "proposals": 4067,
+          "refined_to_search_bin_width": null,
+          "search_bin_width": 20000
+        }
+      ],
+      "proposals": 20335,
+      "search_refinements": [],
+      "walk_accepted_swaps": 40670,
+      "walk_duplicate_redraws": 24,
+      "walk_proposals": 131610
+    }
+  ],
+  "chain_diversity": [
+    {
+      "chain_index": 0,
+      "mean_adjacent_replacement_fraction": 0.6092669999726797,
+      "membership_overlap_ar1_ess_heuristic": 4.380905608486395,
+      "minimum_adjacent_replacement_fraction": 0.6038849274649618,
+      "wasserstein_lag1_autocorrelation": -0.2677297454748046
+    },
+    {
+      "chain_index": 1,
+      "mean_adjacent_replacement_fraction": 0.6099500040980248,
+      "membership_overlap_ar1_ess_heuristic": 4.3879716981132075,
+      "minimum_adjacent_replacement_fraction": 0.6053602163757069,
+      "wasserstein_lag1_autocorrelation": -0.1701503072998575
+    },
+    {
+      "chain_index": 2,
+      "mean_adjacent_replacement_fraction": 0.6106603283883835,
+      "membership_overlap_ar1_ess_heuristic": 4.395327801156251,
+      "minimum_adjacent_replacement_fraction": 0.5989672977624785,
+      "wasserstein_lag1_autocorrelation": 0.06299585610924395
+    },
+    {
+      "chain_index": 3,
+      "mean_adjacent_replacement_fraction": 0.6114252930087698,
+      "membership_overlap_ar1_ess_heuristic": 4.403258174949829,
+      "minimum_adjacent_replacement_fraction": 0.6029014015244651,
+      "wasserstein_lag1_autocorrelation": 0.2203912492499841
+    },
+    {
+      "chain_index": 4,
+      "mean_adjacent_replacement_fraction": 0.6116984946589077,
+      "membership_overlap_ar1_ess_heuristic": 4.4060925692695205,
+      "minimum_adjacent_replacement_fraction": 0.6058519793459552,
+      "wasserstein_lag1_autocorrelation": -0.2442382573158822
+    },
+    {
+      "chain_index": 5,
+      "mean_adjacent_replacement_fraction": 0.6095402016228177,
+      "membership_overlap_ar1_ess_heuristic": 4.383731211317418,
+      "minimum_adjacent_replacement_fraction": 0.6029014015244651,
+      "wasserstein_lag1_autocorrelation": -0.11419830843367759
+    },
+    {
+      "chain_index": 6,
+      "mean_adjacent_replacement_fraction": 0.6098134032729559,
+      "membership_overlap_ar1_ess_heuristic": 4.38655792473224,
+      "minimum_adjacent_replacement_fraction": 0.6053602163757069,
+      "wasserstein_lag1_autocorrelation": -0.31403136467120596
+    },
+    {
+      "chain_index": 7,
+      "mean_adjacent_replacement_fraction": 0.6072726279266727,
+      "membership_overlap_ar1_ess_heuristic": 4.360312291576759,
+      "minimum_adjacent_replacement_fraction": 0.6031472830095894,
+      "wasserstein_lag1_autocorrelation": 0.5053899500098696
+    },
+    {
+      "chain_index": 8,
+      "mean_adjacent_replacement_fraction": 0.6093216403027074,
+      "membership_overlap_ar1_ess_heuristic": 4.381470640237313,
+      "minimum_adjacent_replacement_fraction": 0.6024096385542168,
+      "wasserstein_lag1_autocorrelation": -0.21259795956363436
+    },
+    {
+      "chain_index": 9,
+      "mean_adjacent_replacement_fraction": 0.6121082971341146,
+      "membership_overlap_ar1_ess_heuristic": 4.410346253026515,
+      "minimum_adjacent_replacement_fraction": 0.6092943201376937,
+      "wasserstein_lag1_autocorrelation": -0.19898933323679122
+    }
+  ],
+  "chain_seeds": [
+    18047978233163701561,
+    11242290256111938235,
+    9919501730474771236,
+    519483350940998952,
+    548876620025418007,
+    11324854967867338757,
+    5194037991763011414,
+    3017510476435928021,
+    7327460373956750431,
+    9681067560432946815
+  ],
+  "chains": 10,
+  "complete": true,
+  "config": {
+    "algorithm_version": "swap-age-controls-v2.1-adaptive-construction",
+    "burnin_accepted_sweeps": 1.0,
+    "cdf_block_rows": 256,
+    "exact_check_accepted": 1000,
+    "max_chain_proposals": 10000000,
+    "max_construction_epochs": 50,
+    "max_exact_plateau_epochs": 3,
+    "progress_every": 100000,
+    "sample_accepted_sweeps": 1.0,
+    "search_bin_width": 20000,
+    "sets_per_chain": 10
+  },
+  "creation_command": "sample_age_matched_controls.py --store /tmp/interval_store --target results/targets/in_gene_75draw --candidate-rows results/candidate-rows-75draw.npy --output results/matches/in_gene_75draw --work-dir results/work-t2 --resume --sets 100 --chains 10 --sets-per-chain 10 --workers 5 --seed 1002 --burnin-accepted-sweeps 1 --sample-accepted-sweeps 1",
+  "elapsed_seconds": 3748.864608664997,
+  "global_seed": 1002,
+  "maximum_control_reuse": 13,
+  "maximum_wasserstein": 1480.4665981336643,
+  "membership_overlap_ar1_ess_heuristic_total": 43.89597417286545,
+  "numpy_version": "2.5.2",
+  "schema_version": "swap-age-matched-controls-v1",
+  "set_size": 4067,
+  "sets": 100,
+  "sets_per_chain": 10,
+  "software": {
+    "git_commit": "b8aaee7a9bb7da715d0a6a6b3037fcf4eaf5daf2",
+    "git_describe": "v0.3.1",
+    "git_dirty": false,
+    "git_tag": "v0.3.1",
+    "name": "normalizeTE",
+    "version": "0.3.1"
+  },
+  "source_catalog_sha256": "ad92cff36979fc2862bd57620a567a688b8f161500495dc6529ffb5e86bd46a0",
+  "source_store": "/tmp/interval_store",
+  "source_store_content_sha256": "8e53c668edd34802a0f239d0b6fc207fcffd3f002139c8001e178d65dd87cd97",
+  "source_store_schema": "snp-age-interval-v1",
+  "target": "/quobyte/jrigrp/jri/projects/normalizeTEs/results/targets/in_gene_75draw",
+  "target_digest": "1221714fe6a58612a586990c0ae6e7df1da5bba0216c33318e2da33492230fbd",
+  "target_metadata": {
+    "acceptance_distance": null,
+    "acceptance_quantile": 0.5,
+    "acceptance_threshold_source": "bootstrap_quantile",
+    "bin_width": 1000,
+    "bootstrap_batch_size": 256,
+    "bootstrap_replicates": 10000,
+    "boundary_probabilities": [
+      0.0,
+      0.05,
+      0.1,
+      0.15000000000000002,
+      0.2,
+      0.25,
+      0.30000000000000004,
+      0.35000000000000003,
+      0.4,
+      0.45,
+      0.5,
+      0.55,
+      0.6000000000000001,
+      0.65,
+      0.7000000000000001,
+      0.75,
+      0.8,
+      0.8500000000000001,
+      0.9,
+      0.9500000000000001,
+      1.0
+    ],
+    "cdf_block_rows": 512,
+    "cdf_evaluation": "P(X < right_cell_edge); equal interval weighting",
+    "cdf_working_algorithm": "regular-grid slope/intercept differences; O(intervals + output cells)",
+    "cdf_working_bytes": 597783928,
+    "cdf_working_dtype": "float32",
+    "cdf_working_storage": "temporary scratch-backed NPY, removed after target construction",
+    "compressed_boundary_ages": [
+      -500.0,
+      1500.0,
+      2500.0,
+      3500.0,
+      4500.0,
+      5500.0,
+      7500.0,
+      9500.0,
+      12500.0,
+      16500.0,
+      20500.0,
+      27500.0,
+      35500.0,
+      47500.0,
+      61500.0,
+      81500.0,
+      108500.0,
+      147500.0,
+      209500.0,
+      330500.0,
+      36745500.0
+    ],
+    "compressed_boundary_edge_indices": [
+      0,
+      2,
+      3,
+      4,
+      5,
+      6,
+      8,
+      10,
+      13,
+      17,
+      21,
+      28,
+      36,
+      48,
+      62,
+      82,
+      109,
+      148,
+      210,
+      331,
+      36746
+    ],
+    "effective_te_set_size": 4067,
+    "excluded_positions": [
+      {
+        "chromosome": "2",
+        "global_position": 325202030,
+        "native_position": 16749558,
+        "reason": "ineligible",
+        "request_index": 763
+      },
+      {
+        "chromosome": "2",
+        "global_position": 479012372,
+        "native_position": 170559900,
+        "reason": "ineligible",
+        "request_index": 928
+      },
+      {
+        "chromosome": "2",
+        "global_position": 508353145,
+        "native_position": 199900673,
+        "reason": "ineligible",
+        "request_index": 989
+      },
+      {
+        "chromosome": "4",
+        "global_position": 1030754386,
+        "native_position": 240608954,
+        "reason": "ineligible",
+        "request_index": 1900
+      },
+      {
+        "chromosome": "9",
+        "global_position": 1963374086,
+        "native_position": 146967388,
+        "reason": "ineligible",
+        "request_index": 3718
+      }
+    ],
+    "interval_shares": [
+      0.09458541804995245,
+      0.047656995491106344,
+      0.04216285805407011,
+      0.03766272920202268,
+      0.03332612096010587,
+      0.056001255716666754,
+      0.044779003450545474,
+      0.052249953464823806,
+      0.051964694471987594,
+      0.040230452474020684,
+      0.05366312232652559,
+      0.04628963436197431,
+      0.05317192117548053,
+      0.04724976754880106,
+      0.0509139507515286,
+      0.049599402683469296,
+      0.04934902488285098,
+      0.04964824910963195,
+      0.04962517258731536,
+      0.049870273237120566
+    ],
+    "missing_position_policy": "drop",
+    "n_te_snps": 4067,
+    "numpy_version": "2.5.2",
+    "position_resolution": {
+      "eligible_count": 4067,
+      "excluded_count": 5,
+      "ineligible_count": 5,
+      "label": "TE positions",
+      "policy": "drop",
+      "requested_count": 4072,
+      "resolved_count": 4072,
+      "unresolved_count": 0
+    },
+    "schema_version": 2,
+    "seed": 1002,
+    "software": {
+      "git_commit": "b8aaee7a9bb7da715d0a6a6b3037fcf4eaf5daf2",
+      "git_describe": "v0.3.1",
+      "git_dirty": false,
+      "git_tag": "v0.3.1",
+      "name": "normalizeTE",
+      "version": "0.3.1"
+    },
+    "source_catalog_sha256": "ad92cff36979fc2862bd57620a567a688b8f161500495dc6529ffb5e86bd46a0",
+    "source_store": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/all_te_snp_age_interval_store",
+    "source_store_content_sha256": "8e53c668edd34802a0f239d0b6fc207fcffd3f002139c8001e178d65dd87cd97",
+    "source_store_schema": "snp-age-interval-v1",
+    "te_position_source": "/quobyte/jrigrp/jri/projects/normalizeTEs/run.combined.99.age.max6mis.nomispo.rna.struc.te.ingene.pos.txt",
+    "wasserstein_threshold_generations": 1480.4798714210222
+  },
+  "threshold": 1480.4798714210222,
+  "unique_controls_across_sets": 260182,
+  "workers": 5
+}
