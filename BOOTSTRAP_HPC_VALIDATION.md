@@ -703,6 +703,68 @@ across the draws in which each site appears, plus a per-row present-draw count.
 At 31,240,944 rows that is 125 MB, and it covers the union of draws rather than
 any single one.
 
+#### Risk: ARG polarization leans on allele frequency
+
+Accepted as a limitation rather than something to fix. Recorded so it is not
+mistaken for signal later.
+
+TE sites give a partial truth set, but the insertion-is-derived assumption has a
+known exception: a TE that fixes and is later removed by a deletion makes the
+*deletion* derived. That predicts a frequency signature, and it is present --
+the ARG's disagreement rate against insertion-is-derived rises monotonically
+with insertion frequency:
+
+| insertion frequency | disagree rate |
+|---|---:|
+| 0.0-0.1 | 3.7% |
+| 0.3-0.5 | 18.7% |
+| 0.7-0.9 | 59.4% |
+| 0.9-1.0 | 75.2% |
+
+Median insertion frequency is 0.080 where the ARG agrees and 0.583 where it
+disagrees. Fixed-then-deleted is genuinely rare -- only 3.1% of TE sites sit
+above frequency 0.9, accounting for 17% of disagreements -- so the C5 error rate
+of 13.6% is inflated by real biology and falls to roughly 11% once
+high-frequency sites are excluded.
+
+The gradient is confounded, though: fixed-then-deleted biology and an ARG that
+simply calls the common allele ancestral predict the same pattern. Separating
+them on 1,710,961 ordinary chr10 SNPs, where a pure frequency rule would put
+ancestral on the major allele almost always:
+
+| minor-allele frequency | ancestral = major allele |
+|---|---:|
+| 0.00-0.05 | 77.5% |
+| 0.10-0.20 | 79.0% |
+| 0.30-0.40 | 64.4% |
+| 0.40-0.50 | 54.7% |
+| **overall** | **74.3%** |
+
+So the ARG carries real signal -- 25.7% of sites get a minor-allele-ancestral
+call that frequency-parsimony would never produce -- but the lean is
+unmistakable, and near frequency 0.5 the call is close to a coin flip.
+
+**Why this cannot be engineered away.** There is no outgroup in this dataset;
+polarity comes from tree topology, and rare-allele-is-derived is a correct
+prior most of the time. Restricting to confidently polarized sites would be
+worse than doing nothing, because confidence is itself frequency-dependent and
+the restriction would bias the frequency spectrum directly -- the quantity being
+measured.
+
+**What to do instead: a folded sensitivity analysis.** Fold both spectra
+(`k -> min(k, n-k)`) and recompute Φ. Folding is polarization-invariant by
+construction, so if the folded comparison supports the same conclusion, no
+polarization artifact is driving the result. It costs one extra pass over
+spectra that are already computed, needs no new inference, and does not require
+the bias to be removed -- only bounded. The unfolded statistic stays primary,
+since folding gives up the direction of any SFS shift; the folded run is the
+control.
+
+The bias does **not** cancel between arms. TEs and their matched controls have
+different frequency spectra by construction, and the polarization lean is
+frequency-dependent, so it acts unequally on the two. That is why the check is
+worth running rather than assumed away.
+
 #### Use the polarity-weighted mixture, not majority rule
 
 Let `p` be the posterior proportion of draws calling one allele ancestral. Do
