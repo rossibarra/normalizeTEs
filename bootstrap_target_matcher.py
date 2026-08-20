@@ -50,7 +50,8 @@ class OptimizerConfig:
     cdf_block_rows: int = 256
     search_bin_width: int = 20_000
     qc_max_ratio: float = 0.5
-    qc_max_absolute: float = 500.0
+    qc_max_absolute: float | None = None
+    qc_max_absolute_fraction: float = 0.34
     algorithm_version: str = ALGORITHM_VERSION
 
     def validate(self) -> None:
@@ -70,7 +71,9 @@ class OptimizerConfig:
             raise ValueError("material improvement ratio must be nonnegative")
         if self.absolute_tolerance < 0 or self.relative_tolerance < 0:
             raise ValueError("numerical tolerances must be nonnegative")
-        if self.qc_max_ratio <= 0 or self.qc_max_absolute <= 0:
+        if self.qc_max_absolute is not None and self.qc_max_absolute <= 0:
+            raise ValueError("QC thresholds must be positive")
+        if self.qc_max_ratio <= 0 or self.qc_max_absolute_fraction <= 0:
             raise ValueError("QC thresholds must be positive")
 
 
@@ -365,7 +368,7 @@ def validate_restart_result(
         raise ValueError("restart result best-distance trace is invalid")
 
 
-def target_digest_for(path: Path) -> tuple[str, np.ndarray, np.ndarray, np.ndarray, dict]:
+def target_digest_for(path: Path) -> tuple[str, np.ndarray, np.ndarray, np.ndarray, float, dict]:
     """Return the project-wide target digest and the target arrays behind it.
 
     The digest must be byte-identical to the one `sample_age_matched_controls`
@@ -378,7 +381,7 @@ def target_digest_for(path: Path) -> tuple[str, np.ndarray, np.ndarray, np.ndarr
     digest = _sha256_arrays(
         rows, cdf, ages, np.asarray([threshold], dtype=np.float64)
     )
-    return digest, rows, cdf, ages, metadata
+    return digest, rows, cdf, ages, threshold, metadata
 
 
 def _load_seed_bundle(path: Path) -> tuple[np.ndarray, np.ndarray, dict]:
@@ -520,6 +523,7 @@ def _write_outputs(
     target_rows: np.ndarray,
     observed_target: np.ndarray,
     age_bins: np.ndarray,
+    acceptance_threshold: float,
     counts: np.ndarray,
     bootstrap_targets: np.ndarray,
     bootstrap_distances: np.ndarray,
@@ -551,9 +555,21 @@ def _write_outputs(
             out=np.full_like(match_bootstrap, np.inf),
             where=bootstrap_distances > 0,
         )
+        # The absolute criterion guards against a large matching error that a
+        # large bootstrap displacement would hide from the ratio. Its scale has
+        # to be the target's own, because E_r grows as targets shrink -- roughly
+        # n^-0.34 measured across 600 to 35,466 sites -- while a fixed cap does
+        # not. A 500-generation cap calibrated on the 4,067-site in-gene target
+        # (threshold 1480.5) is 0.34 of that threshold, and rejects three
+        # quarters of replicates at 600 sites purely from size. Passing
+        # --qc-max-absolute restores a fixed cap for a prespecified analysis.
+        absolute_cap = (
+            config.qc_max_absolute if config.qc_max_absolute is not None
+            else config.qc_max_absolute_fraction * acceptance_threshold
+        )
         qc = (
             (ratios < config.qc_max_ratio)
-            & (match_bootstrap <= config.qc_max_absolute)
+            & (match_bootstrap <= absolute_cap)
         )
         triangle_ok = (
             match_observed + 1e-8 >= np.abs(bootstrap_distances - match_bootstrap)
@@ -615,7 +631,7 @@ def _write_outputs(
             "restart_matching_error_ratio.npy": restart_ratio,
             "restart_qc_pass.npy": (
                 (restart_ratio < config.qc_max_ratio)
-                & (restart_best <= config.qc_max_absolute)
+                & (restart_best <= absolute_cap)
             ),
             "restart_elapsed_seconds.npy": per_restart(lambda r: r.elapsed_seconds),
             "restart_trace_proposals.npy": trace_proposals,
@@ -722,6 +738,11 @@ def _write_outputs(
             "replicates": replicate_count,
             "set_size": int(target_rows.size),
             "restarts_per_replicate": restart_count,
+            "qc_absolute_cap_generations": float(absolute_cap),
+            "qc_absolute_cap_source": (
+                "fixed --qc-max-absolute" if config.qc_max_absolute is not None
+                else f"{config.qc_max_absolute_fraction} x acceptance threshold"
+            ),
             "qc_passes": int(qc.sum()),
             "qc_failures": int((~qc).sum()),
             "qc_interpretation": "optimizer convergence diagnostic, not biological validation",
@@ -760,6 +781,7 @@ def run(args: argparse.Namespace) -> None:
         search_bin_width=args.search_bin_width,
         qc_max_ratio=args.qc_max_ratio,
         qc_max_absolute=args.qc_max_absolute,
+        qc_max_absolute_fraction=args.qc_max_absolute_fraction,
     )
     config.validate()
     if args.output.exists():
@@ -767,9 +789,8 @@ def run(args: argparse.Namespace) -> None:
     store = open_snp_age_store(args.store)
     if not is_interval_store(store):
         raise ValueError("bootstrap-target optimization requires an interval store")
-    target_digest, target_rows, observed_target, age_bins, target_meta = (
-        target_digest_for(args.target)
-    )
+    (target_digest, target_rows, observed_target, age_bins,
+     acceptance_threshold, target_meta) = target_digest_for(args.target)
     seed_rows, seed_cdfs, seed_meta = _load_seed_bundle(args.seed_sets)
     _validate_inputs(store, target_meta, seed_meta)
     if seed_rows.shape[1] != target_rows.size or seed_cdfs.shape[1:] != observed_target.shape:
@@ -943,6 +964,7 @@ def run(args: argparse.Namespace) -> None:
         target_rows=target_rows,
         observed_target=observed_target,
         age_bins=age_bins,
+        acceptance_threshold=acceptance_threshold,
         counts=counts,
         bootstrap_targets=bootstrap_targets,
         bootstrap_distances=bootstrap_distances,
@@ -987,7 +1009,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
              "reported distance is still certified on the exact grid",
     )
     parser.add_argument("--qc-max-ratio", type=float, default=0.5)
-    parser.add_argument("--qc-max-absolute", type=float, default=500.0)
+    parser.add_argument(
+        "--qc-max-absolute", type=float, default=None,
+        help="fixed absolute cap on E_r in generations; overrides the "
+             "threshold-scaled default and does not adapt to target size",
+    )
+    parser.add_argument(
+        "--qc-max-absolute-fraction", type=float, default=0.34,
+        help="absolute E_r cap as a fraction of the target acceptance "
+             "threshold (default 0.34, which reproduces the historical "
+             "500-generation cap at the in-gene target)",
+    )
     parser.add_argument("--seed", type=int, default=0)
     return parser.parse_args(argv)
 

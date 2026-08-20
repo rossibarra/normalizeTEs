@@ -1,0 +1,459 @@
+{
+  "acceptance_distance": null,
+  "acceptance_quantile": 0.5,
+  "acceptance_threshold_source": "bootstrap_quantile",
+  "bin_width": 1000,
+  "bootstrap_batch_size": 256,
+  "bootstrap_replicates": 10000,
+  "boundary_probabilities": [
+    0.0,
+    0.05,
+    0.1,
+    0.15000000000000002,
+    0.2,
+    0.25,
+    0.30000000000000004,
+    0.35000000000000003,
+    0.4,
+    0.45,
+    0.5,
+    0.55,
+    0.6000000000000001,
+    0.65,
+    0.7000000000000001,
+    0.75,
+    0.8,
+    0.8500000000000001,
+    0.9,
+    0.9500000000000001,
+    1.0
+  ],
+  "cdf_block_rows": 512,
+  "cdf_evaluation": "P(X < right_cell_edge); equal interval weighting",
+  "cdf_working_algorithm": "regular-grid slope/intercept differences; O(intervals + output cells)",
+  "cdf_working_bytes": 5212934544,
+  "cdf_working_dtype": "float32",
+  "cdf_working_storage": "temporary scratch-backed NPY, removed after target construction",
+  "compressed_boundary_ages": [
+    -500.0,
+    1500.0,
+    2500.0,
+    4500.0,
+    5500.0,
+    7500.0,
+    9500.0,
+    12500.0,
+    15500.0,
+    21500.0,
+    30500.0,
+    42500.0,
+    58500.0,
+    78500.0,
+    104500.0,
+    137500.0,
+    183500.0,
+    249500.0,
+    355500.0,
+    569500.0,
+    36745500.0
+  ],
+  "compressed_boundary_edge_indices": [
+    0,
+    2,
+    3,
+    5,
+    6,
+    8,
+    10,
+    13,
+    16,
+    22,
+    31,
+    43,
+    59,
+    79,
+    105,
+    138,
+    184,
+    250,
+    356,
+    570,
+    36746
+  ],
+  "effective_te_set_size": 35466,
+  "excluded_positions": [
+    {
+      "chromosome": "1",
+      "global_position": 45856845,
+      "native_position": 45856845,
+      "reason": "ineligible",
+      "request_index": 1523
+    },
+    {
+      "chromosome": "1",
+      "global_position": 65229376,
+      "native_position": 65229376,
+      "reason": "ineligible",
+      "request_index": 1938
+    },
+    {
+      "chromosome": "1",
+      "global_position": 76380188,
+      "native_position": 76380188,
+      "reason": "ineligible",
+      "request_index": 2170
+    },
+    {
+      "chromosome": "1",
+      "global_position": 87583298,
+      "native_position": 87583298,
+      "reason": "ineligible",
+      "request_index": 2381
+    },
+    {
+      "chromosome": "1",
+      "global_position": 182719488,
+      "native_position": 182719488,
+      "reason": "ineligible",
+      "request_index": 2869
+    },
+    {
+      "chromosome": "1",
+      "global_position": 221037717,
+      "native_position": 221037717,
+      "reason": "ineligible",
+      "request_index": 3692
+    },
+    {
+      "chromosome": "1",
+      "global_position": 244373971,
+      "native_position": 244373971,
+      "reason": "ineligible",
+      "request_index": 4430
+    },
+    {
+      "chromosome": "1",
+      "global_position": 249502962,
+      "native_position": 249502962,
+      "reason": "ineligible",
+      "request_index": 4654
+    },
+    {
+      "chromosome": "1",
+      "global_position": 265852153,
+      "native_position": 265852153,
+      "reason": "ineligible",
+      "request_index": 5132
+    },
+    {
+      "chromosome": "1",
+      "global_position": 269624829,
+      "native_position": 269624829,
+      "reason": "ineligible",
+      "request_index": 5220
+    },
+    {
+      "chromosome": "1",
+      "global_position": 281912272,
+      "native_position": 281912272,
+      "reason": "ineligible",
+      "request_index": 5581
+    },
+    {
+      "chromosome": "1",
+      "global_position": 292976012,
+      "native_position": 292976012,
+      "reason": "ineligible",
+      "request_index": 5840
+    },
+    {
+      "chromosome": "1",
+      "global_position": 299023123,
+      "native_position": 299023123,
+      "reason": "ineligible",
+      "request_index": 5970
+    },
+    {
+      "chromosome": "2",
+      "global_position": 314395600,
+      "native_position": 5943128,
+      "reason": "ineligible",
+      "request_index": 6442
+    },
+    {
+      "chromosome": "2",
+      "global_position": 314397044,
+      "native_position": 5944572,
+      "reason": "ineligible",
+      "request_index": 6443
+    },
+    {
+      "chromosome": "2",
+      "global_position": 325202030,
+      "native_position": 16749558,
+      "reason": "ineligible",
+      "request_index": 6684
+    },
+    {
+      "chromosome": "2",
+      "global_position": 334620476,
+      "native_position": 26168004,
+      "reason": "ineligible",
+      "request_index": 6936
+    },
+    {
+      "chromosome": "2",
+      "global_position": 342806688,
+      "native_position": 34354216,
+      "reason": "ineligible",
+      "request_index": 7175
+    },
+    {
+      "chromosome": "2",
+      "global_position": 356517372,
+      "native_position": 48064900,
+      "reason": "ineligible",
+      "request_index": 7478
+    },
+    {
+      "chromosome": "2",
+      "global_position": 371176871,
+      "native_position": 62724399,
+      "reason": "ineligible",
+      "request_index": 7747
+    },
+    {
+      "chromosome": "2",
+      "global_position": 441322614,
+      "native_position": 132870142,
+      "reason": "ineligible",
+      "request_index": 7791
+    },
+    {
+      "chromosome": "2",
+      "global_position": 441386744,
+      "native_position": 132934272,
+      "reason": "ineligible",
+      "request_index": 7793
+    },
+    {
+      "chromosome": "2",
+      "global_position": 443809758,
+      "native_position": 135357286,
+      "reason": "ineligible",
+      "request_index": 7860
+    },
+    {
+      "chromosome": "2",
+      "global_position": 466455372,
+      "native_position": 158002900,
+      "reason": "ineligible",
+      "request_index": 8302
+    },
+    {
+      "chromosome": "2",
+      "global_position": 479012372,
+      "native_position": 170559900,
+      "reason": "ineligible",
+      "request_index": 8511
+    },
+    {
+      "chromosome": "2",
+      "global_position": 495170834,
+      "native_position": 186718362,
+      "reason": "ineligible",
+      "request_index": 8799
+    },
+    {
+      "chromosome": "2",
+      "global_position": 498553943,
+      "native_position": 190101471,
+      "reason": "ineligible",
+      "request_index": 8851
+    },
+    {
+      "chromosome": "2",
+      "global_position": 508353145,
+      "native_position": 199900673,
+      "reason": "ineligible",
+      "request_index": 9039
+    },
+    {
+      "chromosome": "2",
+      "global_position": 518453227,
+      "native_position": 210000755,
+      "reason": "ineligible",
+      "request_index": 9267
+    },
+    {
+      "chromosome": "2",
+      "global_position": 524738236,
+      "native_position": 216285764,
+      "reason": "ineligible",
+      "request_index": 9451
+    },
+    {
+      "chromosome": "2",
+      "global_position": 530481484,
+      "native_position": 222029012,
+      "reason": "ineligible",
+      "request_index": 9597
+    },
+    {
+      "chromosome": "2",
+      "global_position": 530483700,
+      "native_position": 222031228,
+      "reason": "ineligible",
+      "request_index": 9599
+    },
+    {
+      "chromosome": "2",
+      "global_position": 532104405,
+      "native_position": 223651933,
+      "reason": "ineligible",
+      "request_index": 9638
+    },
+    {
+      "chromosome": "2",
+      "global_position": 536794141,
+      "native_position": 228341669,
+      "reason": "ineligible",
+      "request_index": 9792
+    },
+    {
+      "chromosome": "3",
+      "global_position": 705062702,
+      "native_position": 152935038,
+      "reason": "ineligible",
+      "request_index": 11601
+    },
+    {
+      "chromosome": "4",
+      "global_position": 980175585,
+      "native_position": 190030153,
+      "reason": "ineligible",
+      "request_index": 16772
+    },
+    {
+      "chromosome": "4",
+      "global_position": 1030754386,
+      "native_position": 240608954,
+      "reason": "ineligible",
+      "request_index": 17971
+    },
+    {
+      "chromosome": "5",
+      "global_position": 1131125739,
+      "native_position": 90649846,
+      "reason": "ineligible",
+      "request_index": 20265
+    },
+    {
+      "chromosome": "5",
+      "global_position": 1250466180,
+      "native_position": 209990287,
+      "reason": "ineligible",
+      "request_index": 21546
+    },
+    {
+      "chromosome": "6",
+      "global_position": 1356603874,
+      "native_position": 89774531,
+      "reason": "ineligible",
+      "request_index": 22782
+    },
+    {
+      "chromosome": "7",
+      "global_position": 1589866279,
+      "native_position": 141679701,
+      "reason": "ineligible",
+      "request_index": 26584
+    },
+    {
+      "chromosome": "8",
+      "global_position": 1750372602,
+      "native_position": 116377107,
+      "reason": "ineligible",
+      "request_index": 29152
+    },
+    {
+      "chromosome": "9",
+      "global_position": 1838172747,
+      "native_position": 21766049,
+      "reason": "ineligible",
+      "request_index": 31535
+    },
+    {
+      "chromosome": "9",
+      "global_position": 1963374086,
+      "native_position": 146967388,
+      "reason": "ineligible",
+      "request_index": 32955
+    },
+    {
+      "chromosome": "9",
+      "global_position": 1969349367,
+      "native_position": 152942669,
+      "reason": "ineligible",
+      "request_index": 33116
+    },
+    {
+      "chromosome": "9",
+      "global_position": 1977304578,
+      "native_position": 160897880,
+      "reason": "ineligible",
+      "request_index": 33372
+    }
+  ],
+  "interval_shares": [
+    0.06429918244125223,
+    0.038882603270780414,
+    0.0713739748093027,
+    0.03206026516960098,
+    0.05642720608877008,
+    0.046575954400438935,
+    0.05390087544860489,
+    0.03908212392473731,
+    0.05020000834392946,
+    0.04911135230416347,
+    0.048928436457854274,
+    0.050786155770232266,
+    0.04981450675251009,
+    0.05024987468557229,
+    0.048637613404654556,
+    0.05000887713552116,
+    0.04978499632761779,
+    0.05001669655370189,
+    0.04992070047109831,
+    0.04993859623965691
+  ],
+  "missing_position_policy": "drop",
+  "n_te_snps": 35466,
+  "numpy_version": "2.5.2",
+  "position_resolution": {
+    "eligible_count": 35466,
+    "excluded_count": 46,
+    "ineligible_count": 46,
+    "label": "TE positions",
+    "policy": "drop",
+    "requested_count": 35512,
+    "resolved_count": 35512,
+    "unresolved_count": 0
+  },
+  "schema_version": 2,
+  "seed": 2002,
+  "software": {
+    "git_commit": "b6e40a783e8a94d7950765ae3673e91a869f5cc0",
+    "git_describe": "v0.3.1-5-gb6e40a7",
+    "git_dirty": false,
+    "git_tag": null,
+    "name": "normalizeTE",
+    "version": "0.3.1"
+  },
+  "source_catalog_sha256": "ad92cff36979fc2862bd57620a567a688b8f161500495dc6529ffb5e86bd46a0",
+  "source_store": "/tmp/nTE-scale-37583273/interval_store",
+  "source_store_content_sha256": "8e53c668edd34802a0f239d0b6fc207fcffd3f002139c8001e178d65dd87cd97",
+  "source_store_schema": "snp-age-interval-v1",
+  "te_position_source": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.99.age.max6mis.nomispo.rna.struc.te.sorted.pos.txt",
+  "wasserstein_threshold_generations": 949.2348759717846
+}
