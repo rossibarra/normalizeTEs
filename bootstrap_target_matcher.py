@@ -29,7 +29,13 @@ from swap_control_sampler import (
     row_cdfs,
     search_grid,
 )
-from te_age_target import wasserstein_1
+from te_age_target import (
+    DISTANCE_CHOICES,
+    LOG_AGE_OFFSET,
+    distance_function,
+    distance_units,
+    wasserstein_1,
+)
 
 
 SCHEMA_VERSION = "bootstrap-target-matches-v1"
@@ -52,6 +58,11 @@ class OptimizerConfig:
     qc_max_ratio: float = 0.5
     qc_max_absolute: float | None = None
     qc_max_absolute_fraction: float = 0.34
+    selection_tolerance: float = 0.0
+    disjoint_replicates: bool = False
+    distance_metric: str = "linear"
+    log_age_offset: float = LOG_AGE_OFFSET
+    search_grid_spacing: str = "linear"
     algorithm_version: str = ALGORITHM_VERSION
 
     def validate(self) -> None:
@@ -73,8 +84,21 @@ class OptimizerConfig:
             raise ValueError("numerical tolerances must be nonnegative")
         if self.qc_max_absolute is not None and self.qc_max_absolute <= 0:
             raise ValueError("QC thresholds must be positive")
+        if self.disjoint_replicates and self.selection_tolerance > 0:
+            raise ValueError(
+                "disjoint mode resolves selection per replicate, so it cannot "
+                "be combined with a diversity-aware selection tolerance"
+            )
         if self.qc_max_ratio <= 0 or self.qc_max_absolute_fraction <= 0:
             raise ValueError("QC thresholds must be positive")
+        if self.distance_metric not in DISTANCE_CHOICES:
+            raise ValueError(f"unknown distance metric: {self.distance_metric!r}")
+        if self.search_grid_spacing not in ("linear", "log"):
+            raise ValueError(
+                f"unknown search grid spacing: {self.search_grid_spacing!r}"
+            )
+        if self.log_age_offset <= 0:
+            raise ValueError("log_age_offset must be positive")
 
 
 @dataclass
@@ -152,6 +176,7 @@ def select_seed_indices(
     closest: int,
     diverse: int,
     rng: np.random.Generator,
+    distance: Callable[[np.ndarray, np.ndarray, np.ndarray], float] = wasserstein_1,
 ) -> list[tuple[int, str]]:
     if seed_cdfs.ndim != 2 or seed_cdfs.shape[1:] != target_cdf.shape:
         raise ValueError("seed CDFs do not align with target CDF")
@@ -159,7 +184,7 @@ def select_seed_indices(
     if total > seed_cdfs.shape[0]:
         raise ValueError("requested restarts exceed available seed sets")
     distances = np.asarray([
-        wasserstein_1(cdf, target_cdf, age_bins) for cdf in seed_cdfs
+        distance(cdf, target_cdf, age_bins) for cdf in seed_cdfs
     ])
     order = np.argsort(distances, kind="stable")
     chosen = [(int(index), "closest") for index in order[:closest]]
@@ -204,6 +229,9 @@ def optimize_restart(
     state.
     """
     emit = progress or (lambda _: None)
+    distance = distance_function(
+        config.distance_metric, offset=config.log_age_offset
+    )
     started = time.perf_counter()
     selected = np.asarray(initial_rows, dtype=np.int64).copy()
     n = selected.size
@@ -218,10 +246,10 @@ def optimize_restart(
         block_rows=config.cdf_block_rows, dtype=np.dtype("float64"),
     )
     current = cache.mean(axis=0, dtype=np.float64)
-    current_distance = wasserstein_1(current, coarse_target, coarse_ages)
+    current_distance = distance(current, coarse_target, coarse_ages)
 
     certified = aggregate_cdf(store, selected, points)
-    exact_distance = wasserstein_1(certified, bootstrap_target, age_bins)
+    exact_distance = distance(certified, bootstrap_target, age_bins)
     initial_distance = exact_distance
     best_distance = exact_distance
     best_rows = selected.copy()
@@ -253,7 +281,7 @@ def optimize_restart(
                     continue
                 old = int(selected[slot])
                 trial = incremental_cdf(current, cache[slot], new_cdfs[local], n)
-                trial_distance = wasserstein_1(trial, coarse_target, coarse_ages)
+                trial_distance = distance(trial, coarse_target, coarse_ages)
                 tolerance = max(
                     config.absolute_tolerance,
                     config.relative_tolerance * max(current_distance, 1.0),
@@ -270,7 +298,7 @@ def optimize_restart(
 
         # Reset incremental drift from the per-row cache; no store access.
         current = cache.mean(axis=0, dtype=np.float64)
-        current_distance = wasserstein_1(current, coarse_target, coarse_ages)
+        current_distance = distance(current, coarse_target, coarse_ages)
 
         # Exact certification every epoch: measured at ~1 ms against ~9 ms
         # for the epoch's coarse proposals, because aggregate_cdf_at uses a
@@ -279,7 +307,7 @@ def optimize_restart(
         # that every recorded best_distance is exact for roughly a tenth of
         # the epoch cost.
         certified = aggregate_cdf(store, selected, points)
-        exact_distance = wasserstein_1(certified, bootstrap_target, age_bins)
+        exact_distance = distance(certified, bootstrap_target, age_bins)
         if exact_distance < best_distance:
             best_distance = exact_distance
             best_rows = selected.copy()
@@ -304,7 +332,7 @@ def optimize_restart(
             break
 
     certified_best = aggregate_cdf(store, best_rows, points)
-    certified_best_distance = wasserstein_1(
+    certified_best_distance = distance(
         certified_best, bootstrap_target, age_bins
     )
     if not np.isclose(
@@ -319,7 +347,7 @@ def optimize_restart(
         cdf=certified_best,
         initial_distance=initial_distance,
         best_distance=certified_best_distance,
-        match_to_observed=wasserstein_1(
+        match_to_observed=distance(
             certified_best, observed_target, age_bins
         ),
         epochs=len(trace),
@@ -342,6 +370,7 @@ def validate_restart_result(
     expected_seed_index: int,
     expected_kind: str,
     expected_seed: int,
+    distance: Callable[[np.ndarray, np.ndarray, np.ndarray], float] = wasserstein_1,
 ) -> None:
     rows = np.asarray(result.rows, dtype=np.int64)
     if rows.ndim != 1 or rows.size == 0 or np.unique(rows).size != rows.size:
@@ -357,8 +386,8 @@ def validate_restart_result(
     certified = aggregate_cdf(store, rows, analysis_points(age_bins))
     if not np.allclose(result.cdf, certified, rtol=1e-10, atol=1e-8):
         raise ValueError("restart result CDF does not match its rows")
-    best = wasserstein_1(certified, bootstrap_target, age_bins)
-    observed = wasserstein_1(certified, observed_target, age_bins)
+    best = distance(certified, bootstrap_target, age_bins)
+    observed = distance(certified, observed_target, age_bins)
     if not np.isclose(result.best_distance, best, rtol=1e-10, atol=1e-8):
         raise ValueError("restart result bootstrap distance does not certify")
     if not np.isclose(result.match_to_observed, observed, rtol=1e-10, atol=1e-8):
@@ -512,6 +541,87 @@ def _load_replicate_bundle(
             elapsed_seconds=float(record["elapsed_seconds"]),
         ))
     return results
+
+
+def select_restarts(all_restarts: list[list["RestartResult"]],
+                    tolerance: float) -> np.ndarray:
+    """Choose one restart per replicate, optionally trading W1 for diversity.
+
+    With `tolerance` zero this is the minimum-W1 rule: each replicate publishes
+    its best-scoring restart, independently of every other replicate. That rule
+    concentrates selection, because the restarts that score best tend to reach
+    the same well-determined SNPs, and 100 replicates then re-tread them.
+
+    With a positive tolerance, a replicate may publish any restart within
+    `(1 + tolerance)` of its own best distance, and among those it takes the one
+    whose rows have been used least by already-selected replicates. The pass is
+    sequential over replicates in index order and therefore deterministic, and
+    it never consults anything downstream of matching -- only row identities --
+    so selection stays blind to Phi-SFS.
+
+    Overlap is scored as the summed prior-use count of a candidate's rows, which
+    penalises reusing a heavily-reused SNP more than reusing a fresh one. Ties
+    fall to the lower distance.
+    """
+    chosen = np.empty(len(all_restarts), dtype=np.int64)
+    if tolerance <= 0:
+        for r, results in enumerate(all_restarts):
+            chosen[r] = int(np.argmin([x.best_distance for x in results]))
+        return chosen
+
+    usage: dict[int, int] = {}
+    for r, results in enumerate(all_restarts):
+        distances = np.asarray([x.best_distance for x in results], dtype=np.float64)
+        allowed = np.flatnonzero(distances <= distances.min() * (1.0 + tolerance))
+        best_index, best_key = None, None
+        for j in allowed:
+            rows = results[int(j)].rows
+            overlap = sum(usage.get(int(v), 0) for v in rows)
+            key = (overlap, float(distances[j]))
+            if best_key is None or key < best_key:
+                best_index, best_key = int(j), key
+        chosen[r] = best_index
+        for v in all_restarts[r][chosen[r]].rows:
+            usage[int(v)] = usage.get(int(v), 0) + 1
+    return chosen
+
+
+def log_search_grid(
+    age_bins: np.ndarray, points: np.ndarray, n_points: int, offset: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Sub-sample the exact grid geometrically in ``age + offset``.
+
+    The linear coarse grid used to screen swaps is uniform at
+    ``search_bin_width`` generations -- 20,000 by default -- which puts the
+    whole lower quartile of a production TE age distribution inside its first
+    cell. Under linear W1 that is harmless, because the young end carries
+    almost no weight in the objective anyway. Under log-age weighting it is
+    fatal: the screen would be blind to precisely the region the metric is
+    meant to price, and the optimizer could not act on it.
+
+    So for log-age the coarse grid is a geometric sub-sample of the exact
+    analysis grid instead of a coarser uniform one. Every coarse point is an
+    exact-grid point, so the coarse objective is a strict sub-sample of the
+    exact objective rather than a different discretization, and the young end
+    is retained at full exact resolution (geometric spacing below one bin
+    width collapses to consecutive indices). ``n_points`` bounds the request;
+    the returned grid is usually smaller after deduplication, and never
+    larger, so per-proposal cost stays at or below the linear screen's.
+    """
+    ages = np.asarray(age_bins, dtype=np.float64)
+    exact_points = np.asarray(points, dtype=np.float64)
+    if ages.ndim != 1 or ages.size < 2 or exact_points.shape != ages.shape:
+        raise ValueError("age bins and analysis points are incompatible")
+    if n_points < 2:
+        raise ValueError("log search grid needs at least two points")
+    requested = np.geomspace(
+        ages[0] + offset, ages[-1] + offset, num=int(n_points)
+    ) - offset
+    indices = np.unique(
+        np.clip(np.searchsorted(ages, requested, side="left"), 0, ages.size - 1)
+    )
+    indices = np.union1d(indices, np.asarray([0, ages.size - 1], dtype=indices.dtype))
+    return ages[indices], exact_points[indices]
 
 
 def _write_outputs(
@@ -738,6 +848,18 @@ def _write_outputs(
             "replicates": replicate_count,
             "set_size": int(target_rows.size),
             "restarts_per_replicate": restart_count,
+            "distance_metric": config.distance_metric,
+            "distance_units": distance_units(config.distance_metric),
+            "log_age_offset": (
+                config.log_age_offset
+                if config.distance_metric == "log-age" else None
+            ),
+            "search_grid_spacing": config.search_grid_spacing,
+            "distance_comparability_warning": (
+                "every *_w1 array in this bundle is denominated in "
+                f"{distance_units(config.distance_metric)}; absolute values are "
+                "not comparable across distance metrics, only ratios are"
+            ),
             "qc_absolute_cap_generations": float(absolute_cap),
             "qc_absolute_cap_source": (
                 "fixed --qc-max-absolute" if config.qc_max_absolute is not None
@@ -751,7 +873,13 @@ def _write_outputs(
                 "inferential use requires exchangeability support or replacement "
                 "with a prespecified genomic-block bootstrap"
             ),
-            "selection_rule": "minimum certified W1 across prespecified restarts",
+            "selection_rule": (
+                "minimum certified W1 across prespecified restarts"
+                if config.selection_tolerance <= 0 else
+                f"least-reused restart within {config.selection_tolerance:.1%} of "
+                "each replicate's minimum certified W1"
+            ),
+            "selection_tolerance": config.selection_tolerance,
             "phi_sfs_selection_blind": True,
             "config": asdict(config),
             "elapsed_seconds": elapsed,
@@ -782,6 +910,11 @@ def run(args: argparse.Namespace) -> None:
         qc_max_ratio=args.qc_max_ratio,
         qc_max_absolute=args.qc_max_absolute,
         qc_max_absolute_fraction=args.qc_max_absolute_fraction,
+        selection_tolerance=args.selection_tolerance,
+        disjoint_replicates=args.disjoint_replicates,
+        distance_metric=args.distance,
+        log_age_offset=args.log_age_offset,
+        search_grid_spacing=args.search_grid_spacing,
     )
     config.validate()
     if args.output.exists():
@@ -800,12 +933,50 @@ def run(args: argparse.Namespace) -> None:
         raise ValueError("candidate universe must exceed target set size")
     if not np.all(np.isin(seed_rows, candidates)):
         raise ValueError("one or more seed rows are outside the candidate universe")
+    distance = distance_function(
+        config.distance_metric, offset=config.log_age_offset
+    )
+    if (
+        config.distance_metric == "log-age"
+        and target_meta.get("distance_metric") != "log-age"
+    ):
+        raise ValueError(
+            "--distance log-age requires a target built with --distance log-age; "
+            "the acceptance threshold is metric-specific"
+        )
+    if (
+        config.distance_metric == "linear"
+        and target_meta.get("distance_metric") not in (None, "linear")
+    ):
+        raise ValueError(
+            "target was built under a non-linear distance metric; pass the "
+            "matching --distance"
+        )
+    if config.distance_metric == "log-age":
+        target_offset = target_meta.get("log_age_offset")
+        if target_offset is not None and not np.isclose(
+            float(target_offset), config.log_age_offset
+        ):
+            raise ValueError("target and matcher log-age offsets differ")
     points = analysis_points(age_bins)
     exact_step = float(age_bins[1] - age_bins[0])
     if config.search_bin_width < exact_step:
         raise ValueError("search_bin_width cannot be finer than the exact target grid")
-    coarse_ages, coarse_points = search_grid(
-        float(store.metadata["maximum_above"]), config.search_bin_width
+    if config.search_grid_spacing == "log":
+        coarse_ages, coarse_points = log_search_grid(
+            age_bins, points,
+            int(float(store.metadata["maximum_above"]) // config.search_bin_width) + 1,
+            config.log_age_offset,
+        )
+    else:
+        coarse_ages, coarse_points = search_grid(
+            float(store.metadata["maximum_above"]), config.search_bin_width
+        )
+    print(
+        f"distance={config.distance_metric} "
+        f"units={distance_units(config.distance_metric)} "
+        f"coarse_grid={config.search_grid_spacing} points={coarse_points.size}",
+        flush=True,
     )
     te_cdf_rows = row_cdfs(
         store, target_rows, points,
@@ -870,9 +1041,24 @@ def run(args: argparse.Namespace) -> None:
     bootstrap_distances = np.empty(config.replicates, dtype=np.float64)
     bootstrap_seeds = np.empty(config.replicates, dtype=np.uint64)
     all_restarts: list[list[RestartResult]] = []
-    selected_restart = np.empty(config.replicates, dtype=np.int64)
 
+    claimed: set[int] = set()
+    claimed_arr = np.empty(0, dtype=np.int64)
     for replicate in range(config.replicates):
+        # Disjoint mode removes every row an earlier replicate published, so the
+        # 100 sets share no controls and cross-replicate membership dependence
+        # is zero by construction rather than estimated. Stratum depth allows it:
+        # the scarcest age decile holds ~787 sets' worth of candidates.
+        if config.disjoint_replicates and claimed_arr.size:
+            replicate_candidates = candidates[~np.isin(candidates, claimed_arr)]
+            if replicate_candidates.size < target_rows.size:
+                raise ValueError(
+                    f"disjoint mode exhausted the candidate pool at replicate "
+                    f"{replicate}: {replicate_candidates.size:,} left, "
+                    f"{target_rows.size:,} needed"
+                )
+        else:
+            replicate_candidates = candidates
         bootstrap_seed = derive_seed(args.seed, target_digest, replicate)
         bootstrap_seeds[replicate] = bootstrap_seed
         bootstrap_rng = np.random.default_rng(bootstrap_seed)
@@ -881,7 +1067,7 @@ def run(args: argparse.Namespace) -> None:
             counts[replicate], te_cdf_rows
         )
         coarse_target = bootstrap_cdf(counts[replicate], te_coarse_rows)
-        bootstrap_distances[replicate] = wasserstein_1(
+        bootstrap_distances[replicate] = distance(
             bootstrap_targets[replicate], observed_target, age_bins
         )
         choices = select_seed_indices(
@@ -889,6 +1075,7 @@ def run(args: argparse.Namespace) -> None:
             closest=config.closest_restarts,
             diverse=config.diverse_restarts,
             rng=bootstrap_rng,
+            distance=distance,
         )
         results: list[RestartResult] = []
         bundle_path = bundle_dir / f"replicate-{replicate:04d}.npz"
@@ -913,8 +1100,24 @@ def run(args: argparse.Namespace) -> None:
                 restart_seed = derive_seed(
                     args.seed, target_digest, replicate, restart
                 )
+                initial = seed_rows[seed_index]
+                if config.disjoint_replicates:
+                    # The seed library's sets overlap each other, so a seed can
+                    # carry rows an earlier replicate already claimed. Keep the
+                    # rows that are still free and refill the remainder from the
+                    # available universe, deterministically from the restart
+                    # seed, so the optimizer starts from a legal state.
+                    free = initial[~np.isin(initial, claimed_arr)]
+                    if free.size < initial.size:
+                        pool = replicate_candidates[
+                            ~np.isin(replicate_candidates, free)
+                        ]
+                        filler = np.random.default_rng(restart_seed).choice(
+                            pool, size=initial.size - free.size, replace=False
+                        )
+                        initial = np.concatenate([free, filler])
                 result = optimize_restart(
-                    store, candidates, seed_rows[seed_index],
+                    store, replicate_candidates, initial,
                     bootstrap_targets[replicate], observed_target, age_bins,
                     bootstrap_distances[replicate],
                     coarse_target=coarse_target,
@@ -933,7 +1136,7 @@ def run(args: argparse.Namespace) -> None:
             validate_restart_result(
                 result,
                 store=store,
-                candidates=candidates,
+                candidates=replicate_candidates,
                 bootstrap_target=bootstrap_targets[replicate],
                 observed_target=observed_target,
                 age_bins=age_bins,
@@ -942,6 +1145,7 @@ def run(args: argparse.Namespace) -> None:
                 expected_seed=derive_seed(
                     args.seed, target_digest, replicate, restart
                 ),
+                distance=distance,
             )
         if not resumed_bundle:
             _save_replicate_bundle(
@@ -952,9 +1156,15 @@ def run(args: argparse.Namespace) -> None:
                 results=results,
             )
         all_restarts.append(results)
-        selected_restart[replicate] = int(np.argmin([
-            result.best_distance for result in results
-        ]))
+        if config.disjoint_replicates:
+            # Claim from the restart that will be published. Selection must
+            # therefore be resolved per replicate here, not deferred, so the
+            # diversity-aware rule and disjoint mode are mutually exclusive.
+            pick = int(np.argmin([x.best_distance for x in results]))
+            claimed.update(int(v) for v in results[pick].rows)
+            claimed_arr = np.fromiter(claimed, dtype=np.int64, count=len(claimed))
+
+    selected_restart = select_restarts(all_restarts, config.selection_tolerance)
 
     _write_outputs(
         args.output,
@@ -1019,6 +1229,36 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="absolute E_r cap as a fraction of the target acceptance "
              "threshold (default 0.34, which reproduces the historical "
              "500-generation cap at the in-gene target)",
+    )
+    parser.add_argument(
+        "--disjoint-replicates", action="store_true",
+        help="publish 100 mutually disjoint sets: each replicate is optimized "
+             "against the candidate universe minus every row already published, "
+             "making the effective replicate count 100 by construction",
+    )
+    parser.add_argument(
+        "--selection-tolerance", type=float, default=0.0,
+        help="allow a replicate to publish any restart within this fraction of "
+             "its best certified W1, preferring the one whose rows are least "
+             "reused by earlier replicates; 0 keeps strict minimum-W1 selection",
+    )
+    parser.add_argument(
+        "--distance", choices=DISTANCE_CHOICES, default="linear",
+        help="CDF distance driving matching and QC: 'linear' weights each grid "
+             "cell by its width in generations (the published default), "
+             "'log-age' by its width in log(age + --log-age-offset). Must "
+             "agree with the metric the target was built under.",
+    )
+    parser.add_argument(
+        "--log-age-offset", type=float, default=LOG_AGE_OFFSET,
+        help="generations added before taking logs under --distance log-age",
+    )
+    parser.add_argument(
+        "--search-grid-spacing", choices=("linear", "log"), default="linear",
+        help="spacing of the coarse swap-screening grid. 'linear' uses "
+             "--search-bin-width uniformly; 'log' sub-samples the exact grid "
+             "geometrically so the young end is resolved, which a log-age "
+             "objective needs.",
     )
     parser.add_argument("--seed", type=int, default=0)
     return parser.parse_args(argv)

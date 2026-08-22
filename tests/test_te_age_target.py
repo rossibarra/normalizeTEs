@@ -2,14 +2,19 @@ import numpy as np
 import pytest
 
 from te_age_target import (
+    LOG_AGE_OFFSET,
+    age_grid_weights,
     aggregate_cdf,
     bootstrap_wasserstein,
     build_target,
+    distance_function,
+    distance_units,
     empirical_threshold,
     equal_mass_boundaries,
     largest_remainder_quotas,
     parse_args,
     wasserstein_1,
+    wasserstein_1_log_age,
     write_target,
 )
 from snp_interval_dataset import INTERVAL_SCHEMA_VERSION, interval_cdf
@@ -24,6 +29,93 @@ def test_wasserstein_identical_adjacent_distant_and_nonuniform():
     assert wasserstein_1(young, young, ages) == 0
     assert wasserstein_1(young, adjacent, ages) == 1_000
     assert wasserstein_1(young, distant, ages) == 5_000
+
+
+def test_log_age_weighting_prices_relative_not_absolute_displacement():
+    """The whole point of the metric: equal cost for equal relative error.
+
+    Under linear weighting a one-bin displacement costs one bin width wherever
+    it happens, which is why matched sets track the old tail almost exactly and
+    the young end loosely. Under log-age weighting the same displacement at
+    1,000 generations costs far more than at 200,000.
+    """
+    ages = np.array([0.0, 1_000, 2_000, 200_000, 201_000])
+    flat = np.ones(5)
+    young_shift = np.array([0.0, 1.0, 1.0, 1.0, 1.0])
+    old_shift = np.array([1.0, 1.0, 1.0, 0.0, 1.0])
+    assert wasserstein_1(flat, young_shift, ages) == 1_000
+    assert wasserstein_1(flat, old_shift, ages) == 1_000
+    young = wasserstein_1_log_age(flat, young_shift, ages)
+    old = wasserstein_1_log_age(flat, old_shift, ages)
+    assert np.isclose(young, np.log(2.0))
+    assert np.isclose(old, np.log(202_000 / 201_000))
+    assert young > 100 * old
+    assert wasserstein_1_log_age(flat, flat, ages) == 0
+
+
+def test_log_age_offset_is_one_bin_width_and_is_validated():
+    ages = np.arange(0.0, 5_000, 1_000)
+    weights = age_grid_weights(ages, distance="log-age")
+    assert LOG_AGE_OFFSET == 1_000.0
+    # The youngest cell spans exactly one doubling: the finest multiplicative
+    # step a 1,000-generation grid starting at zero can express.
+    assert np.isclose(weights[0], np.log(2.0))
+    np.testing.assert_allclose(age_grid_weights(ages), np.diff(ages))
+    assert np.isclose(
+        wasserstein_1_log_age(
+            np.ones(5), np.array([0.0, 1, 1, 1, 1]), ages, offset=9_000
+        ),
+        np.log(10_000 / 9_000),
+    )
+    with pytest.raises(ValueError, match="offset"):
+        age_grid_weights(ages, distance="log-age", offset=0.0)
+    with pytest.raises(ValueError, match="nonnegative"):
+        age_grid_weights(ages - 1_000, distance="log-age")
+    for bad in ("age_grid_weights", "distance_function", "distance_units"):
+        with pytest.raises(ValueError, match="unknown distance metric"):
+            {
+                "age_grid_weights": lambda: age_grid_weights(ages, distance="bogus"),
+                "distance_function": lambda: distance_function("bogus"),
+                "distance_units": lambda: distance_units("bogus"),
+            }[bad]()
+
+
+def test_bootstrap_distances_honour_the_distance_metric():
+    rows = np.array([
+        [0.0, 0.25, 0.5, 1.0],
+        [0.0, 0.75, 0.9, 1.0],
+        [0.5, 0.6, 0.7, 1.0],
+    ])
+    ages = np.array([0.0, 1_000, 2_000, 3_000])
+    default = bootstrap_wasserstein(
+        rows, 8, np.random.default_rng(4), bin_centers=ages
+    )
+    explicit = bootstrap_wasserstein(
+        rows, 8, np.random.default_rng(4), bin_centers=ages, distance="linear"
+    )
+    logged = bootstrap_wasserstein(
+        rows, 8, np.random.default_rng(4), bin_centers=ages, distance="log-age"
+    )
+    np.testing.assert_array_equal(default, explicit)
+    # A replicate can resample to the observed target exactly, giving zero
+    # under both metrics, so only nonnegativity is guaranteed pointwise.
+    assert np.all(logged >= 0) and not np.allclose(default, logged)
+    # Same bootstrap draws, so the two vectors must be the same reweighting of
+    # the same CDF differences, not an unrelated resampling: a replicate is at
+    # zero under one metric exactly when it is at zero under the other.
+    np.testing.assert_array_equal(logged == 0, default == 0)
+    assert np.all(logged[default > 0] < default[default > 0])
+
+
+def test_target_cli_exposes_the_distance_metric():
+    base = ["--store", "store", "--te-positions", "te.txt", "--output", "target"]
+    default = parse_args(base)
+    assert default.distance == "linear"
+    assert default.log_age_offset == LOG_AGE_OFFSET
+    logged = parse_args(base + ["--distance", "log-age", "--log-age-offset", "500"])
+    assert logged.distance == "log-age" and logged.log_age_offset == 500.0
+    assert distance_function("linear") is wasserstein_1
+    assert distance_units("log-age") != distance_units("linear")
 
 
 def test_target_cli_defaults_to_bootstrap_median():

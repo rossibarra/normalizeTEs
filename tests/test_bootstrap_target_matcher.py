@@ -9,11 +9,13 @@ from bootstrap_target_matcher import (
     bootstrap_cdf,
     bootstrap_counts,
     derive_seed,
+    log_search_grid,
     main,
     optimize_restart,
     select_seed_indices,
     validate_restart_result,
 )
+from te_age_target import wasserstein_1, wasserstein_1_log_age
 from snp_age_store import open_snp_age_store
 from swap_control_sampler import analysis_points, eligible_candidates, search_grid
 from test_swap_control_sampler import _interval_store, _target
@@ -283,3 +285,111 @@ def test_cli_writes_aligned_atomic_bundle(tmp_path):
     assert metadata["restarts_per_replicate"] == 2
     assert metadata["qc_interpretation"].startswith("optimizer convergence")
     assert not any(path.name.startswith(f".{output.name}.tmp") for path in tmp_path.iterdir())
+
+
+def _retarget(path, metric, offset=None):
+    """Stamp a distance metric onto a fixture target's metadata."""
+    metadata = json.loads((path / "metadata.json").read_text())
+    metadata["distance_metric"] = metric
+    if offset is not None:
+        metadata["log_age_offset"] = offset
+    (path / "metadata.json").write_text(json.dumps(metadata))
+    return path
+
+
+def test_log_search_grid_resolves_the_young_end_without_costing_more_points():
+    """The coarse screen has to see the region the log-age metric prices.
+
+    A uniform 20,000-generation screen puts the whole lower quartile of a
+    production TE age distribution inside its first cell, so under log-age
+    weighting the optimizer would be blind to exactly the ages the metric is
+    meant to price. The geometric screen keeps the young end at full exact
+    resolution and is no more expensive than the uniform one.
+    """
+    ages = np.arange(36_746, dtype=np.float64) * 1_000.0
+    points = ages + 500.0
+    linear_points = int(36_745_000 // 20_000) + 1
+    coarse_ages, coarse_points = log_search_grid(
+        ages, points, linear_points, 1_000.0
+    )
+    assert coarse_ages.size <= linear_points
+    assert np.all(np.diff(coarse_ages) > 0)
+    assert np.all(np.isin(coarse_ages, ages))
+    np.testing.assert_allclose(coarse_points, coarse_ages + 500.0)
+    assert coarse_ages[0] == ages[0] and coarse_ages[-1] == ages[-1]
+    # Full exact resolution across the lower three quartiles of a production
+    # in-gene TE age distribution (q75 is about 80,000 generations).
+    fine = np.flatnonzero(np.diff(coarse_ages) > 1_000)
+    assert coarse_ages[fine[0]] > 100_000
+    with pytest.raises(ValueError, match="at least two"):
+        log_search_grid(ages, points, 1, 1_000.0)
+
+
+def test_matcher_refuses_a_metric_that_disagrees_with_its_target(tmp_path):
+    """The acceptance threshold is metric-specific, so a mismatch is not a
+    rescalable inconvenience -- it silently compares log-age nats to
+    generations. Both directions must fail loudly."""
+    store_path = _interval_store(tmp_path / "store")
+    linear_target = _target(tmp_path / "linear", store_path)
+    log_target = _retarget(
+        _target(tmp_path / "log", store_path), "log-age", 10.0
+    )
+    seeds = _seed_bundle(tmp_path / "seeds", store_path, linear_target)
+    with pytest.raises(ValueError, match="non-linear distance metric"):
+        _run_matcher(store_path, log_target, seeds, tmp_path / "a")
+    with pytest.raises(ValueError, match="requires a target built"):
+        _run_matcher(
+            store_path, linear_target, seeds, tmp_path / "b",
+            "--distance", "log-age", "--log-age-offset", "10",
+        )
+    with pytest.raises(ValueError, match="offsets differ"):
+        _run_matcher(
+            store_path, log_target, seeds, tmp_path / "c",
+            "--distance", "log-age", "--log-age-offset", "99",
+        )
+
+
+def test_log_age_bundle_records_log_age_distances(tmp_path):
+    store_path = _interval_store(tmp_path / "store")
+    target_path = _retarget(
+        _target(tmp_path / "target", store_path), "log-age", 10.0
+    )
+    seeds = _seed_bundle(tmp_path / "seeds", store_path, target_path)
+    output = tmp_path / "matches"
+    assert _run_matcher(
+        store_path, target_path, seeds, output,
+        "--distance", "log-age", "--log-age-offset", "10",
+        "--search-grid-spacing", "log",
+    ) == 0
+    metadata = json.loads((output / "metadata.json").read_text())
+    assert metadata["distance_metric"] == "log-age"
+    assert metadata["distance_units"] == "log-age nats"
+    assert metadata["log_age_offset"] == 10.0
+    assert metadata["search_grid_spacing"] == "log"
+    store = open_snp_age_store(store_path)
+    ages = np.load(output / "age_bins.npy")
+    points = analysis_points(ages)
+    rows = np.load(output / "row_indices.npy")
+    observed = np.load(output / "target_cdf.npy")
+    bootstrap = np.load(output / "bootstrap_target_cdfs.npy")
+    recorded_e = np.load(output / "match_to_bootstrap_w1.npy")
+    recorded_o = np.load(output / "match_to_observed_w1.npy")
+    recorded_b = np.load(output / "bootstrap_to_observed_w1.npy")
+    for r in range(rows.shape[0]):
+        cdf = store.aggregate_cdf_at(
+            rows[r], points, side="left", weighting="interval"
+        )
+        assert np.isclose(
+            recorded_e[r], wasserstein_1_log_age(cdf, bootstrap[r], ages, offset=10.0)
+        )
+        assert np.isclose(
+            recorded_o[r], wasserstein_1_log_age(cdf, observed, ages, offset=10.0)
+        )
+        assert np.isclose(
+            recorded_b[r],
+            wasserstein_1_log_age(bootstrap[r], observed, ages, offset=10.0),
+        )
+        # Not merely a rescaling coincidence: the linear distance differs.
+        assert not np.isclose(
+            recorded_e[r], wasserstein_1(cdf, bootstrap[r], ages)
+        )
