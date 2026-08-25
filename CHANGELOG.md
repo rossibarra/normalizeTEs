@@ -1,5 +1,74 @@
 # Changelog
 
+## v0.4.0 — 2026-08-25
+
+Validation of bootstrap-target matching on the 75-draw production store, and the
+CLI simplification that followed. **Breaking**: several options were removed and
+one became required, so v0.3.1 commands do not run unchanged.
+
+### Matching is now validated and is the reported stage
+
+- Every acceptance gate in `BOOTSTRAP_TARGET_MATCHING_PLAN.md` §10 is closed or
+  superseded on the 75-draw store. `BOOTSTRAP_HPC_VALIDATION.md` carries the
+  evidence; `BOOTSTRAP_DISCARDED_APPROACHES.md` records what was tried and
+  rejected, so a rejected idea is not re-proposed without its numbers.
+- `--disjoint-replicates` gives every replicate its own controls: 406,700 unique
+  of 406,700 slots, maximum reuse 1, against 260,182 for the hard-q50 sampler.
+- The swap screen is now geometric. A uniform 20,000-generation screen put
+  50.06% of the target age distribution in its first cell, so the optimizer
+  could not see the young end; fixing it took the relative age error at the 10%
+  CDF quantile from 21.9% to −0.0%, with no cost at the old end, and cut runtime
+  from 3.27 h to 2.18 h.
+- Initialization is a stratified draw from the target's own equal-mass age
+  strata, so the hard-q50 sampler is no longer part of the pipeline. Measured
+  cost against a seeded start: +2.8 generations on `E_r`, 0.2% of the acceptance
+  threshold, with identical QC and concordance.
+- The absolute QC cap scales with the target's acceptance threshold instead of a
+  fixed 500 generations, which rejected 15 of 20 replicates at 600 sites purely
+  on target size.
+
+### Φ-SFS polarity comes from the ARG, not the VCF
+
+- `--ancestral-table` is **required**; `--ancestral-mode` and `--ancestral-info`
+  are removed. This dataset's input VCF is unpolarized — 31% of sites are
+  REF/ALT-swapped against the ARG's own calls — so the old REF default would
+  have mis-polarized about a third of every spectrum silently.
+- TE sites are polarized biologically; control SNPs by a posterior-weighted
+  mixture `p·h(k,n) + (1−p)·h(n−k,n)`, linear in `p` and therefore unbiased at
+  any draw count. Majority rule is deliberately not used.
+- `build_ancestral_states.py` builds the table from the posterior draws, with a
+  validated merge and atomic publication.
+- Φ-SFS binds the table to the store by content digest. **Breaking**: bundles
+  recording a null store digest are now rejected, because the digest is the
+  table's only identity and accepting null accepts any table.
+
+### Removed options
+
+`--seed-sets`, `--closest-restarts`, `--diverse-restarts` (collapsed into
+`--restarts`), `--search-grid-spacing`, `--selection-tolerance`, `--distance`,
+`--log-age-offset`, `--ancestral-mode`, `--ancestral-info`.
+
+### Operational
+
+- Three launchers cover the scheduler stages: `run_bootstrap_matching.sbatch`,
+  `run_ancestral_table.sbatch`, `run_phi_sfs.sbatch`. Ten experimental launchers
+  were retired.
+- The resume identity hashes the loaded project modules, so two different sets of
+  uncommitted edits on one commit no longer share an identity.
+
+### Known and accepted limitations
+
+- The optimizer prefers well-dated SNPs, and ARG dating confidence is the same
+  axis as polarity confidence. Both arms end up matched (controls mean `p`
+  0.9786, TE target 0.9785), so it does not bias the comparison, but controls are
+  drawn from the better-resolved part of the ARG.
+- ARG polarity confidence is overconfident: where all 75 draws agree, it is right
+  about 91% of the time against TE ground truth. `p` is used uncalibrated.
+- The 100 replicates share no control rows, which is not statistical
+  independence. Their spread measures how far Φ moves under age-CDF uncertainty
+  conditional on the observed TE sites, and is not a confidence interval.
+
+
 ## v0.3.1 — 2026-08-16
 
 - Adds `bootstrap_target_matcher.py`, which assigns every control replicate a
