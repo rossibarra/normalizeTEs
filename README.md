@@ -84,7 +84,6 @@ python build_snp_interval_store.py \
   project-data/posterior/*.tsz \
   --interval-store age_interval_store \
   --chrom-offsets project-data/chrom_offsets.txt \
-  --interval-dtype float32 \
   --min-usable-fraction 0.1 \
   --num-buckets 100 \
   --bucket-memory-gb 2 \

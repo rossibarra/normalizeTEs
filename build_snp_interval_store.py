@@ -436,7 +436,6 @@ def build_interval_store(
     tree_files: Sequence[Path], output_dir: Path, *,
     scratch_dir: Path | None = None,
     chrom_offsets: Path | None = None,
-    interval_dtype: str = "float64",
     min_usable_fraction: float = 0.1,
     missing: str = "skip",
     root: str = "skip",
@@ -452,8 +451,6 @@ def build_interval_store(
         raise FileExistsError(f"output already exists: {output_dir}")
     if not output_dir.parent.is_dir():
         raise NotADirectoryError(f"output parent does not exist: {output_dir.parent}")
-    if interval_dtype not in {"float32", "float64"}:
-        raise ValueError("interval_dtype must be 'float32' or 'float64'")
     if missing not in {"skip", "error"} or root not in {"skip", "error"}:
         raise ValueError("missing and root policies must be 'skip' or 'error'")
     if not math.isfinite(min_usable_fraction) or not 0 <= min_usable_fraction <= 1:
@@ -462,7 +459,15 @@ def build_interval_store(
         raise ValueError("bucket count and memory bound must be positive")
     if len(paths) > UINT32_MAX:
         raise OverflowError("number of draws exceeds uint32 count capacity")
-    endpoint_dtype = np.dtype(interval_dtype)
+    # float32 is the only endpoint format. Its worst-case resolution is 4
+    # generations, at the oldest age observed in a production store (36.7M
+    # generations); against the 1,000-generation analysis bin width that is
+    # 0.4% of one bin, and it is sub-generation everywhere the analysis
+    # actually sits. float64 doubles the endpoint arrays -- 13.9 GiB to 27.8
+    # GiB on the 75-draw store -- to buy precision far below the resolution of
+    # the ages themselves. Readers take the dtype from store metadata, so
+    # stores written as float64 by earlier versions still load.
+    endpoint_dtype = np.dtype("float32")
     draw_dtype = np.dtype("uint8" if len(paths) <= 255 else "uint16")
     if len(paths) > np.iinfo(draw_dtype).max + 1:
         raise OverflowError("number of draws exceeds draw ID capacity")
@@ -706,7 +711,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--interval-store", required=True, type=Path)
     parser.add_argument("--scratch-dir", type=Path)
     parser.add_argument("--chrom-offsets", type=Path)
-    parser.add_argument("--interval-dtype", choices=("float64", "float32"), default="float64")
     parser.add_argument("--min-usable-fraction", type=float, default=0.1)
     parser.add_argument("--missing", choices=("skip", "error"), default="skip")
     parser.add_argument("--root", choices=("skip", "error"), default="skip")
@@ -717,7 +721,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         build_interval_store(
             _expand(args.trees), args.interval_store,
             scratch_dir=args.scratch_dir, chrom_offsets=args.chrom_offsets,
-            interval_dtype=args.interval_dtype,
             min_usable_fraction=args.min_usable_fraction,
             missing=args.missing, root=args.root,
             num_buckets=args.num_buckets,

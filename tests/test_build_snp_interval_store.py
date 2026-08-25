@@ -118,7 +118,7 @@ def test_build_union_ragged_records_counts_status_and_metadata(tmp_path):
     scratch.mkdir()
     build_interval_store(
         [first, second], output, scratch_dir=scratch,
-        interval_dtype="float32", num_buckets=5,
+        num_buckets=5,
     )
     report = validate_interval_store(output, deep=True)
     assert (report.n_snps, report.n_intervals, report.n_posterior_draws) == (3, 4, 2)

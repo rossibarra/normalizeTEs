@@ -116,7 +116,7 @@ The review recommends `float32` endpoints because its precision is small relativ
 - old, narrow intervals can lose meaningful width under `float32`; and
 - the estimated `float64` store remains manageable at approximately 35 GB.
 
-The builder should expose `--interval-dtype {float64,float32}`. `float32` is a supported space-saving choice, but using it must be explicit and its observed reconstruction error must be reported by the benchmark.
+Endpoints are stored as `float32`, which is the only supported format. The original requirement here was that `float64` be the default and `float32` an explicit, measured deviation; that measurement has since been made and float32 adopted outright. Its worst-case resolution is 4 generations, at the oldest age in the 75-draw production store (36,744,633 generations), against a 1,000-generation analysis bin width, and it is sub-generation across the range the analysis occupies. `float64` would double the endpoint arrays from 13.9 GiB to 27.8 GiB on that store to buy precision far finer than the ages themselves are resolved. Readers take the dtype from store metadata rather than a build flag, so any float64 store written by an earlier version still loads.
 
 ### Disagreement: retaining `draw_id.npy`
 

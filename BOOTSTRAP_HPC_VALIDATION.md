@@ -485,8 +485,7 @@ python build_snp_interval_store.py \
   run.combined.98.tsz run.combined.99.tsz run.combined.100.tsz \
   --interval-store results/store-3draw \
   --chrom-offsets chrom_offsets.combined.txt \
-  --scratch-dir "$TMPDIR/store-build" \
-  --interval-dtype float32'
+  --scratch-dir "$TMPDIR/store-build"'
 ```
 
 Confirm `metadata.json` contains `content_sha256` before proceeding.
