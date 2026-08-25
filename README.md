@@ -111,7 +111,7 @@ python build_candidate_rows.py \
   --include-positions "$SNP_POSITIONS" \
   --exclude-positions "$ALL_TE_POSITIONS" \
   --output "$CANDIDATES" \
-  --min-resolved-fraction 0.1
+  --min-resolved-fraction 0.70
 ```
 
 | flag | purpose |
@@ -123,8 +123,15 @@ python build_candidate_rows.py \
 | `--min-resolved-fraction` | minimum fraction of requested positions that must resolve to store rows |
 
 Candidate rows are store-specific. Rebuild this artifact whenever the store changes.
-The justification for the production resolution threshold belongs in the validation
-record, not in this how-to.
+
+`--min-resolved-fraction` is a whole-run sanity check, not a per-site filter: it
+asks what share of the listed positions exist in the store at all. Positions that
+do not resolve are dropped either way, so the threshold only distinguishes "these
+were filtered upstream" from "my chromosome offsets are wrong, and nothing was
+actually excluded". The default is 0.95; production uses 0.70 because the TE
+exclusion list resolves at 73.8%. Do not confuse it with the store's
+`--min-usable-fraction`, which is the per-SNP share of draws that must supply a
+usable age.
 
 ### 3. Build the preliminary TE target
 
