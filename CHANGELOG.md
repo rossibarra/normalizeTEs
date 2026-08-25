@@ -1,5 +1,112 @@
 # Changelog
 
+## v0.5.0 — 2026-08-25
+
+TE age targets can exclude posterior draws that mis-polarized a site, and the
+integration bugs that shipped with the first cut of that feature are closed.
+
+### TE age targets can drop mis-polarized posterior draws
+
+- Adds `build_te_polarity_mask.py`, which records per TE site and per posterior
+  draw whether that draw polarized the site in agreement with biology. A TE
+  insertion is the derived state, so a draw that called the insertion allele
+  ancestral placed the mutation on a different branch of the ARG and recorded
+  that branch's age; polarity and age are one inference, and a draw that got the
+  polarity wrong also got the age wrong.
+- `te_age_target.py --te-polarity-mask` builds each TE's age CDF from its
+  agreeing draws alone, and `--max-flipped-fraction` discards a TE whose flipped
+  fraction among draws with data for it exceeds the given value.
+  `--max-flipped-fraction` requires `--te-polarity-mask`. A site where no draw
+  agrees retains all of its draws — an absent age is not a better estimate than
+  a contaminated one — and is counted rather than silently kept.
+- The production value is `--max-flipped-fraction 0.5`. On the 4,067-site
+  in-gene target at 75 draws it flagged 7,405 of 295,770 draw-site ages (2.50%),
+  discarded 44 TEs and kept 4,023. Flipped fraction correlates with TE age
+  (Spearman +0.2521), so stricter thresholds shift the target younger: at 0 the
+  median age drops 22.6%.
+- The workflow is ordered, and the order is not obvious. The mask builder reads
+  its site list from an existing target's `te_row_indices.npy`, so a preliminary
+  target is built first, the mask is built against it, and the final target is a
+  fresh build with the mask applied. The two targets are separate directories
+  and the preliminary one must be kept.
+- Mask columns are indexed by the store's own `draw_id` rather than by argument
+  order, the mask is bound to the store by content digest, and a mask that does
+  not cover every draw in the store is rejected, because an uncovered draw is
+  indistinguishable from a flipped one and would be dropped from every site.
+- Adds `run_te_polarity_mask.sbatch`, which takes its tree list from the store's
+  `metadata["inputs"]` so full coverage is guaranteed, and
+  `TE_POLARITY_MASK`/`MAX_FLIPPED_FRACTION` to `run_bootstrap_matching.sbatch`.
+  Passing a mask together with an existing target that was built without one is
+  rejected rather than matched against silently.
+- **Compatibility.** A target bundle built with a mask records it in
+  `metadata.json` under `te_polarity`, and its per-TE age CDFs are no longer a
+  function of the interval store alone. A consumer that rebuilds per-TE CDFs
+  from the store without applying the same mask will not reproduce the target's
+  CDFs, its acceptance threshold, or its TE count. Check `te_polarity` before
+  recomputing anything from a target's `te_row_indices.npy`.
+
+### float32 is the only interval endpoint format
+
+- Removes `--interval-dtype`. It defaulted to `float64`, but every store on disk
+  is `float32` and the documented commands passed the flag explicitly to
+  override the default, so the default was a setting nobody used: omitting the
+  flag built a store twice the size for no gain. float32's worst-case resolution
+  is 4 generations, at the oldest age in the production store (36,744,633
+  generations), against a 1,000-generation analysis bin width. Readers take
+  `endpoint_dtype` from store metadata, so float64 stores from earlier versions
+  still load.
+
+### Correctness fixes in the polarity path
+
+- A TE whose only usable age intervals came from flipped draws produced an
+  all-NaN CDF that reached the bootstrap and the published target. The fallback
+  now keys off the interval selector rather than the mask, and the per-TE CDFs,
+  target CDF, bootstrap distances and threshold are each required to be finite.
+- A masked target could not be matched at all: the matcher rebuilt per-TE CDFs
+  from the store using every draw. Those CDFs also seed all 100 bootstrap
+  targets, so unmasked reconstruction would have given every bootstrap target
+  the mis-polarized ages the mask removes. The mask is now part of the bundle as
+  `te_keep_draws.npy` and the matcher reconstructs through it.
+- `build_ancestral_states.py` stamped the store's content digest without
+  checking that the supplied trees were the store's own draws, and the merge
+  path checked draw cardinality rather than identity. Both now require the
+  store's recorded inputs.
+- Candidate rows are authenticated against their provenance report. Row indices
+  are store-specific, so an array built against another store was previously
+  accepted whenever the counts were compatible.
+- A null store digest no longer bypasses the polarity-mask identity check, and
+  the mask builder validates its source target's row array and authenticates it
+  against the store.
+- `build_snp_interval_store.py` rejects duplicate resolved inputs. A relative
+  and an absolute spelling, a symlink, or two overlapping globs gave one
+  posterior draw two draw ids and double weight in every age interval, which
+  nothing downstream could detect.
+
+### Operational
+
+- The SLURM launchers work under `sbatch`, which they never had: batch jobs get
+  a non-login shell where `module` is undefined, so every launcher failed two
+  seconds in. `slurm_conda_bootstrap.sh` handles it, and `PROJECT` resolves
+  through `SLURM_SUBMIT_DIR` rather than `BASH_SOURCE`, which points into
+  `/var/spool/slurmd` under sbatch.
+- Masked target construction builds its CDF block in memory rather than through
+  `--scratch-dir`, so `--mem` is the binding constraint. Target metadata records
+  the path actually taken and `cdf_working_peak_bytes`, and the matching
+  launcher preflights scratch for the target CDF via `SCRATCH_HEADROOM_GB`.
+- Every command-line flag across the seven pipeline scripts carries help text;
+  70 of 70, up from 23.
+- `measure_polarity_threshold_sweep.py` writes the `--max-flipped-fraction`
+  evidence to `results/polarity_threshold_sweep.json`.
+- The README is an operator guide: shared path variables, the preliminary and
+  final targets as separate steps, a production verification checklist, and a
+  manifest loop for submitting many TE categories.
+
+### Known and accepted limitations
+
+- Masked target construction has not been separately profiled. The 2 h 12 m and
+  37.7 GiB figures were measured without a mask and are a lower bound.
+- No production numbers have been regenerated with polarity masking applied.
+
 ## v0.4.0 — 2026-08-25
 
 Validation of bootstrap-target matching on the 75-draw production store, and the
@@ -41,46 +148,6 @@ one became required, so v0.3.1 commands do not run unchanged.
 - Φ-SFS binds the table to the store by content digest. **Breaking**: bundles
   recording a null store digest are now rejected, because the digest is the
   table's only identity and accepting null accepts any table.
-
-### TE age targets can drop mis-polarized posterior draws
-
-- Adds `build_te_polarity_mask.py`, which records per TE site and per posterior
-  draw whether that draw polarized the site in agreement with biology. A TE
-  insertion is the derived state, so a draw that called the insertion allele
-  ancestral placed the mutation on a different branch of the ARG and recorded
-  that branch's age; polarity and age are one inference, and a draw that got the
-  polarity wrong also got the age wrong.
-- `te_age_target.py --te-polarity-mask` builds each TE's age CDF from its
-  agreeing draws alone, and `--max-flipped-fraction` discards a TE whose flipped
-  fraction among draws with data for it exceeds the given value.
-  `--max-flipped-fraction` requires `--te-polarity-mask`. A site where no draw
-  agrees retains all of its draws — an absent age is not a better estimate than
-  a contaminated one — and is counted rather than silently kept.
-- The production value is `--max-flipped-fraction 0.5`. On the 4,067-site
-  in-gene target at 75 draws it flagged 7,405 of 295,770 draw-site ages (2.50%),
-  discarded 44 TEs and kept 4,023. Flipped fraction correlates with TE age
-  (Spearman +0.2521), so stricter thresholds shift the target younger: at 0 the
-  median age drops 22.6%.
-- The workflow is ordered, and the order is not obvious. The mask builder reads
-  its site list from an existing target's `te_row_indices.npy`, so a preliminary
-  target is built first, the mask is built against it, and the final target is a
-  fresh build with the mask applied. The two targets are separate directories
-  and the preliminary one must be kept.
-- Mask columns are indexed by the store's own `draw_id` rather than by argument
-  order, the mask is bound to the store by content digest, and a mask that does
-  not cover every draw in the store is rejected, because an uncovered draw is
-  indistinguishable from a flipped one and would be dropped from every site.
-- Adds `run_te_polarity_mask.sbatch`, which takes its tree list from the store's
-  `metadata["inputs"]` so full coverage is guaranteed, and
-  `TE_POLARITY_MASK`/`MAX_FLIPPED_FRACTION` to `run_bootstrap_matching.sbatch`.
-  Passing a mask together with an existing target that was built without one is
-  rejected rather than matched against silently.
-- **Compatibility.** A target bundle built with a mask records it in
-  `metadata.json` under `te_polarity`, and its per-TE age CDFs are no longer a
-  function of the interval store alone. A consumer that rebuilds per-TE CDFs
-  from the store without applying the same mask will not reproduce the target's
-  CDFs, its acceptance threshold, or its TE count. Check `te_polarity` before
-  recomputing anything from a target's `te_row_indices.npy`.
 
 ### Removed options
 
