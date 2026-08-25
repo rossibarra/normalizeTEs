@@ -329,6 +329,73 @@ ANCESTRAL="$ANCESTRAL",OUTPUT="$PHI" \
 Scheduler allocations, measured resource use, scratch sizing, and parameter evidence
 are recorded in [BOOTSTRAP_HPC_VALIDATION.md](BOOTSTRAP_HPC_VALIDATION.md).
 
+### Submit many TE categories
+
+The store, candidate universe, and ancestral table are shared across categories.
+Give every category its own preliminary target, polarity mask, final target, matched
+bundle, durable work directory, and seed. First create a tab-separated manifest:
+
+```text
+label	positions	prelim_target	polarity_mask	target	matches	work_dir	seed
+all_te	/quobyte/project/te/all.pos.txt	/quobyte/project/targets/all_te_prelim	/quobyte/project/polarity_masks/all_te	/quobyte/project/targets/all_te	/quobyte/project/matches/all_te	/quobyte/project/work/all_te	1001
+in_gene	/quobyte/project/te/in_gene.pos.txt	/quobyte/project/targets/in_gene_prelim	/quobyte/project/polarity_masks/in_gene	/quobyte/project/targets/in_gene	/quobyte/project/matches/in_gene	/quobyte/project/work/in_gene	1002
+young	/quobyte/project/te/young.pos.txt	/quobyte/project/targets/young_prelim	/quobyte/project/polarity_masks/young	/quobyte/project/targets/young	/quobyte/project/matches/young	/quobyte/project/work/young	1003
+```
+
+The manifest rules are:
+
+- the first line is the header shown above;
+- fields are separated by literal tabs and paths must not contain tabs, newlines, or
+  commas;
+- every `prelim_target` must already have been built from that row's `positions`;
+- every other category-specific path must be unique; mask, target, and match paths
+  must not exist on a first submission;
+- `work_dir` is durable and may be reused only to resume the identical matching run;
+- seeds should be fixed before submission and remain unchanged on resubmission.
+
+Set the shared inputs, then submit one mask job and one dependent target/matching job
+per manifest row:
+
+```bash
+PROJECT=/quobyte/project/normalizeTE
+STORE=/quobyte/project/data/age_interval_store
+CANDIDATES=/quobyte/project/data/candidate_rows.npy
+MANIFEST=/quobyte/project/manifests/te_categories.tsv
+
+while IFS=$'\t' read -r label positions prelim mask target matches work seed; do
+  [[ "$label" == label ]] && continue
+  [[ -n "$label" ]] || continue
+
+  mask_job=$(sbatch --parsable \
+    --job-name="mask-${label}" \
+    --export=ALL,PROJECT="$PROJECT",STORE="$STORE",TARGET="$prelim",OUTPUT="$mask" \
+    run_te_polarity_mask.sbatch)
+  mask_job=${mask_job%%;*}
+
+  match_job=$(sbatch --parsable \
+    --job-name="match-${label}" \
+    --dependency="afterok:${mask_job}" \
+    --export=ALL,PROJECT="$PROJECT",STORE="$STORE",TARGET="$target",\
+TE_POSITIONS="$positions",OUTPUT="$matches",CANDIDATE_ROWS="$CANDIDATES",\
+WORK_DIR="$work",TE_POLARITY_MASK="$mask",MAX_FLIPPED_FRACTION=0.5,\
+REPLICATES=100,RESTARTS=3,SEED="$seed",SCRATCH_HEADROOM_GB=32 \
+    run_bootstrap_matching.sbatch)
+  match_job=${match_job%%;*}
+
+  printf '%s\tmask=%s\tmatch=%s\n' "$label" "$mask_job" "$match_job"
+done < "$MANIFEST"
+```
+
+The categories run concurrently, while each matching job waits for its own mask. Save
+the printed job IDs. Check the mask jobs before trusting the dependent runs, and use
+`squeue`, `sacct`, and the scheduler logs to confirm that every manifest row completed.
+
+This loop intentionally does not rebuild preliminary targets: no current production
+launcher performs a target-only run. Build those targets first using step 3 in
+scheduled compute allocations. It also does not silently skip existing masks or
+outputs; for a partial rerun, submit only the missing categories or resubmit an
+interrupted matcher with its original target, output, work directory, and seed.
+
 ## Verify a production run
 
 Before accepting the results:
