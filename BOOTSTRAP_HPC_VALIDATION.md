@@ -961,9 +961,9 @@ not threshold it. A site whose alleles are `{A,T}` with `k` copies of `T` among
 `n` callable samples has derived count `k` under one polarization and `n-k`
 under the other, so its projected contribution is the mixture
 
-\[
+$$
 p\,h(k,n) + (1-p)\,h(n-k,n).
-\]
+$$
 
 This is the posterior mean of the site's contribution, and it is strictly
 better founded than majority rule, which treats `p=0.51` and `p=1.0`

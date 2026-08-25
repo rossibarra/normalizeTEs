@@ -1,4 +1,4 @@
-# normalizeTE
+# normalizeTE v0.4.0
 
 normalizeTE builds SNP control sets whose posterior age distributions match an
 observed TE variant dataset, then compares the unfolded site frequency spectrum

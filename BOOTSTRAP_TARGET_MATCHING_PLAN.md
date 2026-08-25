@@ -15,9 +15,9 @@ The proposed workflow instead assigns every matched SNP set its own bootstrap
 TE target CDF and minimizes its distance to that target. The desired relation
 for replicate `r` is
 
-\[
+$$
 D(S_r,T^{(r)}) \ll D(T^{(r)},T),
-\]
+$$
 
 where:
 
@@ -31,9 +31,9 @@ When the matching error on the left is small, the triangle inequality implies
 that the SNP set's displacement from the observed target closely tracks the
 bootstrap perturbation:
 
-\[
+$$
 D(S_r,T) \approx D(T^{(r)},T).
-\]
+$$
 
 This design propagates uncertainty by changing the target CDF, rather than by
 permitting progressively worse matches to one fixed target.
@@ -44,24 +44,24 @@ Let the eligible TE set contain `X` sites, with posterior age CDFs
 `C_1(a),...,C_X(a)` evaluated on the exact analysis grid. The observed target
 is
 
-\[
+$$
 T(a)=\frac{1}{X}\sum_{i=1}^{X}C_i(a).
-\]
+$$
 
 For bootstrap replicate `r`, draw multinomial counts
 
-\[
+$$
 (N_1^{(r)},\ldots,N_X^{(r)})
 \sim \operatorname{Multinomial}
 \left(X;\frac1X,\ldots,\frac1X\right),
-\]
+$$
 
 and construct
 
-\[
+$$
 T^{(r)}(a)
 =\frac1X\sum_{i=1}^{X}N_i^{(r)}C_i(a).
-\]
+$$
 
 Each bootstrap target remains a complete CDF, not merely a scalar distance or
 percentile. It therefore carries the direction and age-bin structure of that
@@ -69,16 +69,16 @@ bootstrap perturbation.
 
 For a SNP set `A` of size `X`, let
 
-\[
+$$
 S_A(a)=\frac1X\sum_{i\in A}C_i(a).
-\]
+$$
 
 The optimizer seeks a set
 
-\[
+$$
 A_r^* \approx \arg\min_{A\subset\mathcal C,\ |A|=X}
 D(S_A,T^{(r)}),
-\]
+$$
 
 where `C` is the declared eligible candidate-SNP universe after excluding the
 target TE rows.
@@ -114,10 +114,10 @@ that replicate's bootstrap target. The best state was retained.
 The optimized SNP-to-observed distances tracked their corresponding bootstrap
 distances closely:
 
-\[
+$$
 \operatorname{cor}
 \left(D(T^{(r)},T),D(S_r,T)\right)=0.989.
-\]
+$$
 
 Additional pilot diagnostics were:
 
@@ -151,9 +151,9 @@ RNA in-gene pilot, the 100 hard-q50 controls occupied bootstrap percentiles
 
 Applying a survival-probability weight
 
-\[
+$$
 w(D)=1-\widehat F_{\mathrm{boot}}(D)
-\]
+$$
 
 did not solve this problem. Direct acceptance became sticky in the upper tail;
 an uncapped Metropolis ratio became an unconstrained walk beyond the empirical
@@ -251,31 +251,31 @@ pilot.
 
 For replicate `r`, define
 
-\[
+$$
 B_r=D(T^{(r)},T),
 \qquad
 E_r=D(S_r,T^{(r)}),
 \qquad
 O_r=D(S_r,T),
-\]
+$$
 
 and the relative matching-error ratio
 
-\[
+$$
 R_r=\frac{E_r}{B_r}.
-\]
+$$
 
 The pilot supports an initial provisional criterion
 
-\[
+$$
 R_r<0.5,
-\]
+$$
 
 combined with an absolute error criterion such as
 
-\[
+$$
 E_r\le500\text{ generations}.
-\]
+$$
 
 These values are provisional and must be recalibrated with the full posterior
 ARG collection. For bootstrap targets with very small `B_r`, the ratio is
@@ -297,9 +297,9 @@ retain the failed replicate and mark it failed; do not silently omit it.
 
 The triangle inequality must be checked numerically:
 
-\[
+$$
 |B_r-E_r|\le O_r\le B_r+E_r.
-\]
+$$
 
 All three distances must use the same fixed age grid, endpoint convention,
 normalization, and W1 implementation. The inequality is not a valid software

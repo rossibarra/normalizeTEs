@@ -238,14 +238,14 @@ Because NumPy has no two-bit equivalent of `packbits`, implement small arithmeti
 
 For an interval with lower age \(L\) and upper age \(U\), the conditional mutation-age CDF at age \(t\) is:
 
-\[
+$$
 F(t)=
 \begin{cases}
 0, & t < L \\
 (t-L)/(U-L), & L \le t < U \\
 1, & t \ge U
 \end{cases}
-\]
+$$
 
 The generic reconstruction helper retains defined behavior for \(L=U\) so it can reproduce legacy synthetic fixtures. A production interval extracted from a valid tree sequence must satisfy \(U>L\), because tskit requires an edge parent to be strictly older than its child. Equality in a built interval store is therefore a corruption signal.
 

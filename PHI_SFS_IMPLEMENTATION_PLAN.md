@@ -28,12 +28,12 @@ individuals. Sites with `n < 20` are excluded. For an eligible site, let `J` be
 the derived-allele count after projection to `m = 20` individuals. Its expected
 contribution to projected bin `j` is
 
-\[
+$$
 h_j(k,n)
 = \Pr(J=j \mid k,n,m=20)
 = \frac{\binom{k}{j}\binom{n-k}{20-j}}{\binom{n}{20}},
 \qquad j=0,\ldots,20.
-\]
+$$
 
 The implementation must evaluate this as a stable hypergeometric probability
 mass function, not by explicitly calculating large binomial coefficients and
@@ -46,10 +46,10 @@ is excluded from the SFS comparison.
 An individual site's retained mass over bins 1 through 19 is generally less
 than one. It must **not** be renormalized. Thus a site contributes
 
-\[
+$$
 \sum_{j=1}^{19} h_j(k,n)
 = 1-h_0(k,n)-h_{20}(k,n)
-\]
+$$
 
 to the polymorphic SFS.
 
@@ -58,16 +58,16 @@ to the polymorphic SFS.
 For target TE sites indexed by `i`, first sum their expected site-level
 contributions:
 
-\[
+$$
 T_j = \sum_{i \in \mathrm{TE}} h_j(k_i,n_i),
 \qquad j=1,\ldots,19.
-\]
+$$
 
 Normalize only after all TE sites have been accumulated:
 
-\[
+$$
 t_j = \frac{T_j}{\sum_{\ell=1}^{19}T_\ell}.
-\]
+$$
 
 The target TE spectrum is computed once per target dataset.
 
@@ -75,16 +75,16 @@ The target TE spectrum is computed once per target dataset.
 
 For matched SNP set `r`, sum the site-level projections:
 
-\[
+$$
 S_{rj} = \sum_{i \in r} h_j(k_i,n_i),
 \qquad j=1,\ldots,19,
-\]
+$$
 
 then normalize the completed spectrum:
 
-\[
+$$
 s_{rj} = \frac{S_{rj}}{\sum_{\ell=1}^{19}S_{r\ell}}.
-\]
+$$
 
 This is repeated independently for all 100 matched sets.
 
@@ -92,26 +92,32 @@ This is repeated independently for all 100 matched sets.
 
 For matched set `r`, define the signed bin residual as
 
-\[
+$$
 d_{rj}=t_j-s_{rj}.
-\]
+$$
 
 The Φ-SFS statistic is the positive TE-minus-SNP residual mass:
 
-\[
+$$
 \boxed{
 \Phi_{\mathrm{SFS},r}
 = \sum_{j=1}^{19}\max(t_j-s_{rj},0)
 }.
-\]
+$$
 
 Both final spectra sum to one, so the following identities must hold:
 
-\[
+$$
+\begin{aligned}
 \Phi_{\mathrm{SFS},r}
-= \sum_{j=1}^{19}\max(s_{rj}-t_j,0)
-= \frac{1}{2}\sum_{j=1}^{19}|t_j-s_{rj}|.
-\]
+&= \sum_{j=1}^{19} \max(s_{rj} - t_j,\, 0) \\
+&= \frac{1}{2} \sum_{j=1}^{19} \lvert t_j - s_{rj} \rvert \\
+&= 1 - \sum_{j=1}^{19} \min(t_j,\, s_{rj})
+\end{aligned}
+$$
+
+The last form is the identity that makes Φ-SFS the total variation distance
+between the two projected, normalized spectra.
 
 Consequently, `0 <= Φ-SFS <= 1`. The scalar is symmetric even though the
 stored bin-level residuals are oriented as TE minus SNP.
