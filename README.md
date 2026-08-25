@@ -757,7 +757,99 @@ is sequential depletion of the candidate pool plus the shared observed TE sample
 and store. Retain the SNP reuse diagnostics, and estimate an effective replicate
 count from the Φ-SFS scores themselves.
 
+### Polarity: what is assumed, what is measured, and what is accepted
+
+Polarity does not come from the VCF. This dataset's input VCF is unpolarized —
+compared against the ARGs' own inferred ancestral states, **31% of sites are
+exactly REF/ALT-swapped** — so treating REF as ancestral would mis-polarize
+about a third of every spectrum, silently. Two sources are used instead.
+
+**TE sites are polarized biologically.** A TE insertion is the derived state.
+The genotyping convention encodes presence as ALT — every one of the 12,614
+chromosome-10 TE records is `A`/`G`, with no other combination — so ALT is
+derived at every TE site. The known exception is a TE that reached fixation and
+was later removed by a deletion, which makes the deletion derived; that is rare
+here, with only 3.1% of TE sites above insertion frequency 0.9.
+
+**Control SNPs are polarized by the ARG, as a probability rather than a call.**
+A site contributes `p·h(k,n) + (1−p)·h(n−k,n)`, where `p` is the posterior
+proportion of draws calling ALT derived, over the draws that gave the site a
+usable ancestral call. The mixture is linear in `p` and therefore unbiased at any
+draw count. Majority rule is deliberately **not** used: thresholding `p` is
+biased in a way that depends on how many draws a site appears in, and TE and
+control sites differ systematically in that count.
+
+#### Two measured biases, both accepted
+
+**The ARG's polarity confidence is overconfident.** TE sites are a labelled test
+set, since biology fixes their answer. Where all 75 draws agree the ARG is right
+only about 91% of the time, so `p` measures posterior consistency rather than
+accuracy — the draws share data and model, and are wrong together. `p` is used
+uncalibrated. The consequence to carry when reading results: control spectra are
+somewhat sharper than the ARG's measured accuracy warrants.
+
+**The optimizer prefers well-dated SNPs, and dating confidence tracks polarity
+confidence.** A narrow age posterior gives a sharper per-site CDF, which is more
+useful for shaping an aggregate CDF precisely, so the optimizer selects such
+sites: median across-draw age SD is 0.62 of the TE target's, against 0.83 for the
+older sampler. That is the same underlying ARG certainty as polarity —
+`corr(age-posterior SD, polarity confidence) = −0.25`, running from mean `p`
+0.992 in the best-dated fifth of candidates to 0.880 in the worst.
+
+The reason this is acceptable rather than disqualifying is that **it does not
+create a mismatch between the two arms**:
+
+| set | mean polarity confidence `p` |
+|---|---:|
+| candidate pool | 0.9367 |
+| §5 sampler controls | 0.9752 |
+| §6 optimizer controls | **0.9786** |
+| TE target | **0.9785** |
+
+Selection shifts controls away from the pool, but the sampler shifts them almost
+as far, and both land on the TE target to four decimal places — because the
+target is young and therefore well-resolved too. So control spectra are not
+systematically more or less folded than the TE spectrum. What remains is that
+controls are drawn from the better-resolved part of the ARG, which correlates
+with genomic context; no downstream consequence has been demonstrated, and
+nothing in the age-matching diagnostics would reveal one.
+
+Report the distribution of `p` for the target and for each control set alongside
+any Φ-SFS result, so a reader can see how much of the spectrum rests on
+contested calls.
+
 ## 8. Run many TE datasets on Farm/Quobyte
+
+The three stages that need a scheduler each have a launcher. All take their
+inputs from environment variables, submit with `sbatch`, and are the commands the
+rest of this document refers to.
+
+| stage | launcher | notes |
+|---|---|---|
+| control matching | `run_bootstrap_matching.sbatch` | stages the store to node-local scratch; durable `--work-dir` with `--resume` |
+| ancestral table | `run_ancestral_table.sbatch` | one job over all draws, or a SLURM array plus a gather with `MERGE=1` |
+| Φ-SFS | `run_phi_sfs.sbatch` | needs a VCF covering every requested site, genome-wide |
+
+```bash
+# 1. controls
+sbatch --export=ALL,STORE=/path/interval_store,TARGET=results/targets/in_gene,\
+OUTPUT=results/bootstrap_matches/in_gene,CANDIDATE_ROWS=results/candidate-rows.npy \
+  run_bootstrap_matching.sbatch
+
+# 2. ancestral polarity, as an array of 15 tasks of 5 draws, then gathered
+sbatch --array=0-14 --export=ALL,STORE=/path/interval_store,\
+TREES="/path/run.combined.*.tsz",OUTPUT=results/ancestral-parts,PER_TASK=5 \
+  run_ancestral_table.sbatch
+sbatch --export=ALL,STORE=/path/interval_store,MERGE=1,\
+PARTS="results/ancestral-parts/part-*",OUTPUT=results/ancestral-75draw,EXPECT_DRAWS=75 \
+  run_ancestral_table.sbatch
+
+# 3. Phi-SFS
+sbatch --export=ALL,TARGET=results/targets/in_gene,\
+MATCHES=results/bootstrap_matches/in_gene,VCF=/path/all.chr.vcf.gz,\
+ANCESTRAL=results/ancestral-75draw,OUTPUT=results/phi_sfs/in_gene \
+  run_phi_sfs.sbatch
+```
 
 ### The production launcher
 

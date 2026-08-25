@@ -1148,6 +1148,63 @@ Report the distribution of `p` for the target and for each published control set
 alongside every Phi-SFS result, so a reader can see how much of the spectrum
 rests on contested calls. TE sites average `p` = 0.978 and controls 0.937.
 
+### Accepted limitation: the optimizer prefers well-dated SNPs
+
+Recorded as a known and accepted property, not an open question.
+
+Matching operates on posterior-*mean* CDFs, so a site the ARG dates to within a
+few thousand generations and one it dates to within a few hundred thousand are
+interchangeable to the objective. They are not equally *useful*, though: a
+narrow posterior gives a sharper per-site CDF, which is more effective for
+shaping an aggregate CDF precisely. A precision-seeking optimizer therefore
+prefers them. Median across-draw age SD of the selected controls, relative to
+the TE target:
+
+| set | ratio to TE target |
+|---|---:|
+| §5 sampler controls | 0.83 |
+| §6 optimizer controls | **0.62** |
+
+Two consequences, both measured.
+
+**It is the mechanism behind the diversity cost of minimum-W1 selection.** The
+"useful" subpopulation is smaller than the eligible one, which is why strict
+minimum-W1 selection reached only 195,836 unique controls. Disjoint replicates
+resolve that by construction, so the diversity consequence no longer applies.
+
+**Dating confidence and polarity confidence are the same underlying axis**, so
+selecting on one does select on the other. Measured across 5,000 candidates,
+`corr(age-posterior SD, polarity confidence) = -0.254` (Spearman -0.298):
+
+| age-posterior SD (gen) | n | mean `p` | `p >= 0.99` |
+|---|---:|---:|---:|
+| 7 - 36,462 | 1,000 | 0.9924 | 94.4% |
+| 84,096 - 148,258 | 1,000 | 0.9395 | 67.3% |
+| 277,106 - 3,017,890 | 1,000 | 0.8803 | 48.0% |
+
+**But it does not create a polarity mismatch between the arms.** Selection on ARG
+dating confidence does shift polarity confidence upward relative to the pool,
+but the sampler shifts it almost as much, and — the part that matters — the two
+arms end up matched:
+
+| set | mean polarity confidence `p` | `p >= 0.99` | `p < 0.9` |
+|---|---:|---:|---:|
+| candidate pool | 0.9367 | 68.6% | 20.9% |
+| §5 sampler controls | 0.9752 | 84.9% | 8.3% |
+| **§6 optimizer controls** | **0.9786** | 86.9% | 7.2% |
+| **TE target** | **0.9785** | 85.8% | 7.3% |
+
+Controls and target agree to four decimal places, so control spectra are not
+systematically more or less folded than the TE spectrum under the polarity
+mixture. The optimizer adds only +0.0035 beyond the sampler, about 8% of the
+shift from the pool — the same proportion it adds on derived frequency.
+
+The residual selection effect is accepted: controls are drawn from the
+better-resolved part of the ARG, which correlates with genomic context. Nothing
+in the age-matching diagnostics would reveal it, and no downstream consequence
+has been demonstrated. It is documented so a reader can weigh it rather than
+discover it.
+
 ### Remaining work, in priority order
 
 Nothing above blocks the matching stage. What remains is downstream.
@@ -1167,11 +1224,19 @@ Nothing above blocks the matching stage. What remains is downstream.
    requested site is missing from the VCF. Restricting to chromosome 10 instead
    would mean rebuilding the target and rematching against chromosome-10 sites
    only, which is a different and roughly sixteen-fold smaller study.
-3. **C3 — an effective replicate count.** Disjoint replicates share no control
-   rows, and sequential depletion is not detectable (1.77% of the pool, no trend
-   across replicate index), but that is not statistical independence: every
-   replicate still bootstraps the same observed TE sample from the same store.
-   An effective count should be estimated from the downstream statistic itself.
+3. **Say what the Phi-SFS spread means — no effective count is needed.** The
+   effective-replicate-count question arose when sets shared controls heavily
+   (maximum reuse 30), which is dependence *on top of* the bootstrap structure
+   and would have made the spread too narrow. Disjoint replicates removed it,
+   and the residual sequential-depletion dependence is not detectable: 1.77% of
+   the pool consumed, a 0.9% finite-population factor, and no trend in `E_r`
+   across replicate index. What remains is the bootstrap's own design -- every
+   replicate resamples the same observed TE sites -- which is not a defect to
+   correct for. The requirement is therefore a sentence, not a statistic: the
+   spread of Phi across replicates measures **how far Phi moves under age-CDF
+   uncertainty, conditional on the TE sites actually observed**. It is not a
+   confidence interval on a population parameter and must not be reported as
+   one.
 4. **Target-size scaling beyond 35,466 sites.** Measured at 600, 1,500, 4,067
    and 35,466; the recommended route holds across all four. A 185,232-site
    target projects to ~125 h single-node and would need distributed execution,
