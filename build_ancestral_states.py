@@ -96,6 +96,27 @@ def _ancestral_indices(ts: object) -> tuple[np.ndarray, np.ndarray]:
     return indices, indices >= 0
 
 
+def store_input_paths(store: object) -> dict[str, int]:
+    """Map each of the store's recorded source draws to its draw id.
+
+    The table is stamped with the store's content digest, which asserts that it
+    was computed from that store's posterior draws. Nothing else establishes it:
+    an arbitrary set of tree files of the right cardinality accumulates happily
+    and publishes under the store's identity. Checking the paths against the
+    store's own `metadata["inputs"]` is what makes the stamp mean something.
+    """
+    metadata = getattr(store, "metadata", {}) or {}
+    inputs = metadata.get("inputs")
+    if not inputs:
+        raise SystemExit(
+            "store metadata records no 'inputs', so the supplied draws cannot be "
+            "authenticated against it. Rebuild the store with "
+            "build_snp_interval_store.py."
+        )
+    return {str(Path(entry["path"]).resolve()): int(entry["draw_id"])
+            for entry in inputs}
+
+
 def accumulate(store: object, tree_files: list[Path], *, chromosome: str | None,
                offsets: dict[str, int], sequence_length: float,
                counts: np.ndarray, present: np.ndarray,
@@ -104,6 +125,16 @@ def accumulate(store: object, tree_files: list[Path], *, chromosome: str | None,
     import tszip
 
     catalog = np.asarray(store.positions)
+    known = store_input_paths(store)
+    unknown = [str(p) for p in tree_files
+               if str(Path(p).resolve()) not in known]
+    if unknown:
+        raise SystemExit(
+            f"{len(unknown)} of {len(tree_files)} supplied tree files are not "
+            f"among the store's {len(known)} source draws, so the table would "
+            "carry the store's digest without having been computed from it: "
+            + ", ".join(unknown[:3]) + ("..." if len(unknown) > 3 else "")
+        )
     report: list[dict] = []
     for path in tree_files:
         ts = tszip.decompress(str(path))
@@ -308,6 +339,26 @@ def main(argv: list[str] | None = None) -> int:
             )
         counts = total.astype(np.uint16)
         present = total_present.astype(np.uint16)
+        # Cardinality is not identity: the expected number of distinct but
+        # wrong draws passes the count check and publishes under the store's
+        # digest. Require the gathered set to be exactly the store's draws.
+        known = set(store_input_paths(store))
+        if seen_draws != known:
+            missing = sorted(known - seen_draws)
+            extra = sorted(seen_draws - known)
+            detail_parts = []
+            if missing:
+                detail_parts.append(
+                    f"{len(missing)} of the store's draws are absent "
+                    + f"(e.g. {Path(missing[0]).name})")
+            if extra:
+                detail_parts.append(
+                    f"{len(extra)} gathered draws are not the store's "
+                    + f"(e.g. {Path(extra[0]).name})")
+            raise SystemExit(
+                "merged parts do not cover exactly the store's source draws: "
+                + "; ".join(detail_parts)
+            )
         if args.expect_draws is not None and len(seen_draws) != args.expect_draws:
             raise SystemExit(
                 f"merge produced {len(seen_draws)} distinct draws, expected "

@@ -133,6 +133,55 @@ if [[ ! -d "$TARGET" ]]; then
         "${polarity_option[@]}" \
         --seed "$SEED"
     date
+else
+    # The mask builder needs an existing target to supply te_row_indices.npy, so
+    # the real workflow is
+    #     preliminary unmasked target -> mask -> final masked target -> matching
+    # and the two targets must be different directories. An operator who passes
+    # the preliminary target here together with TE_POLARITY_MASK would otherwise
+    # get matching against the unmasked target: the block above is skipped, the
+    # mask is silently unused, and nothing in the output says so.
+    echo "=== target $TARGET already exists; verifying it matches the request ==="
+    python - "$TARGET" "$TE_POLARITY_MASK" "$MAX_FLIPPED_FRACTION" <<'PYEOF'
+import json, sys
+from pathlib import Path
+
+target, requested_mask, requested_fraction = sys.argv[1], sys.argv[2], sys.argv[3]
+meta = json.loads((Path(target) / "metadata.json").read_text(encoding="utf-8"))
+recorded = meta.get("te_polarity") or None
+
+if not requested_mask:
+    if recorded is not None:
+        print(f"note: {target} was built with a polarity mask "
+              f"({recorded['sites_kept']:,} TEs kept)", file=sys.stderr)
+    sys.exit(0)
+
+if recorded is None:
+    raise SystemExit(
+        f"TE_POLARITY_MASK was set, but {target} already exists and was built "
+        "WITHOUT a polarity mask. Matching would silently use the unmasked "
+        "target. Point TARGET at a new directory for the masked target; the "
+        "unmasked one is the preliminary target the mask was built against."
+    )
+
+used = str(Path(recorded["mask"]).resolve())
+want = str(Path(requested_mask).resolve())
+if used != want:
+    raise SystemExit(
+        f"{target} was built with polarity mask {used}, but TE_POLARITY_MASK "
+        f"requests {want}."
+    )
+
+recorded_fraction = recorded.get("max_flipped_fraction")
+wanted_fraction = float(requested_fraction) if requested_fraction else None
+if recorded_fraction != wanted_fraction:
+    raise SystemExit(
+        f"{target} was built with max_flipped_fraction={recorded_fraction}, "
+        f"but MAX_FLIPPED_FRACTION requests {wanted_fraction}."
+    )
+print(f"target matches the requested mask: {recorded['sites_kept']:,} TEs kept, "
+      f"max_flipped_fraction={recorded_fraction}")
+PYEOF
 fi
 
 if [[ "$CANDIDATE_ROWS" == "all" ]]; then

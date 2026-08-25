@@ -43,6 +43,7 @@ class TargetResult:
     seed: int | None
     age_bins: np.ndarray | None = None
     boundary_ages: np.ndarray | None = None
+    keep_draws: np.ndarray | None = None
 
 
 def aggregate_cdf(cdf_rows: np.ndarray) -> np.ndarray:
@@ -231,10 +232,20 @@ def masked_row_cdfs(store: object, rows: np.ndarray, right_edges: np.ndarray,
     below, above, draws = batch.below, batch.above, batch.draw_id
     kept_below, kept_above, kept_draw, offsets = [], [], [], [0]
     dropped = 0
+    fell_back = 0
     for i in range(np.asarray(rows).size):
         start, stop = int(batch.offsets[i]), int(batch.offsets[i + 1])
         d = np.asarray(draws[start:stop])
-        selector = keep[i][d] if keep[i].any() else np.ones(d.size, dtype=bool)
+        selector = keep[i][d]
+        # The fallback has to be decided at the interval level, not the mask
+        # level. A site can have agreeing draws in the mask while every draw
+        # that actually supplied a usable age interval was flipped; testing
+        # `keep[i].any()` passes there and leaves an empty row, which
+        # `_batch_cdf` returns as all-NaN and which would reach the bootstrap
+        # and the published target unnoticed.
+        if d.size and not selector.any():
+            selector = np.ones(d.size, dtype=bool)
+            fell_back += 1
         dropped += int((~selector).sum())
         kept_below.append(np.asarray(below[start:stop])[selector])
         kept_above.append(np.asarray(above[start:stop])[selector])
@@ -247,8 +258,22 @@ def masked_row_cdfs(store: object, rows: np.ndarray, right_edges: np.ndarray,
         above=np.concatenate(kept_above) if kept_above else np.empty(0),
         draw_id=np.concatenate(kept_draw) if kept_draw else np.empty(0, dtype=np.int64),
     )
+    if fell_back:
+        print(f"  {fell_back:,} TEs had no agreeing draw with a usable interval "
+              "and keep all of theirs", flush=True)
     print(f"  dropped {dropped:,} mis-polarized intervals", flush=True)
-    return _batch_cdf(filtered, right_edges, side="left", weighting="interval")
+    cdfs = _batch_cdf(filtered, right_edges, side="left", weighting="interval")
+    # An all-NaN row means a site contributed no interval at all. Publishing it
+    # would poison the aggregate CDF, so stop here rather than downstream.
+    bad = ~np.isfinite(cdfs).all(axis=1)
+    if bad.any():
+        raise ValueError(
+            f"{int(bad.sum()):,} TE rows produced a non-finite age CDF after "
+            "polarity masking (first store row "
+            f"{int(np.asarray(rows)[np.flatnonzero(bad)[0]])}). "
+            "This should be unreachable; do not publish this target."
+        )
+    return cdfs
 
 
 def analysis_grid_edges(age_bins: np.ndarray) -> np.ndarray:
@@ -428,6 +453,15 @@ def build_target(
             store, rows, bin_width=bin_width, output_path=cdf_path,
             block_rows=cdf_block_rows, keep_draws=keep_draws,
         )
+        # Every published product must be finite. The masked path guards its own
+        # rows, but the unmasked path and the scratch-backed writer reach here
+        # too, and a non-finite CDF is silent until it has already propagated
+        # into the target, the bootstrap distances and the threshold.
+        if not np.isfinite(np.asarray(cdf_rows)).all():
+            raise ValueError(
+                "per-TE age CDFs contain non-finite values; refusing to build a "
+                "target from them"
+            )
         rng = np.random.default_rng(seed)
         distances = bootstrap_wasserstein(
             cdf_rows,
@@ -437,6 +471,10 @@ def build_target(
             bin_centers=ages,
         )
         target = aggregate_cdf(cdf_rows)
+        if not np.isfinite(target).all() or not np.isfinite(distances).all():
+            raise ValueError(
+                "target CDF or bootstrap distances contain non-finite values"
+            )
         del cdf_rows
     finally:
         if temporary is not None:
@@ -451,10 +489,15 @@ def build_target(
         threshold = float(acceptance_distance)
     else:
         threshold = empirical_threshold(distances, acceptance_quantile)
+        if not np.isfinite(threshold) or threshold <= 0:
+            raise ValueError(
+                f"bootstrap acceptance threshold is not usable ({threshold!r}); "
+                "the distance distribution is degenerate"
+            )
     return TargetResult(
         positions, np.asarray(te_chromosomes), np.asarray(te_vcf_positions),
         rows, target, distances, boundary_set, quotas, threshold, seed,
-        ages, analysis_grid_edges(ages)[boundary_set.indices],
+        ages, analysis_grid_edges(ages)[boundary_set.indices], keep_draws,
     )
 
 
@@ -479,6 +522,13 @@ def write_target(output_dir: Path, result: TargetResult, metadata: dict[str, obj
             "interval_shares.npy": boundary_set.interval_shares,
             "interval_quotas.npy": result.interval_quotas,
         }
+        # The per-TE draw mask is part of the target's definition, not a
+        # diagnostic. Every CDF in the bundle was built from these draws, and a
+        # consumer that reconstructs per-TE CDFs from the store without it gets
+        # a different answer -- silently, in the case of the bootstrap targets
+        # the matcher derives from them.
+        if result.keep_draws is not None:
+            arrays["te_keep_draws.npy"] = np.asarray(result.keep_draws, dtype=bool)
         if result.age_bins is not None:
             arrays["age_bins.npy"] = result.age_bins
         if result.boundary_ages is not None:

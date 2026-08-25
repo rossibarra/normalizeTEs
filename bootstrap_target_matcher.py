@@ -29,6 +29,7 @@ from swap_control_sampler import (
     row_cdfs,
 )
 from te_age_target import (
+    masked_row_cdfs,
     wasserstein_1,
 )
 
@@ -846,10 +847,35 @@ def run(args: argparse.Namespace) -> None:
         SEARCH_LOG_OFFSET,
     )
     print(f"coarse_grid=log points={coarse_points.size}", flush=True)
-    te_cdf_rows = row_cdfs(
-        store, target_rows, points,
-        block_rows=config.cdf_block_rows, dtype=np.dtype("float32"),
-    )
+    # A target built with a polarity mask defines each TE's age CDF over its
+    # agreeing draws only. Rebuilding from the store without the mask would not
+    # merely fail the reconstruction check below -- it would hand every one of
+    # the bootstrap targets the mis-polarized ages the mask exists to remove,
+    # while the observed target kept them out. So the mask is required, not
+    # optional, whenever the target records one.
+    keep_path = args.target / "te_keep_draws.npy"
+    declares_mask = (target_meta.get("te_polarity") or None) is not None
+    if declares_mask and not keep_path.exists():
+        raise ValueError(
+            f"{args.target} records a polarity mask in its metadata but has no "
+            "te_keep_draws.npy. Its per-TE CDFs cannot be reproduced, and the "
+            "bootstrap targets derived from them would silently disagree with "
+            "the target. Rebuild the target with the current te_age_target.py."
+        )
+    if keep_path.exists():
+        keep_draws = np.load(keep_path, allow_pickle=False)
+        if keep_draws.shape[0] != target_rows.size:
+            raise ValueError(
+                "te_keep_draws.npy does not align with the target's TE rows"
+            )
+        te_cdf_rows = masked_row_cdfs(
+            store, target_rows, points, keep_draws,
+        ).astype(np.float32)
+    else:
+        te_cdf_rows = row_cdfs(
+            store, target_rows, points,
+            block_rows=config.cdf_block_rows, dtype=np.dtype("float32"),
+        )
     reconstructed = te_cdf_rows.mean(axis=0, dtype=np.float64)
     if not np.allclose(reconstructed, observed_target, rtol=1e-6, atol=1e-7):
         raise ValueError("target CDF does not match exact TE-row reconstruction")
