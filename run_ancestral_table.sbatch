@@ -58,8 +58,12 @@ if [[ "${MERGE:-0}" == "1" ]]; then
 fi
 
 : "${TREES:?set TREES to a quoted glob of .tsz draws}"
+# Without nullglob an unmatched pattern survives as its own literal text, so
+# the array is non-empty and this check passes on a glob that matched nothing.
+shopt -s nullglob
 # shellcheck disable=SC2206
 tree_files=( $TREES )
+shopt -u nullglob
 [[ ${#tree_files[@]} -gt 0 ]] || { echo "TREES matched no files: $TREES" >&2; exit 1; }
 
 slice=()

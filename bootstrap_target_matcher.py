@@ -413,11 +413,80 @@ def _validate_inputs(store: object, target_meta: dict) -> None:
         raise ValueError("target and store catalogs differ")
 
 
+def _authenticate_candidate_rows(path: Path, store: object,
+                                 raw: np.ndarray) -> dict:
+    """Check the candidate array against its provenance report.
+
+    Row indices are store-specific: the same integers name different SNPs in a
+    different store. Checking only that the rows are in range and eligible --
+    which is all the array itself supports -- accepts a candidate universe
+    built against another store whenever the row counts happen to be
+    compatible. `build_candidate_rows.py` writes a report recording which store
+    it was built from; authenticating against it is what makes the rows mean
+    what the matcher assumes.
+    """
+    report_path = path.with_suffix(path.suffix + ".json")
+    if not report_path.exists():
+        raise SystemExit(
+            f"{path} has no provenance report at {report_path.name}. The report "
+            "is part of the candidate artifact: without it the rows cannot be "
+            "tied to this store. Rebuild with build_candidate_rows.py."
+        )
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    metadata = getattr(store, "metadata", {}) or {}
+    for key, actual, label in (
+        ("store_content_sha256", metadata.get("content_sha256"), "content"),
+        ("store_catalog_sha256", metadata.get("catalog_sha256"), "catalog"),
+    ):
+        recorded = report.get(key)
+        # A missing digest on either side is not a pass. Row indices carry no
+        # self-describing identity, so an unauthenticated array is exactly the
+        # case this check exists for.
+        if not recorded or not actual:
+            raise SystemExit(
+                f"{report_path.name} or the store is missing the {label} digest, "
+                "so the candidate rows cannot be authenticated against this store."
+            )
+        if recorded != actual:
+            raise SystemExit(
+                f"{path} was built against a different store ({label} digest "
+                f"{recorded[:12]} != {actual[:12]}). Its row indices name "
+                "different SNPs here."
+            )
+    recorded_count = report.get("candidate_rows")
+    if recorded_count is not None and int(recorded_count) != int(raw.size):
+        raise SystemExit(
+            f"{path} holds {raw.size:,} rows but its report records "
+            f"{int(recorded_count):,}; the array and its provenance disagree."
+        )
+    recorded_digest = report.get("candidate_rows_sha256")
+    if recorded_digest:
+        # The builder's own digest convention, which differs from
+        # _sha256_arrays: it hashes str(dtype) where that hashes dtype.str.
+        if _candidate_array_digest(raw) != recorded_digest:
+            raise SystemExit(
+                f"{path} does not match the digest in {report_path.name}; the "
+                "array has been modified since it was published."
+            )
+    return report
+
+
+def _candidate_array_digest(values: np.ndarray) -> str:
+    """Reproduce `build_candidate_rows._sha256_array` exactly."""
+    digest = hashlib.sha256()
+    contiguous = np.ascontiguousarray(values)
+    digest.update(str(contiguous.dtype).encode("utf-8"))
+    digest.update(str(contiguous.shape).encode("utf-8"))
+    digest.update(contiguous.tobytes())
+    return digest.hexdigest()
+
+
 def _candidate_rows(args: argparse.Namespace, store: object,
                     target_rows: np.ndarray) -> tuple[np.ndarray, str | None]:
     if args.candidate_rows is None:
         return eligible_candidates(store, target_rows, None), None
     raw = np.load(args.candidate_rows, allow_pickle=False)
+    _authenticate_candidate_rows(Path(args.candidate_rows), store, np.asarray(raw))
     rows = eligible_candidates(store, target_rows, raw)
     return rows, _sha256_arrays(np.asarray(raw))
 

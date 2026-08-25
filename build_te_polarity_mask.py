@@ -133,6 +133,54 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def load_target_rows(target: Path, store: object) -> np.ndarray:
+    """Read the target's TE rows, having first proved they index this store.
+
+    The mask is stamped with the supplied store's digest and is later applied
+    positionally to a target's sites. Both of those make the source target's
+    identity part of the mask's meaning, so it is checked here rather than
+    assumed: a target built against another store indexes different SNPs, and
+    the mask would mislabel every one of them while looking healthy.
+    """
+    metadata = json.loads((target / "metadata.json").read_text(encoding="utf-8"))
+    store_meta = getattr(store, "metadata", {}) or {}
+    for key, actual, label in (
+        ("source_store_content_sha256", store_meta.get("content_sha256"), "content"),
+        ("source_catalog_sha256", store_meta.get("catalog_sha256"), "catalog"),
+    ):
+        recorded = metadata.get(key)
+        if not recorded or not actual:
+            raise SystemExit(
+                f"{target} or the store is missing the {label} digest, so the "
+                "target's rows cannot be authenticated against this store."
+            )
+        if recorded != actual:
+            raise SystemExit(
+                f"{target} was built against a different store ({label} digest "
+                f"{recorded[:12]} != {actual[:12]}); its row indices name "
+                "different SNPs here."
+            )
+
+    rows = np.load(target / "te_row_indices.npy", allow_pickle=False)
+    if rows.ndim != 1 or rows.size == 0:
+        raise SystemExit(f"{target}: te_row_indices.npy must be a non-empty 1-D array")
+    if not np.issubdtype(rows.dtype, np.integer):
+        raise SystemExit(
+            f"{target}: te_row_indices.npy has dtype {rows.dtype}; a float array "
+            "would be silently truncated by the int64 cast"
+        )
+    rows = rows.astype(np.int64, copy=False)
+    n_rows = int(np.asarray(store.positions).size)
+    if rows.min() < 0 or rows.max() >= n_rows:
+        raise SystemExit(
+            f"{target}: te_row_indices.npy holds rows outside the store's "
+            f"{n_rows:,} rows"
+        )
+    if np.unique(rows).size != rows.size:
+        raise SystemExit(f"{target}: te_row_indices.npy contains duplicate rows")
+    return rows
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if args.output.exists():
@@ -140,7 +188,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.absence_allele not in ("A", "C", "G", "T"):
         raise SystemExit("--absence-allele must be one of A, C, G, T")
     store = open_snp_age_store(args.store)
-    te_rows = np.load(args.target / "te_row_indices.npy", allow_pickle=False).astype(np.int64)
+    te_rows = load_target_rows(args.target, store)
     trees = sorted(args.trees)
     print(f"{te_rows.size:,} TE sites x {len(trees)} draws", flush=True)
 

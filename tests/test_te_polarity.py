@@ -215,3 +215,117 @@ def test_store_input_paths_requires_recorded_inputs():
     store = SimpleNamespace(metadata={"content_sha256": "x"})
     with pytest.raises(SystemExit, match="records no 'inputs'"):
         build_ancestral_states.store_input_paths(store)
+
+
+# --- finding 4: candidate rows must be authenticated against their report ---
+
+def _candidate_artifact(tmp_path, rows, *, content="store-digest",
+                        catalog="catalog-digest", digest=None, count=None):
+    import bootstrap_target_matcher as matcher
+    path = tmp_path / "candidates.npy"
+    array = np.asarray(rows, dtype=np.int64)
+    np.save(path, array)
+    report = {
+        "store_content_sha256": content,
+        "store_catalog_sha256": catalog,
+        "candidate_rows": int(array.size) if count is None else count,
+        "candidate_rows_sha256": (
+            matcher._candidate_array_digest(array) if digest is None else digest),
+    }
+    path.with_suffix(path.suffix + ".json").write_text(json.dumps(report),
+                                                       encoding="utf-8")
+    return path, array
+
+
+def _catalog_store(digest="store-digest", catalog="catalog-digest"):
+    return SimpleNamespace(
+        positions=np.arange(100, dtype=np.float64),
+        metadata={"content_sha256": digest, "catalog_sha256": catalog},
+    )
+
+
+def test_candidate_rows_require_a_provenance_report(tmp_path):
+    import bootstrap_target_matcher as matcher
+    path = tmp_path / "candidates.npy"
+    np.save(path, np.arange(5, dtype=np.int64))
+    with pytest.raises(SystemExit, match="no provenance report"):
+        matcher._authenticate_candidate_rows(
+            path, _catalog_store(), np.arange(5, dtype=np.int64))
+
+
+def test_candidate_rows_from_another_store_are_rejected(tmp_path):
+    import bootstrap_target_matcher as matcher
+    path, array = _candidate_artifact(tmp_path, [1, 2, 3], content="other-store")
+    with pytest.raises(SystemExit, match="different store"):
+        matcher._authenticate_candidate_rows(path, _catalog_store(), array)
+
+
+def test_candidate_rows_modified_after_publication_are_rejected(tmp_path):
+    import bootstrap_target_matcher as matcher
+    path, _ = _candidate_artifact(tmp_path, [1, 2, 3])
+    tampered = np.array([1, 2, 4], dtype=np.int64)
+    np.save(path, tampered)
+    with pytest.raises(SystemExit, match="does not match the digest"):
+        matcher._authenticate_candidate_rows(path, _catalog_store(), tampered)
+
+
+def test_candidate_rows_accept_a_matching_report(tmp_path):
+    import bootstrap_target_matcher as matcher
+    path, array = _candidate_artifact(tmp_path, [1, 2, 3])
+    report = matcher._authenticate_candidate_rows(path, _catalog_store(), array)
+    assert report["candidate_rows"] == 3
+
+
+# --- finding 5: a mask that cannot prove its store must not be applied ------
+
+def test_selection_rejects_a_mask_with_no_store_digest(tmp_path):
+    store = _interval_store({0: [(1.0, 2.0, 0)]}, n_draws=2)
+    mask = tmp_path / "mask"
+    _write_mask(mask, [[True, True]], [[True, True]], [0], digest=None)
+    with pytest.raises(SystemExit, match="missing a content digest"):
+        te_age_target.load_polarity_selection(mask, np.array([0]), store, None)
+
+
+def test_selection_rejects_an_internally_inconsistent_mask(tmp_path):
+    store = _interval_store({0: [(1.0, 2.0, 0)]}, n_draws=2)
+    mask = tmp_path / "mask"
+    # agrees where the draw is recorded absent
+    _write_mask(mask, [[True, True]], [[True, False]], [0])
+    with pytest.raises(SystemExit, match="internally inconsistent"):
+        te_age_target.load_polarity_selection(mask, np.array([0]), store, None)
+
+
+def test_mask_builder_rejects_a_target_from_another_store(tmp_path):
+    target = tmp_path / "target"
+    target.mkdir()
+    np.save(target / "te_row_indices.npy", np.array([0, 1], dtype=np.int64))
+    (target / "metadata.json").write_text(json.dumps({
+        "source_store_content_sha256": "other-store",
+        "source_catalog_sha256": "catalog-digest",
+    }), encoding="utf-8")
+    with pytest.raises(SystemExit, match="different store"):
+        maskbuilder.load_target_rows(target, _catalog_store())
+
+
+def test_mask_builder_rejects_duplicate_target_rows(tmp_path):
+    target = tmp_path / "target"
+    target.mkdir()
+    np.save(target / "te_row_indices.npy", np.array([3, 3], dtype=np.int64))
+    (target / "metadata.json").write_text(json.dumps({
+        "source_store_content_sha256": "store-digest",
+        "source_catalog_sha256": "catalog-digest",
+    }), encoding="utf-8")
+    with pytest.raises(SystemExit, match="duplicate rows"):
+        maskbuilder.load_target_rows(target, _catalog_store())
+
+
+def test_mask_builder_rejects_out_of_range_target_rows(tmp_path):
+    target = tmp_path / "target"
+    target.mkdir()
+    np.save(target / "te_row_indices.npy", np.array([0, 10_000], dtype=np.int64))
+    (target / "metadata.json").write_text(json.dumps({
+        "source_store_content_sha256": "store-digest",
+        "source_catalog_sha256": "catalog-digest",
+    }), encoding="utf-8")
+    with pytest.raises(SystemExit, match="outside the store"):
+        maskbuilder.load_target_rows(target, _catalog_store())

@@ -188,8 +188,19 @@ def _analysis_cdfs(
         writer = getattr(store, "write_regular_grid_cdfs", None)
         if keep_draws is not None:
             # The fast writer has no per-draw filter, so a masked target takes
-            # the general path. Targets are thousands of rows, not millions, so
-            # the cost is bounded.
+            # the general path. That path is NOT scratch-backed: `_batch_cdf`
+            # materializes the whole (rows x points) block as float64 in memory
+            # before the float32 copy, so RAM rather than scratch is the binding
+            # constraint here. Say so, because the scratch preflight above does
+            # not cover it and a large category can be several times the size of
+            # the published array.
+            peak = rows.size * right_edges.size * 12  # float64 + float32 copy
+            print(
+                f"  masked CDFs are built in memory: {rows.size:,} x "
+                f"{right_edges.size:,} needs about {peak / 2**30:.1f} GiB peak "
+                "RAM, not scratch",
+                flush=True,
+            )
             cdfs = masked_row_cdfs(store, rows, right_edges, keep_draws).astype(np.float32)
         elif writer is not None:
             cdfs = writer(
@@ -324,7 +335,16 @@ def load_polarity_selection(
         raise SystemExit(f"{mask_dir}: polarity mask is incomplete")
     expected = getattr(store, "metadata", {}).get("content_sha256")
     recorded = metadata.get("store_content_sha256")
-    if expected and recorded and expected != recorded:
+    # Require both. Treating a null digest as a pass inverts the check: the
+    # mask that cannot prove which store it indexes is exactly the one that
+    # must not be applied, and it would be silently accepted.
+    if not expected or not recorded:
+        raise SystemExit(
+            f"{mask_dir} or the store is missing a content digest, so the mask "
+            "cannot be proved to index this store. Rebuild the mask with "
+            "build_te_polarity_mask.py against this store."
+        )
+    if expected != recorded:
         raise SystemExit(
             f"{mask_dir}: polarity mask was built against a different store "
             f"({recorded[:12]} != {expected[:12]}). Its rows index that store, "
@@ -364,8 +384,18 @@ def load_polarity_selection(
             "Rebuild the mask from this run's target."
         )
 
-    if agrees.shape != present.shape:
+    if agrees.dtype != bool or present.dtype != bool:
+        raise SystemExit(
+            f"{mask_dir}: agreement and presence arrays must be boolean; a "
+            "numeric array would make every non-zero draw count as agreeing"
+        )
+    if agrees.ndim != 2 or agrees.shape != present.shape:
         raise SystemExit(f"{mask_dir}: agreement and presence arrays disagree in shape")
+    if np.any(agrees & ~present):
+        raise SystemExit(
+            f"{mask_dir}: marks draws as agreeing that it also marks absent; "
+            "the mask is internally inconsistent"
+        )
     if store_draws is not None and agrees.shape[1] != int(store_draws):
         raise SystemExit(
             f"{mask_dir}: mask has {agrees.shape[1]} draw columns but the store "
@@ -707,13 +737,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             int(positions.size * result.age_bins.size * np.dtype("float32").itemsize)
             if is_interval_store(store) else None
         ),
+        # Report the path actually taken. A masked target does not use the
+        # scratch-backed writer at all, and recording that it did understates
+        # the run's memory requirement to anyone sizing a job from this file.
         "cdf_working_storage": (
-            "temporary scratch-backed NPY, removed after target construction"
-            if is_interval_store(store) else "dense store"
+            "dense store" if not is_interval_store(store)
+            else "in-memory float64 block, converted to float32; not scratch-backed"
+            if args.te_polarity_mask is not None
+            else "temporary scratch-backed NPY, removed after target construction"
         ),
         "cdf_working_algorithm": (
-            "regular-grid slope/intercept differences; O(intervals + output cells)"
-            if is_interval_store(store) else "stored dense CDF"
+            "stored dense CDF" if not is_interval_store(store)
+            else "per-draw filtered interval CDFs; O(intervals + output cells)"
+            if args.te_polarity_mask is not None
+            else "regular-grid slope/intercept differences; O(intervals + output cells)"
+        ),
+        "cdf_working_peak_bytes": (
+            int(positions.size) * int(result.age_bins.size) * 12
+            if is_interval_store(store) and args.te_polarity_mask is not None
+            else None
         ),
         "acceptance_quantile": args.acceptance_quantile,
         "acceptance_distance": args.acceptance_distance,

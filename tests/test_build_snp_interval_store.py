@@ -199,3 +199,30 @@ def test_rejects_fractional_sites_and_existing_output(tmp_path):
     output.mkdir()
     with pytest.raises(FileExistsError):
         build_interval_store([valid], output)
+
+
+def test_builder_rejects_the_same_draw_supplied_twice(tmp_path):
+    """One physical draw must not enter the store under two draw ids.
+
+    A relative and an absolute spelling, a symlink, or two overlapping globs
+    name the same file. Counting it twice doubles that draw's weight in every
+    age interval, and nothing downstream can detect it: the store's `inputs`
+    list records the duplicate faithfully, so consumers that authenticate
+    against the store agree with a corrupted posterior.
+    """
+    import build_snp_interval_store as builder
+
+    real = tmp_path / "draw.tsz"
+    real.write_bytes(b"")
+    nested = tmp_path / "sub"
+    nested.mkdir()
+    alias = nested / "alias.tsz"
+    alias.symlink_to(real)
+
+    for label, paths in (
+        ("same path twice", [real, real]),
+        ("symlink alias", [real, alias]),
+        ("relative spelling", [real, nested / ".." / "draw.tsz"]),
+    ):
+        with pytest.raises(ValueError, match="more than once"):
+            builder.build_interval_store(paths, tmp_path / f"out-{label.split()[0]}")

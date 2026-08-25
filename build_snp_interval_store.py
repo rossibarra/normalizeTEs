@@ -447,6 +447,24 @@ def build_interval_store(
     output_dir = Path(output_dir)
     if not paths or any(not path.is_file() for path in paths):
         raise FileNotFoundError("all tree-sequence inputs must exist")
+    # Resolve first, then reject repeats. A relative and an absolute spelling,
+    # a symlink, or two overlapping globs name one physical draw, and the
+    # builder would give it two draw ids and double its weight in every age
+    # interval. Nothing downstream can detect that: the store's own `inputs`
+    # list records the duplicate faithfully, so every consumer that
+    # authenticates against it agrees with a corrupted posterior.
+    if len(set(paths)) != len(paths):
+        seen, repeated = set(), []
+        for path in paths:
+            if path in seen and path not in repeated:
+                repeated.append(path)
+            seen.add(path)
+        raise ValueError(
+            "the same tree-sequence file was supplied more than once: "
+            + ", ".join(str(path) for path in repeated[:3])
+            + (", ..." if len(repeated) > 3 else "")
+            + ". Each posterior draw must appear exactly once."
+        )
     if output_dir.exists():
         raise FileExistsError(f"output already exists: {output_dir}")
     if not output_dir.parent.is_dir():

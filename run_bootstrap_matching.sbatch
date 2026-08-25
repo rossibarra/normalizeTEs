@@ -38,6 +38,7 @@
 #   TE_POSITIONS     build TARGET from this position file if TARGET is absent
 #   ACCEPTANCE_QUANTILE        bootstrap quantile for the target threshold (0.50)
 #   MISSING_POSITION_POLICY    error|drop for target construction     (error)
+#   SCRATCH_HEADROOM_GB        scratch reserved for the target CDF      (32)
 #   TE_POLARITY_MASK           polarity mask dir, when building a target (unset)
 #   MAX_FLIPPED_FRACTION       discard TEs flipped above this fraction  (unset)
 #
@@ -91,11 +92,25 @@ export MKL_NUM_THREADS="$threads"
 # run is I/O-bound and projects to 4-21 h of pure store reads for one target;
 # staged to node-local scratch the same run measured 97% CPU with 21 major page
 # faults. Every job that touches the store stages it first.
+# Scratch must hold the staged store AND, on the unmasked path, the temporary
+# TE-by-age CDF that target construction writes beside it. Reserving only the
+# store plus 20% lets the preflight pass and the job still run out mid-build.
+# SCRATCH_HEADROOM_GB is that second term; raise it for large TE categories.
+SCRATCH_HEADROOM_GB="${SCRATCH_HEADROOM_GB:-32}"
 required_kib=$(du -sk "$STORE" | awk '{print $1}')
+headroom_kib=$(( SCRATCH_HEADROOM_GB * 1024 * 1024 ))
 free_kib=$(df -Pk "$TMPDIR" | awk 'NR==2 {print $4}')
-if (( free_kib < required_kib * 6 / 5 )); then
-    echo "insufficient node-local scratch: need the store size plus 20%" >&2
+if (( free_kib < required_kib * 6 / 5 + headroom_kib )); then
+    echo "insufficient node-local scratch: need the store size plus 20% " \
+         "(${required_kib} KiB) plus ${SCRATCH_HEADROOM_GB}G for the target CDF" >&2
     exit 2
+fi
+# A masked target does not use the scratch-backed CDF writer: te_age_target
+# builds the whole block in memory. For those runs --mem, not scratch, is the
+# constraint, and the job prints its projected peak before building.
+if [[ -n "$TE_POLARITY_MASK" ]]; then
+    echo "note: masked target construction builds CDFs in memory; --mem is the" \
+         "binding constraint, not scratch"
 fi
 echo "staging $STORE to $TMPDIR/interval_store"; date
 rsync -a --delete "$STORE/" "$TMPDIR/interval_store/"
