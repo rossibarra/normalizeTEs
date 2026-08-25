@@ -37,3 +37,15 @@ results/*.err
 # Generated source snapshots and doc backups
 results/snapshot-*/
 *.bak2
+
+# SLURM writes scheduler logs to the submission directory, which is the repo
+# root: the files are opened before the job script runs, so they cannot be
+# placed under results/ by the launcher itself.
+bootstrap-match-*.out
+bootstrap-match-*.err
+polarity-mask-*.out
+polarity-mask-*.err
+phi-sfs-*.out
+phi-sfs-*.err
+ancestral-*.out
+ancestral-*.err

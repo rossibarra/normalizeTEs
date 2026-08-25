@@ -46,7 +46,10 @@
 # number of requested sites, not with VCF size.
 
 set -euo pipefail
-PROJECT="${PROJECT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+# sbatch copies the job script into /var/spool/slurmd, so BASH_SOURCE does not
+# point at the checkout. SLURM_SUBMIT_DIR does; the BASH_SOURCE form is the
+# fallback for running this script directly.
+PROJECT="${PROJECT:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}}"
 : "${TARGET:?set TARGET to the target directory}"
 : "${MATCHES:?set MATCHES to the matched-control bundle}"
 : "${VCF:?set VCF to a VCF covering every requested site}"
@@ -54,8 +57,8 @@ PROJECT="${PROJECT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 : "${OUTPUT:?set OUTPUT to the results directory to publish}"
 HETEROZYGOUS="${HETEROZYGOUS:-error}"
 cd "$PROJECT"
-module load conda
-conda activate normalizeTE
+# Batch jobs get a non-login shell, where `module` does not exist.
+. "$PROJECT/slurm_conda_bootstrap.sh"
 
 for required in "$TARGET/metadata.json" "$MATCHES/metadata.json" \
                 "$ANCESTRAL/metadata.json" "$VCF"; do

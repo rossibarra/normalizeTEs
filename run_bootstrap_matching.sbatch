@@ -38,6 +38,8 @@
 #   TE_POSITIONS     build TARGET from this position file if TARGET is absent
 #   ACCEPTANCE_QUANTILE        bootstrap quantile for the target threshold (0.50)
 #   MISSING_POSITION_POLICY    error|drop for target construction     (error)
+#   TE_POLARITY_MASK           polarity mask dir, when building a target (unset)
+#   MAX_FLIPPED_FRACTION       discard TEs flipped above this fraction  (unset)
 #
 # Example:
 #
@@ -55,7 +57,10 @@
 
 set -euo pipefail
 
-PROJECT="${PROJECT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+# sbatch copies the job script into /var/spool/slurmd, so BASH_SOURCE does not
+# point at the checkout. SLURM_SUBMIT_DIR does; the BASH_SOURCE form is the
+# fallback for running this script directly.
+PROJECT="${PROJECT:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}}"
 : "${STORE:?set STORE to the completed interval-store directory}"
 : "${TARGET:?set TARGET to the target directory}"
 : "${OUTPUT:?set OUTPUT to the bundle directory to publish}"
@@ -68,19 +73,14 @@ SEED="${SEED:-1002}"
 TE_POSITIONS="${TE_POSITIONS:-}"
 ACCEPTANCE_QUANTILE="${ACCEPTANCE_QUANTILE:-0.50}"
 MISSING_POSITION_POLICY="${MISSING_POSITION_POLICY:-error}"
+TE_POLARITY_MASK="${TE_POLARITY_MASK:-}"
+MAX_FLIPPED_FRACTION="${MAX_FLIPPED_FRACTION:-}"
 
 cd "$PROJECT"
 mkdir -p "$TMPDIR/interval_store"
 
-if type module >/dev/null 2>&1; then
-    module load conda
-elif command -v conda >/dev/null 2>&1; then
-    source "$(conda info --base)/etc/profile.d/conda.sh"
-else
-    echo "conda is unavailable" >&2
-    exit 90
-fi
-conda activate normalizeTE
+# Batch jobs get a non-login shell, where `module` does not exist.
+. "$PROJECT/slurm_conda_bootstrap.sh"
 
 threads="${SLURM_CPUS_PER_TASK:-1}"
 export OPENBLAS_NUM_THREADS="$threads"
@@ -101,6 +101,20 @@ echo "staging $STORE to $TMPDIR/interval_store"; date
 rsync -a --delete "$STORE/" "$TMPDIR/interval_store/"
 date
 
+# A draw that mis-polarized a TE placed its mutation on a different branch, so
+# the age it recorded belongs to a different event. With a mask, each TE's age
+# CDF is built from its agreeing draws only.
+polarity_option=()
+if [[ -n "$TE_POLARITY_MASK" ]]; then
+    polarity_option+=(--te-polarity-mask "$TE_POLARITY_MASK")
+    if [[ -n "$MAX_FLIPPED_FRACTION" ]]; then
+        polarity_option+=(--max-flipped-fraction "$MAX_FLIPPED_FRACTION")
+    fi
+elif [[ -n "$MAX_FLIPPED_FRACTION" ]]; then
+    echo "MAX_FLIPPED_FRACTION requires TE_POLARITY_MASK" >&2
+    exit 5
+fi
+
 if [[ ! -d "$TARGET" ]]; then
     if [[ -z "$TE_POSITIONS" ]]; then
         echo "TARGET $TARGET does not exist and TE_POSITIONS is unset" >&2
@@ -116,6 +130,7 @@ if [[ ! -d "$TARGET" ]]; then
         --acceptance-quantile "$ACCEPTANCE_QUANTILE" \
         --bin-width 1000 \
         --missing-position-policy "$MISSING_POSITION_POLICY" \
+        "${polarity_option[@]}" \
         --seed "$SEED"
     date
 fi

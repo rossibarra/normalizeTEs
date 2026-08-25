@@ -39,12 +39,15 @@
 #                 partial gather cannot be distinguished from a complete one
 
 set -euo pipefail
-PROJECT="${PROJECT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+# sbatch copies the job script into /var/spool/slurmd, so BASH_SOURCE does not
+# point at the checkout. SLURM_SUBMIT_DIR does; the BASH_SOURCE form is the
+# fallback for running this script directly.
+PROJECT="${PROJECT:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}}"
 : "${STORE:?set STORE to the completed interval-store directory}"
 : "${OUTPUT:?set OUTPUT to the table directory to publish}"
 cd "$PROJECT"
-module load conda
-conda activate normalizeTE
+# Batch jobs get a non-login shell, where `module` does not exist.
+. "$PROJECT/slurm_conda_bootstrap.sh"
 
 if [[ "${MERGE:-0}" == "1" ]]; then
     : "${PARTS:?set PARTS to a glob of part directories}"
