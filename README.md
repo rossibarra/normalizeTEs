@@ -497,12 +497,11 @@ identities are validated against the target.
 
 For replicate `r`, the output records:
 
-\[
+\$
 B_r=D(T^{(r)},T),\qquad
 E_r=D(S_r,T^{(r)}),\qquad
 O_r=D(S_r,T),\qquad
-R_r=E_r/B_r.
-\]
+R_r=E_r/B_r$\
 
 The optimizer QC requires `R_r < 0.5` and an absolute cap on `E_r`. The cap
 scales with the target's own acceptance threshold —
@@ -695,11 +694,9 @@ missing coordinates rather than analyzing a subset.
 For a site with `k` derived alleles among `n` callable individuals, sites with
 `n < 20` are dropped and eligible sites are projected probabilistically to 20:
 
-\$[
-h_j(k,n)=
+\$h_j(k,n)=
 \frac{\binom{k}{j}\binom{n-k}{20-j}}{\binom{n}{20}},
-\qquad j=0,\ldots,20.
-$]\
+\qquad j=0,\ldots,20$\
 
 Only unfolded bins 1 through 19 enter the comparison. Individual site
 projections are **not** renormalized after removing endpoint bins, so a site
@@ -710,11 +707,11 @@ TE target and within each matched SNP set; the two completed spectra are then
 normalized independently. For target spectrum `t` and matched-set spectrum
 `s_r`, the score is
 
-\$\Phi_{\mathrm{SFS},r}
+$\Phi_{\mathrm{SFS},r}
 =\sum_{j=1}^{19}\max(t_j-s_{rj},0)
 =\sum_{j=1}^{19}\max(s_{rj}-t_j,0)
 =\frac{1}{2}\sum_{j=1}^{19}|t_j-s_{rj}|
-=1-\sum_{j=1}^{19}\min(t_j,s_{rj})$\
+=1-\sum_{j=1}^{19}\min(t_j,s_{rj})$
 
 All four forms are equal because both spectra sum to one. **Φ-SFS is therefore
 the total variation distance between the two projected, normalized spectra** —
