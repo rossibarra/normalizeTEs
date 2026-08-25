@@ -42,6 +42,46 @@ one became required, so v0.3.1 commands do not run unchanged.
   recording a null store digest are now rejected, because the digest is the
   table's only identity and accepting null accepts any table.
 
+### TE age targets can drop mis-polarized posterior draws
+
+- Adds `build_te_polarity_mask.py`, which records per TE site and per posterior
+  draw whether that draw polarized the site in agreement with biology. A TE
+  insertion is the derived state, so a draw that called the insertion allele
+  ancestral placed the mutation on a different branch of the ARG and recorded
+  that branch's age; polarity and age are one inference, and a draw that got the
+  polarity wrong also got the age wrong.
+- `te_age_target.py --te-polarity-mask` builds each TE's age CDF from its
+  agreeing draws alone, and `--max-flipped-fraction` discards a TE whose flipped
+  fraction among draws with data for it exceeds the given value.
+  `--max-flipped-fraction` requires `--te-polarity-mask`. A site where no draw
+  agrees retains all of its draws — an absent age is not a better estimate than
+  a contaminated one — and is counted rather than silently kept.
+- The production value is `--max-flipped-fraction 0.5`. On the 4,067-site
+  in-gene target at 75 draws it flagged 7,405 of 295,770 draw-site ages (2.50%),
+  discarded 44 TEs and kept 4,023. Flipped fraction correlates with TE age
+  (Spearman +0.2521), so stricter thresholds shift the target younger: at 0 the
+  median age drops 22.6%.
+- The workflow is ordered, and the order is not obvious. The mask builder reads
+  its site list from an existing target's `te_row_indices.npy`, so a preliminary
+  target is built first, the mask is built against it, and the final target is a
+  fresh build with the mask applied. The two targets are separate directories
+  and the preliminary one must be kept.
+- Mask columns are indexed by the store's own `draw_id` rather than by argument
+  order, the mask is bound to the store by content digest, and a mask that does
+  not cover every draw in the store is rejected, because an uncovered draw is
+  indistinguishable from a flipped one and would be dropped from every site.
+- Adds `run_te_polarity_mask.sbatch`, which takes its tree list from the store's
+  `metadata["inputs"]` so full coverage is guaranteed, and
+  `TE_POLARITY_MASK`/`MAX_FLIPPED_FRACTION` to `run_bootstrap_matching.sbatch`.
+  Passing a mask together with an existing target that was built without one is
+  rejected rather than matched against silently.
+- **Compatibility.** A target bundle built with a mask records it in
+  `metadata.json` under `te_polarity`, and its per-TE age CDFs are no longer a
+  function of the interval store alone. A consumer that rebuilds per-TE CDFs
+  from the store without applying the same mask will not reproduce the target's
+  CDFs, its acceptance threshold, or its TE count. Check `te_polarity` before
+  recomputing anything from a target's `te_row_indices.npy`.
+
 ### Removed options
 
 `--seed-sets`, `--closest-restarts`, `--diverse-restarts` (collapsed into
@@ -50,14 +90,19 @@ one became required, so v0.3.1 commands do not run unchanged.
 
 ### Operational
 
-- Three launchers cover the scheduler stages: `run_bootstrap_matching.sbatch`,
-  `run_ancestral_table.sbatch`, `run_phi_sfs.sbatch`. Ten experimental launchers
-  were retired.
+- Four launchers cover the scheduler stages: `run_bootstrap_matching.sbatch`,
+  `run_te_polarity_mask.sbatch`, `run_ancestral_table.sbatch`,
+  `run_phi_sfs.sbatch`. Ten experimental launchers were retired.
 - The resume identity hashes the loaded project modules, so two different sets of
   uncommitted edits on one commit no longer share an identity.
 
 ### Known and accepted limitations
 
+- Masked target construction has not been separately profiled. The published
+  2 h 12 m / 37.7 GiB matching figures and the 16.0 GB target-construction peak
+  were measured without a polarity mask, and masking adds a per-site interval
+  filter ahead of CDF construction, so those figures are a lower bound for a
+  masked run rather than an estimate of one.
 - The optimizer prefers well-dated SNPs, and ARG dating confidence is the same
   axis as polarity confidence. Both arms end up matched (controls mean `p`
   0.9786, TE target 0.9785), so it does not bias the comparison, but controls are

@@ -64,6 +64,12 @@ Measured against a uniform swap screen with non-disjoint replicates, on the
 Every objection that stood against this stage is now closed. It has better
 membership diversity than the sampler it replaces, not worse.
 
+**The target this runs against is polarity-masked.** The production route
+builds a preliminary target, builds a TE polarity mask against it with
+`run_te_polarity_mask.sbatch`, then rebuilds the target with
+`--te-polarity-mask` and `--max-flipped-fraction 0.5` before matching. §5b
+records the decision and its measurements.
+
 **Why not run both.** Publishing two null distributions requires justifying
 which one is reported, which is a forking-paths problem. A single prespecified
 method is more defensible even when it is the less flattering one.
@@ -1711,6 +1717,21 @@ measured 97% CPU with 21 major page faults. The production store is 18.2 GB.
 > replicates, so it is a different configuration and not directly comparable to
 > the 37.7 GiB / 2 h 12 m figure; both are kept.
 
+> **Unmeasured: masked target construction.** The 2 h 12 m / 37.7 GiB figure
+> above, and the 16.0 GB target-construction peak beside it, were measured
+> **without** a TE polarity mask. With `--te-polarity-mask`, target construction
+> filters each site's intervals to its agreeing draws before building that
+> site's CDF, which is additional per-site work on a path that already dominates
+> the construction phase. No masked run has been separately profiled, so the
+> figures above are a **lower bound** for a masked run and not an estimate of
+> one. Do not quote a masked figure until one is measured; request the same
+> allocation and record `MaxRSS`.
+
+The mask build itself is measured. `run_te_polarity_mask.sbatch` requests 2 CPUs
+and 96 GB, and 4,067 sites by 75 draws took 1 h 21 m. The cost is dominated by
+decompressing each `.tsz` once, not by the number of sites, so a much larger TE
+set costs roughly the same at the same draw count.
+
 ### What the bootstrap-target Φ-SFS distribution does and does not mean
 
 - It **holds the observed TE SFS fixed** and varies only which SNPs are matched.
@@ -1728,6 +1749,81 @@ measured 97% CPU with 21 major page faults. The production store is 18.2 GB.
   the 100 replicates an inferential interpretation until spatial dependence
   among TE age contributions has been assessed (C1). If iid exchangeability is
   unsupported, a prespecified genomic-block bootstrap must replace it.
+
+### TE polarity masking and the `--max-flipped-fraction` decision
+
+A TE insertion is the derived state, so a posterior draw that called the
+insertion allele ancestral placed the mutation on a different branch of the ARG
+and recorded that branch's age. Polarity and age are one inference, not two:
+that draw's age for that site estimates a different event.
+`build_te_polarity_mask.py` records, per TE site and per draw, whether the draw
+agreed with biology, and `te_age_target.py --te-polarity-mask` builds each
+site's age CDF from its agreeing draws alone.
+
+`build_ancestral_states.py` cannot serve this purpose: it records how many draws
+chose each base, not which ones, so it cannot answer "drop the draws that
+flipped this site". The scope is deliberately narrow — TE target sites only,
+where biology fixes the answer. Control SNPs have no such ground truth and their
+polarity uncertainty is carried by the Φ-SFS mixture instead.
+
+Two guards are enforced rather than assumed. Mask columns are indexed by the
+store's own `draw_id`, taken from `metadata["inputs"]`, so a permuted file list
+cannot mask each site with another draw's polarity; and a mask that does not
+cover **every** draw in the store is refused, because an uncovered draw arrives
+as an all-false column and would otherwise be dropped from every site.
+
+**The production decision is `--max-flipped-fraction 0.5`.** It discards only
+TEs whose ARG draws mostly contradict the biological polarization, and every
+surviving TE retains at least half of its draws. It costs about 1.5% of the
+target's median age.
+
+Measured on the 4,067-site in-gene target at 75 draws
+(`results/te_polarity_mask_75draw`, `results/targets/in_gene_75draw_polarity`):
+
+| quantity | value |
+|---|---:|
+| draw-site age observations | 295,770 |
+| flagged as flipped | 7,405 (2.50%) |
+| sites with at least one flipped draw | 577 |
+| sites with no agreeing draw | 0 |
+| TEs discarded at `X = 0.5` | 44 |
+| TEs kept | 4,023 |
+
+Flipped fraction correlates with TE age, Spearman +0.2521 (`results/polarity_threshold_sweep.json`), so a stricter
+threshold does not merely remove noise — it removes old TEs preferentially and
+shifts the target younger. At `X = 0` the median age drops 22.6%. That is why
+the threshold is set at 0.5 rather than at the intuitively safer 0: at 0.5 the
+rule is "the draws mostly disagree with biology", which is a statement about
+inference quality, while at 0 it is "any draw disagreed", which is a statement
+about age.
+
+A site where *every* draw disagrees is handled separately and is not what the
+threshold is for. Dropping all of its draws would leave it with no age at all,
+which is not a better estimate than a contaminated one, so such a site keeps its
+draws and is counted in `sites_with_no_agreeing_draw`. On the in-gene target
+that count is 0. `--max-flipped-fraction` is the deliberate way to remove those
+sites instead.
+
+> **Two different quantities, both correct.** These figures are easy to quote
+> for one another, so the baselines are stated explicitly.
+>
+> **−1.53% is the marginal cost of the threshold.** It is the median of the
+> per-TE median ages, with draw-masking applied in *both* arms, so the only
+> thing varying is how many sites `--max-flipped-fraction` discards. Use it to
+> choose `X`. `results/polarity_threshold_sweep.json` is the artifact; the
+> sweep runs `measure_polarity_threshold_sweep.py`.
+>
+> **−4.09% is the total change a reader sees in the published target.**
+> Comparing the two bundles directly — `in_gene_75draw` (no mask) against
+> `in_gene_75draw_polarity` (mask, `X = 0.5`) — the TE count goes 4,067 →
+> 4,023, the acceptance threshold 1,480.48 → 1,356.06 generations, and the
+> aggregate target CDF's median age 20,432.77 → 19,597.22. This moves both
+> things at once: the per-site draw filtering *and* the site discarding. It is
+> also an aggregate-CDF median rather than a median of per-site medians, which
+> is a third reason the two numbers need not agree.
+>
+> Neither supersedes the other. Quote −1.53% when justifying `X = 0.5`, and
+> −4.09% when describing what polarity masking did to the target overall.
 
 ### Φ-SFS site assumptions
 
