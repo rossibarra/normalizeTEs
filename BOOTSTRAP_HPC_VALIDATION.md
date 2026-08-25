@@ -1,17 +1,72 @@
-# HPC validation tests for bootstrap-target matching
+# Bootstrap-target matching: recommended route and open work
 
-`README.md` §6 and `BOOTSTRAP_TARGET_MATCHING_PLAN.md` §10 state that
-bootstrap-target matching is the intended replacement for the §5 hard-q50
-sampler but is not cleared for that role. This document specifies the tests
-that must be run on Farm before that decision can be made, what each one is
-evidence for, and what would count as a pass.
+`BOOTSTRAP_TARGET_MATCHING_PLAN.md` §10 lists ten acceptance gates that had to
+be met before bootstrap-target matching could replace the §5 hard-q50 sampler.
+This document records where that stands, on the 75-draw production store.
 
-Nothing here changes the recommended workflow. Until these tests pass, §5
-remains the reference result and §6 runs alongside it.
+Rejected approaches and readings that later measurements overturned live in
+`BOOTSTRAP_DISCARDED_APPROACHES.md`, so they are not re-proposed without their
+evidence and do not clutter this one.
 
-Scope note: these are *production-readiness* tests on real data. The unit and
-regression suite in `tests/` covers the correctness properties in plan §9.1 and
-§9.2 and is a precondition (T0), not part of this ladder.
+## Recommended route
+
+Run §6 bootstrap-target matching **alone** -- not alongside §5. Submit
+`run_bootstrap_matching.sbatch`, which is the canonical launcher; the equivalent
+direct command is:
+
+```bash
+python bootstrap_target_matcher.py \
+  --store "$TMPDIR/interval_store" \
+  --target targets/in_gene \
+  --candidate-rows candidate_rows.npy \
+  --output bootstrap_matches/in_gene \
+  --work-dir results/work-in-gene --resume \
+  --replicates 100 --restarts 3 \
+  --min-epochs 10 --max-epochs 50 --patience 5 \
+  --disjoint-replicates \
+  --seed 1002
+```
+
+Two behaviours that were flags during the validation campaign are now
+unconditional, so the options that selected them have been removed. The coarse
+swap screen is always a geometric sub-sample of the exact grid (there is no
+`--search-grid-spacing`), and each restart is always a stratified draw from the
+target's own equal-mass age strata (there is no `--seed-sets`, so §5 is not a
+prerequisite; `--restarts` sets the count and there is no
+`--closest-restarts`/`--diverse-restarts` split). `--disjoint-replicates`
+remains a flag and is the production setting.
+
+**What `--disjoint-replicates` delivers, stated precisely.** Guaranteed and
+verified: the 100 published sets share no control rows -- 406,700 of 406,700
+slots are distinct, maximum reuse 1. Measured: the sets consume 1.77% of the
+23,026,051-row candidate pool, and `E_r` shows no degradation with replicate
+index (slope -0.05 generations per replicate; first-25 median 53.18 against
+last-25 median 50.71), so the sequential-depletion dependence is not detectable
+here. **Not claimed:** statistical independence, and therefore not an effective
+replicate count of 100. Replicates still share the observed TE sample and the
+interval store, which is inherent to bootstrapping rather than a defect, and an
+effective replicate count for the downstream statistic must still be estimated
+from that statistic.
+
+Measured against a uniform swap screen with non-disjoint replicates, on the
+4,067-site in-gene target:
+
+| | shipped defaults | recommended | §5 hard-q50 |
+|---|---:|---:|---:|
+| unique controls | 195,836 | **406,700** | 260,182 |
+| maximum reuse | 30 | **1** | 13 |
+| QC pass | 96/100 | **100/100** | — |
+| `cor(B_r, O_r)` | 0.9972 | **0.9999** | — |
+| lower-tail `O/B` (5%) | 1.288 | **0.994** | — |
+| relative age error at 10% quantile | 21.9% | **−0.0%** | — |
+| runtime | 2.65 h | 2.18 h | 1.05 h |
+
+Every objection that stood against this stage is now closed. It has better
+membership diversity than the sampler it replaces, not worse.
+
+**Why not run both.** Publishing two null distributions requires justifying
+which one is reported, which is a forking-paths problem. A single prespecified
+method is more defensible even when it is the less flattering one.
 
 ---
 
@@ -50,6 +105,21 @@ Three things about the scales that are easy to get wrong:
   is whether the *distribution* of `O_r` reproduces the distribution of `B_r`
   across replicates — that is gate 5, checked at the ensemble level, because
   propagation is a claim about the ensemble rather than any single replicate.
+
+
+### A note on ages quoted from CDF arrays
+
+`age_bins.npy` holds grid **labels**, and the CDF is evaluated half a bin to
+their right: `cdf_evaluation` in the target metadata records
+`P(X < right_cell_edge)`, and `analysis_points()` evaluates at `label + bin_width/2`.
+So interpolating a quantile against `age_bins` returns a label, and the physical
+age is that label plus half a bin — 500 generations at the 1,000-generation
+production grid.
+
+Every age in this document is quoted as a **physical age**, with the half bin
+added. Relative errors are computed on physical ages too, which is why the young
+end reads 21.9% rather than the 31.5% an uncorrected label-space calculation
+gives: the difference is unchanged, the denominator is half a bin larger.
 
 ---
 
@@ -289,17 +359,22 @@ original VCF (§1.4) removes the need to trust either list.
      allele at TE sites such as `10:56392`, so it is a real genome. Decide
      whether it contributes an allele to the SFS; the choice shifts every
      spectrum.
-2. **A §5 hard-q50 matched bundle for this target.** `bootstrap_target_matcher.py`
-   requires `--seed-sets`; the §6 stage cannot run without it. None exists in
-   this directory. This is T2.
+2. **A §5 hard-q50 matched bundle for this target.** As of the CLI
+   simplification this is no longer a prerequisite: `--seed-sets` is gone and
+   each restart is a stratified draw from the target's own age strata. It was a
+   hard dependency when this ladder was written, which is what T2 exists for.
 
 ### 1.6 The ancestral allele comes from the ARG, and this breaks Φ-SFS as built
 
+> Written before C5 was implemented. `phi_sfs.py` now requires
+> `--ancestral-table` and the VCF-polarity options are gone; the measurements
+> below are why. See C5 for the current state.
+
 The ancestral state is not a property of the input VCF. It is inferred by
-SINGER and read off the ARG. `phi_sfs.py` offers only two ways to obtain it —
-`--ancestral-mode ref` (REF is ancestral) and `--ancestral-mode info` (an INFO
-field) — and **both read polarity out of the VCF file**. Neither describes this
-data. This is a blocking code gap, recorded as C5.
+SINGER and read off the ARG. At the time, `phi_sfs.py` offered only two ways to
+obtain it — `--ancestral-mode ref` (REF is ancestral) and `--ancestral-mode
+info` (an INFO field) — and **both read polarity out of the VCF file**. Neither
+describes this data. This was a blocking code gap, recorded as C5.
 
 Measured on chromosome 10, comparing the SINGER input VCF against the
 `##source=tskit` per-draw exports in `results/vcf/`, which carry REF equal to
@@ -448,6 +523,14 @@ reused at all.
 Each test names the plan §10 gate it serves. Tests T1–T4 use the 3-draw store
 and are cheap rehearsals; T5 onward require the 75-draw store.
 
+> **This ladder is a completed record, not a runbook.** The commands below are
+> reproduced as they were run, against the CLI of the time. Several options they
+> pass (`--seed-sets`, `--closest-restarts`, `--diverse-restarts`,
+> `--search-grid-spacing`, `--distance`, `--log-age-offset`) no longer exist:
+> the behaviours they selected are now unconditional. Do not copy these
+> commands. The supported command is under "Recommended route" above, and
+> `run_bootstrap_matching.sbatch` is the launcher.
+
 ### T1 — target construction on the rebuilt 3-draw store
 
 *Gate: prerequisite for all others.*
@@ -489,7 +572,10 @@ scaffolding: the §6 matcher consumes it as its initialization library, and gate
 
 *Gate: baseline for gates 3, 5, 6.*
 
-```bash
+Transcript of what was run, against the CLI of the time. Three of its options no
+longer exist, so this will not parse today; it is here as the record.
+
+```text
 HPC_MEM=32G HPC_TIME=12:00:00 ~/.claude/bin/hpc_run '
 python bootstrap_target_matcher.py \
   --store results/store-3draw \
@@ -507,7 +593,8 @@ python bootstrap_target_matcher.py \
 
 These flags deliberately reproduce the published pilot configuration (20
 replicates, single closest restart, fixed 15 epochs) so the numbers are
-comparable to plan §3.
+comparable to plan §3. The current equivalent is `--restarts 1` with stratified
+initialization.
 
 **Pass:** the four W1 quantities land near the plan §3 table (medians ~1,276 /
 ~2,346 / ~216 / ~1,426), `cor(B_r, O_r)` ≈ 0.99, and 19–20 of 20 replicates
@@ -605,10 +692,10 @@ From the T5 bundle, without touching Φ-SFS:
 
 Run `phi_sfs.py` on the T5 bundle and, separately, on the T2/T5 hard-q50 bundle.
 
-**Blocked by C5**: the ancestral allele comes from the ARG and `phi_sfs.py`
-cannot read it from anywhere but the VCF (§1.6). Do not work around this by
-passing the input VCF with the default `--ancestral-mode ref`; that mis-polarizes
-about 31% of sites. Also requires chromosomes 1-9 of the input VCF (§1.4).
+**C5 is now closed in code**: `phi_sfs.py` requires `--ancestral-table` and can
+no longer read polarity from the VCF, so the 31%-mis-polarization route is
+unreachable. T7 still requires chromosomes 1-9 of the input VCF (§1.4) and the
+C2 diagnostic below.
 
 **Pass:** an effective replicate count derived from the observed cross-replicate
 dependence by a **prespecified** method, with a sensitivity analysis if the
@@ -659,16 +746,57 @@ chromosomes; the ARG makes nearby sites' age posteriors correlated by
 construction, so the null of exchangeability is not the likely outcome), a
 documented iid-versus-block decision, and a block mode if iid fails.
 
-### C2 — W1-repair utility versus derived-frequency contribution (status item 4)
+### C2 — W1-repair utility versus derived frequency: **measured, and clear**
 
-The risk README §6 flags as "the main risk to watch": the optimizer picks SNP
-membership to hit an age CDF, and if repair utility correlates with derived
+The risk README §6 calls "the main risk to watch": the optimizer picks SNP
+membership to hit an age CDF, so if repair utility correlates with derived
 allele frequency, the matcher biases the SFS — the exact quantity Φ-SFS
-measures, invisible in every matching diagnostic. No diagnostic for this exists.
+measures, invisible in every matching diagnostic.
 
-**This is the one gate that should block T7's interpretation, not merely
-accompany it.** Running Φ-SFS before C2 produces a number no one can defend.
-Write the diagnostic first.
+`probe_repair_utility_frequency.py` measures it on chromosome 10, where
+genotypes are available. Two findings.
+
+**Published controls are much rarer than the pool, but that is age matching, not
+optimization.** Mean derived frequency of selected controls against the
+23.0M-row candidate pool's 0.2992:
+
+| bundle | chr10 controls | mean derived freq | shift |
+|---|---:|---:|---:|
+| §5 hard-q50 | 15,193 | 0.1665 | −0.1327 |
+| §6 min-W1 | 11,384 | 0.1619 | −0.1373 |
+| §6 disjoint | 23,741 | 0.1523 | −0.1468 |
+
+§5 is a constrained random walk with no optimization pressure and shows almost
+the whole shift, so it is a consequence of matching a young-skewed target: young
+variants are rare. Optimization adds a further −0.014, about 10% of the total.
+
+**The utility association is age-mediated.** Scoring 6,000 candidates by the
+exact-grid W1 change from swapping each into a published set:
+
+```
+UNCONDITIONAL  corr(freq, utility) = +0.2478
+               corr(freq, age)     = +0.2919   <- the confound
+               corr(age,  utility) = +0.9873
+
+weighted mean within-stratum corr(freq, utility) = +0.0297
+```
+
+Utility is almost entirely determined by age, which is what an age-matching
+objective should do. Frequency predicts utility only because it predicts age;
+conditioning on age collapses the association from +0.248 to +0.030, and the
+within-stratum correlations have no consistent sign (−0.314 in the youngest
+stratum, +0.11 to +0.17 in the older ones).
+
+**Conclusion: the optimizer selects on age, not on frequency.** This does not
+block Φ-SFS.
+
+Two caveats. This is chromosome 10, 6,000 candidates, one bootstrap target, six
+age strata; the youngest stratum spans 20–64,720 generations, so residual
+within-stratum age variation could mask a weak effect. The claim is not "no
+association" but "none large enough to matter beside a 0.987 age correlation".
+And it tests frequency specifically — the separate finding that the optimizer
+prefers well-dated SNPs (posterior width 0.62 of the TE target against 0.83 for
+§5) is a different selection effect, unaddressed by this diagnostic.
 
 ### C3 — effective-N method (gate 7)
 
@@ -676,8 +804,14 @@ A method must be declared, not just reuse counts reported. See T7.
 
 ### C5 — an ancestral-allele source outside the VCF (new)
 
-Blocks T7 and T8 outright. `phi_sfs.py` can only take polarity from REF or an
-INFO field, and this data has it in neither (§1.6).
+**Closed in code.** `build_ancestral_states.py` builds the table and
+`phi_sfs.py` now *requires* `--ancestral-table`; the VCF-derived
+`--ancestral-mode`/`--ancestral-info` options have been removed, so the
+mis-polarization route described below is no longer reachable. The paragraphs
+that follow are the original analysis, kept for its measurements.
+
+As written, this blocked T7 and T8 outright: `phi_sfs.py` could only take
+polarity from REF or an INFO field, and this data has it in neither (§1.6).
 
 **Extracting the ancestral states is cheap.** The interval-store scan reads
 `sites.position`, `mutations.site`, `mutations.node`, `nodes.time`, and the edge
@@ -799,7 +933,7 @@ robust to this bias; a null result is not, and must not be read as evidence of
 no difference.
 
 **The effect is first-order, not a rounding detail.** At the realistic rate it
-is a 15% attenuation. C5's `--ancestral-mode` should carry the perturbation
+is a 15% attenuation. C5's ancestral-table reader should carry the perturbation
 machinery from the start rather than have it added later, and every reported Φ
 should be accompanied by its attenuation interval.
 
@@ -922,10 +1056,11 @@ Two properties make it cheap and safe:
    does affect any interval placed on it. One assumption to state rather than
    hide: presence-conditioning is unbiased only if a site's being represented in
    a draw is independent of its polarity in that draw.
-3. **An `--ancestral-mode`** that reads the table and validates that both
-   alleles are REF or ALT at every requested site, exactly as the existing modes
-   do.
-4. **A correction to README §7's independence claim.**
+3. **An ancestral-table reader** that validates that both alleles are REF or
+   ALT at every requested site. Implemented as the required `--ancestral-table`
+   option.
+4. **A correction to README §7's independence claim.** Made: §7 now says allele
+   *counts* come from the VCF while polarity comes from the ARG.
 
 Report, alongside every Φ-SFS result, the distribution of `p` over requested
 sites and the share of spectrum mass contributed by sites near `p = 0.5`. Those
@@ -958,29 +1093,80 @@ Whether C4 is a blocker or a convenience is decided by T4.
 
 ---
 
-## 5. Gate coverage
+## 5. Where the gates stand
 
-| Plan §10 gate | Covered by | Status |
-|---|---|---|
-| 1. full-posterior rerun | T5 | runnable — 75-draw store already built |
-| 2. spatial dependence / block bootstrap | C1 | **closed** — iid retained, ~2-3% effect |
-| 3. convergence calibration | T4 | runnable |
-| 4. QC pass rate, no redraw | T6 | runnable |
-| 5. `O_r` reproduces `B_r`, center and tails | T6 | runnable |
-| 6. initialization/restart sensitivity | T6 | runnable |
-| 7. reuse, diversity, effective N | T6 + T7 + **C3** | partly needs new code |
-| 8. recomputation from row indices | T5 | runnable |
-| 9. handling of QC failures | T6 | written decision |
-| 10. hard-q50 retained as sensitivity | T2 + T8 | runnable |
-| — main SFS-bias risk (README §6) | **C2** | needs new code; gates T7's interpretation |
-| — ARG-derived polarization | **C5** | needs new code; blocks T7/T8 outright |
-| — HPC distribution (status item 7) | **C4** | needs new code; T4 decides urgency |
+| gate | status |
+|---|---|
+| 1. full-posterior rerun | **closed** — 100 replicates x 3 restarts on the 75-draw store |
+| 2. spatial dependence / bootstrap choice | **closed** — iid retained; effect ~2-3% against a 1.1% Monte Carlo noise floor |
+| 3. convergence calibration | **closed** — from restart traces; production converges at a median of 20 epochs, 294/300 on plateau |
+| 4. QC pass rate without redraw | **closed** — 100/100 with the recommended flags; the absolute cap now scales with the target threshold |
+| 5. `O_r` reproduces `B_r`, centre and tails | **closed** — lower-tail `O/B` 0.994, `cor` 0.9999, relative age error <=0.1% at every quantile |
+| 6. initialization and restart sensitivity | **closed** — the diverse restart wins 32/100; selection moves the published result by ~1% of `B_r` |
+| 7. reuse, diversity, effective replicate count | **partly closed** — disjoint replicates give 406,700 unique controls with maximum reuse 1, and no `E_r` drift across replicate index; an effective replicate count for Phi-SFS must still be estimated from the Phi-SFS scores (C3) |
+| 8. recomputation from canonical row indices | **closed** — bit-exact, 0.000e+00 on all three distances |
+| 9. handling of unresolved QC failures | **moot at 100/100**; if failures recur, they concentrate at small `B_r` and must be retained rather than dropped |
+| 10. hard-q50 retained as sensitivity analysis | **superseded** — a single prespecified method was chosen instead (see Recommended route) |
 
-Six of the thirteen rows are runnable today: the 75-draw store already exists,
-so T1-T6 need no further inputs once the candidate array is rebuilt against it.
-Five need code written first, and C5 now blocks the Φ-SFS stage outright.
+### Phi-SFS polarity: prespecified decisions
 
----
+Recorded before any Phi-SFS number is produced, so the choices are not made
+after seeing results.
+
+1. **TE sites are polarized biologically.** A TE insertion is the derived state.
+   All 12,614 chr10 TE records are `A`/`G` with no other combination, so
+   insertion is ALT and `ancestral == REF` holds at every TE site, so the TE arm
+   needs no table lookup at all. The known exception, a TE that
+   fixed and was later deleted, is rare: only 3.1% of TE sites sit above
+   insertion frequency 0.9.
+2. **Control SNPs use the polarity-weighted mixture.** A site with observed
+   derived count `k` among `n` callable samples contributes
+   `p*h(k,n) + (1-p)*h(n-k,n)`, where `p` is the posterior proportion from the
+   ancestral table. This is the posterior mean of the site's contribution, it is
+   linear in `p` and therefore unbiased at any draw count, and it automatically
+   downweights uncertain sites toward a folded contribution. Majority rule is
+   **not** used: thresholding `p` is biased in a way that depends on the number
+   of draws a site appears in, and TE and control sites differ systematically in
+   that count.
+3. **`p` is conditioned on presence** -- estimated over the draws in which the
+   site actually appears. Every requested site then has a well-defined weight,
+   with no intersection or fallback rule needed.
+4. **`p` is used as reported, uncalibrated.** Against TE ground truth the ARG is
+   only ~90.8% correct where all 75 draws agree, so raw `p` is overconfident by
+   roughly 9-15 points across the bins where most sites sit. Applying a
+   calibration curve was considered and **deliberately not adopted**. The
+   consequence to note when reading results: control spectra are somewhat
+   sharper than the ARG's measured accuracy warrants, which makes Phi slightly
+   larger than a calibrated analysis would give.
+5. **No perturbation analysis.** The mixture already carries polarity
+   uncertainty into the spectrum, so resampling polarity on top of it would
+   largely double-count. The 15% attenuation measured earlier applies to a
+   hard-polarized analysis, not to this one.
+
+Report the distribution of `p` for the target and for each published control set
+alongside every Phi-SFS result, so a reader can see how much of the spectrum
+rests on contested calls. TE sites average `p` = 0.978 and controls 0.937.
+
+### Remaining work, in priority order
+
+Nothing above blocks the matching stage. What remains is downstream.
+
+1. **C5 — an ancestral-allele reader for `phi_sfs.py`.** The table is built and
+   validated across all 75 draws; `--ancestral-table` is wired in and
+   authenticated against the store. What remains is confirming it end to end on
+   real data, which needs the VCF beyond chromosome 10.
+2. **The input VCF for chromosomes 1-9.** Chromosome 10 is in hand and is enough
+   to validate the method, since polarity is resolved per site and nothing in it
+   is chromosome-specific. The rest is data staging for the production run.
+3. **C3 — an effective replicate count.** Disjoint replicates share no control
+   rows, and sequential depletion is not detectable (1.77% of the pool, no trend
+   across replicate index), but that is not statistical independence: every
+   replicate still bootstraps the same observed TE sample from the same store.
+   An effective count should be estimated from the downstream statistic itself.
+4. **Target-size scaling beyond 35,466 sites.** Measured at 600, 1,500, 4,067
+   and 35,466; the recommended route holds across all four. A 185,232-site
+   target projects to ~125 h single-node and would need distributed execution,
+   but few categories reach that size.
 
 ## 5a. Results so far
 
@@ -1042,121 +1228,6 @@ inside, so the saved sets occupy a narrow shell rather than spanning the
 bootstrap uncertainty. That is exactly the behaviour bootstrap-target matching
 exists to fix, now measured on production data rather than argued from the
 two-ARG pilot.
-
-#### Is the floor algorithmic? Tested, and the answer is "soft, but it does not matter"
-
-Two experiments, because the T5 diagnosis ("294 of 300 restarts stopped at
-plateau, so more search cannot help") turned out to be wrong.
-
-**The published states are not local optima.** `probe_pair_swaps.py` confirms
-each state against a sampled neighbourhood and then searches the pair
-neighbourhood. On four replicates spanning the range (the two smallest-`B_r` QC
-failures, the lowest `E_r`, the highest):
-
-| replicate | coarse base | best single | best pair | exact W1 after |
-|---:|---:|---:|---:|---|
-| 14 | 85.36 | 84.95 | 84.64 | 313.68 → 312.92 |
-| 44 | 63.56 | 62.37 | 62.09 | 315.78 → 314.00 |
-| 51 | 43.08 | 41.97 | 40.42 | 222.93 → 220.64 |
-| 65 | 82.09 | 79.80 | 79.09 | 336.45 → 333.44 |
-
-Single swaps improve in all four. The plateau is a **sampling** plateau, not
-exhaustion: each epoch draws `rng.choice(candidates, size=n)`, sampling about
-4,000 of roughly 9x10^10 possible single swaps from a 23M-row pool. Five
-consecutive epochs finding nothing material means the draw missed.
-
-Pairs beat the best single by only 0.28-1.55 coarse generations, so the
-two-move escape that annealing exploits is not the binding constraint.
-**Annealing and multi-swap moves are the wrong fix.**
-
-**More search budget helps, but not enough to matter.** A rerun of T3's exact
-configuration (20 replicates, one restart, same bootstrap targets, verified
-identical) with `--patience 25 --max-epochs 300`:
-
-| quantity | T3, 15 epochs | deep, patience 25 | change |
-|---|---:|---:|---:|
-| epochs used | 15 (fixed) | median 56, max 111 | 3.7x |
-| `E_r` median | 320.74 | 297.35 | −7.3% |
-| `E_r` mean | 318.50 | 293.15 | −8.0% |
-| `E_r` max | 386.33 | 334.64 | −13.4% |
-| **`O_r` median** | **2054.88** | **2051.50** | **−0.2%** |
-| `R_r` median | 0.16 | 0.14 | −12.5% |
-| QC pass | 19/20 | 19/20 | none |
-
-All 20 still terminated on plateau, at 3.7x the epochs.
-
-The decisive column is `O_r`. Nearly four times the search budget bought 7-8%
-on the optimizer's internal error and **0.2% on the quantity the science
-depends on**, because `|O_r − B_r|` runs at roughly 43% of `E_r` rather than
-tracking it. The QC pass rate did not move, and the surviving failure still
-sits at `R = 0.51`.
-
-Scale of what would be needed: fixing the lower tail means an `R_r` below 0.5 at
-`B_r ≈ 400`, i.e. `E_r ≲ 200`, and ideally `E_r ≈ 50` for faithful propagation.
-At roughly 7% per quadrupling of budget, that is not reachable by search effort.
-
-**Conclusion: keep the shipped budget.** The floor is soft but the lower-tail
-distortion is not an engineering defect to be tuned away — it is a property of
-matching discrete site sets to a precise CDF. Document it as a limitation of
-the stage (gates 5 and 9 above), do not spend compute chasing it, and do not
-build a new search algorithm for it.
-
-### ARG inference error is not propagated, and the optimizer selects on it
-
-The bootstrap resamples *which TE sites were drawn*. It holds the inferred ages
-fixed, so **ARG inference uncertainty is not propagated at all** by this stage.
-That would be tolerable if the ARG were reliable or if the 75-draw spread stood
-in for its error. Neither holds cleanly.
-
-**The ARG's error rate is measurable.** On chr10 TE sites, where insertion-is-
-derived gives ground truth, the ARG calls polarity wrong at 13.6% of sites and
-9.2% of sites where all 75 draws agree (see C5 below).
-
-**The across-draw posterior is directionally informative but not calibrated.**
-Splitting the same TE sites by whether the ARG got polarity right:
-
-| | n | median age-posterior SD |
-|---|---:|---:|
-| ARG polarity correct | 6,870 | 56,910 gen |
-| ARG polarity wrong | 1,048 | 116,119 gen (**2.04x**) |
-
-| polarity confidence | median age-posterior SD |
-|---|---:|
-| `p >= 0.99` | 42,416 gen |
-| `p < 0.90` | 176,907 gen |
-
-A wide posterior is a real 4x signal that the ARG is unsure. But among the
-narrow-posterior sites the ARG is still only ~90.8% correct, so narrow means
-*better*, not *right*, and across-draw spread understates true error.
-
-**The optimizer selects on posterior width, and in the opposite direction from
-the obvious worry.** Median across-draw age SD:
-
-| set | n sampled | median SD | ratio to TE |
-|---|---:|---:|---:|
-| TE target | 4,067 | 24,036 | 1.000 |
-| §5 hard-q50 controls | 6,000 | 20,002 | 0.832 |
-| §6 bootstrap controls | 6,000 | 14,897 | **0.620** |
-
-Controls are *better* determined than the TEs they match, and the optimizer
-selects markedly narrower posteriors than the random-walk sampler does. This is
-not incidental: a site with a narrow posterior has a sharper CDF and is more
-useful for shaping an aggregate CDF precisely, so an optimizer targeting a
-precise CDF will prefer them. **It is a plausible mechanism for the gate 7
-diversity deficit** — the useful subpopulation is smaller than the eligible one.
-
-The consequence is structural rather than a tuning issue. Matching operates on
-posterior-*mean* CDFs, so it matches the convolution of true ages with inference
-uncertainty, not the true age distribution. When the target carries more
-per-site smearing than the controls, the optimizer can only reproduce the
-target's smeared CDF by spreading the controls' *true* ages more widely than the
-TEs' true ages are spread. Age matching on posterior means is therefore not the
-same as age matching, and the gap grows with the difference in posterior width
-between the arms.
-
-Worth testing before this stage is adopted: posterior width as a matching
-covariate alongside age, and whether the §5/§6 difference in selected width
-changes any downstream conclusion.
 
 ### T5 — production run, 100 replicates: **complete**
 
@@ -1243,10 +1314,12 @@ target:
 
 Optimising toward a precise CDF concentrates selection on SNPs that are
 unusually effective at repairing particular bins - the mechanism plan §8 warns
-about, now measured. 25% fewer unique controls and 2.3x the maximum reuse means
-the effective replicate count for Phi-SFS is lower here than for the sampler
-this stage is meant to replace, which weighs directly against it in the gate-10
-comparison.
+about, now measured. 25% fewer unique controls and 2.3x the maximum reuse are
+more membership sharing than the sampler this stage is meant to replace, which
+weighs against it in the gate-10 comparison. Note that reuse bounds membership
+sharing, not an effective replicate count: that has to be estimated from the
+downstream statistic. `--disjoint-replicates`, adopted after this measurement,
+removes the membership sharing entirely.
 
 ### T3 — pilot reproduction on 75 draws
 
@@ -1330,50 +1403,6 @@ an hour at five-way concurrency. **C4 (distributed execution) is therefore a
 convenience for this target size, not a blocker** — revisit at the 35,512- and
 185,232-site targets in T9, where both `n` and the CDF cache grow.
 
-### C1 / gate 2 — spatial dependence: **resolved, iid retained**
-
-`te_bootstrap_dependence.py`, 2,000 replicates per arm, in-gene target on the
-75-draw store.
-
-Dependence exists but is short-range. The variogram gives semivariance over
-total variance of 0.668 below 10 kb, 0.924 at 10-100 kb, and ~0.99 beyond 1 Mb;
-Moran's I is 0.0207 against a null expectation of -2.5e-4. That matches maize LD
-decaying within a few kb. Median within-chromosome TE spacing is 153 kb, so most
-TE pairs are far outside the correlated range.
-
-Resampling single-linkage clusters rather than sites:
-
-| linkage | clusters | obs q50 | perm q50 | excess q50 | obs q95 | perm q95 | excess q95 |
-|---:|---:|---:|---:|---:|---:|---:|---:|
-| 0 (iid) | 4,067 | 1479.23 | 1462.77 | 1.0113 | 3337.90 | 3311.25 | 1.0080 |
-| 1 kb | 3,819 | 1509.27 | 1459.21 | 1.0343 | 3328.57 | 3303.49 | 1.0076 |
-| 10 kb | 3,203 | 1529.55 | 1483.95 | 1.0307 | 3475.30 | 3329.04 | 1.0439 |
-
-Two things make this readable. The iid q50 of 1479.23 reproduces the target's
-independently built threshold of 1480.48 to within 0.08%, which validates the
-machinery end to end. And the link=0 row is a **noise floor**: every cluster is
-a singleton there, so observed and permuted are the same experiment, and their
-1.1% q50 difference is pure Monte Carlo variation between two 2,000-replicate
-runs.
-
-Against that floor, the dependence signal at LD scale is ~2-3% on q50 (3.4%
-excess at 1 kb) and nothing at q95 (0.8% excess, below the floor). Correcting
-for it would move the acceptance threshold from 1480 to roughly 1510, and the
-direction is conservative: the iid threshold is the *tighter* one, so matched
-sets are held to a slightly stricter tolerance than the data strictly require.
-
-**Decision: retain the iid multinomial bootstrap.** A genomic-block or cluster
-bootstrap is not required for this data. The gate is closed by evidence rather
-than assumption, and `te_bootstrap_dependence.py` reproduces it.
-
-Two method notes worth keeping. Blocking by *count* of consecutive sites is the
-wrong unit and was tried first: at 153 kb median spacing, two consecutive sites
-span thirty times the correlation range, so fixed-length blocks measured the
-mechanical variance of resampling fewer, larger units and suggested a spurious
-5-11% widening. And the permuted arm is what separates that mechanical term from
-dependence; without it, the cluster rows above would have been over-read the same
-way.
-
 ### C5 — ancestral states extracted, and a new differential risk
 
 `build_ancestral_states.py` completed over all 75 draws. Every draw resolved
@@ -1431,9 +1460,9 @@ mixture from the ancestral table.
 The TE convention is fixed and confirmed: **all 12,614 chr10 TE records are
 `A`/`G`**, with no other combination, so REF=`A` is absence and ALT=`G` is the
 insertion. Because insertion is the derived state, `ancestral == REF` holds at
-every TE site, which is exactly what `--ancestral-mode ref` already computes.
-The TE arm therefore needs no new code — only the control arm consults the
-ancestral table.
+every TE site, so TE polarity is a fixed convention rather than a lookup. The TE
+arm therefore needs no new code — only the control arm consults the ancestral
+table.
 
 #### The TE sites are a free calibration set, and they show `p` is overconfident
 
@@ -1529,5 +1558,10 @@ ratios, because the traces are the evidence that the epoch budget was calibrated
 rather than assumed. Apply that to T3, T4, and T5.
 
 Update `BOOTSTRAP_TARGET_MATCHING_PLAN.md` §12 and README §6 as gates close.
-Neither the README's "not yet cleared for production" banner nor the §5-as-reference
-recommendation may be relaxed while any gate in §5 above is open.
+
+The original rule here — that the README's "not yet cleared for production"
+banner and the §5-as-reference recommendation could not be relaxed while any
+gate stayed open — has been discharged for the **matching** stages: every gate
+in §5 above is closed or superseded, and README now recommends §6 and marks §5
+as retained. It still binds the **Phi-SFS** stage, which remains uncleared while
+C2 and the chromosome 1-9 VCF are outstanding, and README says so.

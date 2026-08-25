@@ -1,5 +1,13 @@
 # Swap-chain age matching on Farm/Quobyte
 
+> **This is the retained hard-q50 workflow (README §5), not the production
+> path.** Bootstrap-target matching (README §6) replaced it as the reported
+> result, and it is no longer a prerequisite for that stage: the matcher's
+> `--seed-sets` option is gone and each restart is a stratified draw from the
+> target's own age strata. `run_bootstrap_matching.sbatch` is the production
+> launcher. Use this runbook to reproduce an earlier analysis or to run a
+> labelled sensitivity analysis.
+
 This runbook produces 100 posterior-age-matched SNP sets for every TE dataset.
 The production layout is ten independently seeded chains with ten saved states
 per chain. Each chain is a separate one-CPU SLURM array task; no node holds all
@@ -85,15 +93,22 @@ matched sets. Neither directory field denotes a single file.
 
 Target construction stages the interval store and creates a temporary float32
 TE-by-age CDF matrix under `$TMPDIR`. For about 185,000 TEs at the measured age
-range, allow roughly 16--18 GiB beyond the staged store. The supplied launcher
+range, allow roughly 27 GB beyond the staged store: the matrix is
+`n_TE x (maximum_above / bin_width) x 4` bytes, and the 75-draw production store
+has `maximum_above` 36,744,633, giving 36,746 grid points rather than the
+~22,900 an earlier two-draw store implied. Measured: 16.0 GB peak for a
+35,512-site target. The supplied launcher
 starts at one CPU and 96 GiB.
 
 ### Chain jobs
 
 One chain keeps a selected-row float64 CDF cache of approximately
-`8 * n * B` bytes for target size `n` and exact grid length `B`. At `n=35,000`
-and `B=22,000`, this is about 5.7 GiB. Each chain task requests one CPU and 32
-GiB; replace that provisional request with measured Linux `MaxRSS`.
+`8 * n * B` bytes for target size `n` and exact grid length `B`. That formula
+badly understates the real requirement, because resident pages of the mmapped
+18.2 GB store also count toward RSS. Measured on the production store: 14.6 GB
+peak for a single chain at n=4,067, against 1.2 GB from the cache formula, and
+26.9 GB for three concurrent chains at n=35,512. Size chain jobs from those
+figures, not from the formula.
 
 Ten chain tasks may run on different nodes. Each stages the same immutable
 interval store into its own `$TMPDIR/interval_store`. This duplicates temporary
@@ -283,8 +298,10 @@ require the expected Git commit and reject `git_dirty: true`.
 
 Compute the downstream statistic once for every row of `row_indices.npy`.
 Preserve `chain_index.npy` and `sample_index.npy` when constructing the matched
-null distribution. The 100 states are not guaranteed to be independent;
-correlation is within each ten-state chain.
+null distribution. The 100 states are not independent; correlation is within
+each ten-state chain, and membership is shared across sets. Neither the overlap
+heuristic nor the W1 autocorrelation is an effective replicate count for another
+statistic — estimate that from the statistic itself.
 
 For each scientific statistic:
 

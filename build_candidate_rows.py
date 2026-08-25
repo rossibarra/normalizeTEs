@@ -93,10 +93,17 @@ def build(store: object, exclusion_rows: np.ndarray,
     the universe is restricted to those rows first, which is how a control pool
     is held to the same quality filters as the matching target.
     """
+    eligible = np.asarray(store.eligible)
     if inclusion_rows is None:
-        universe = np.flatnonzero(np.asarray(store.eligible)).astype(np.int64, copy=False)
+        universe = np.flatnonzero(eligible).astype(np.int64, copy=False)
     else:
+        # Intersect with eligibility rather than trusting the caller. The
+        # resolver upstream already drops ineligible rows, but `build` is a
+        # public entry point and a candidate universe containing an ineligible
+        # row is rejected later by `eligible_candidates`, surfacing as a
+        # confusing downstream error rather than here.
         universe = np.unique(np.asarray(inclusion_rows, dtype=np.int64))
+        universe = universe[eligible[universe]]
     return np.setdiff1d(universe, exclusion_rows, assume_unique=True)
 
 
@@ -156,15 +163,50 @@ def main(argv: list[str] | None = None) -> int:
         "software": software_provenance(),
     }
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    temporary = args.output.with_name(f".{args.output.name}.tmp.{os.getpid()}")
-    with temporary.open("wb") as handle:
-        np.save(handle, candidates, allow_pickle=False)
-    os.replace(temporary, args.output)
-
     report_path = args.report or args.output.with_suffix(args.output.suffix + ".json")
-    report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n",
-                           encoding="utf-8")
+    # Resolve before comparing: two different spellings of one path must not slip
+    # through and have the JSON overwrite the array, which the code would then
+    # cheerfully report as two successful writes.
+    resolved = {
+        "output": args.output.resolve(),
+        "report": report_path.resolve(),
+    }
+    for label, path in list(resolved.items()):
+        if path.exists():
+            raise SystemExit(
+                f"{label} already exists: {path}. Refusing to overwrite a "
+                "published candidate universe; remove it or choose another path."
+            )
+    if resolved["output"] == resolved["report"]:
+        raise SystemExit("--output and --report must be different paths")
+    inputs = {p.resolve() for p in list(args.exclude_positions)
+              + list(args.include_positions or [])}
+    collisions = inputs.intersection(resolved.values())
+    if collisions:
+        raise SystemExit(
+            "output paths collide with input position lists: "
+            + ", ".join(str(p) for p in sorted(collisions))
+        )
+    # The array and its report are one artifact: the report carries the digest
+    # and the provenance that make the array interpretable. Publishing the array
+    # first and then writing the report in place leaves a candidate universe
+    # with no record of how it was built if the second write fails. Stage both,
+    # then rename both.
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    staged_rows = args.output.with_name(f".{args.output.name}.tmp.{os.getpid()}")
+    staged_report = report_path.with_name(f".{report_path.name}.tmp.{os.getpid()}")
+    try:
+        with staged_rows.open("wb") as handle:
+            np.save(handle, candidates, allow_pickle=False)
+        staged_report.write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(staged_rows, args.output)
+        os.replace(staged_report, report_path)
+    except BaseException:
+        for leftover in (staged_rows, staged_report):
+            leftover.unlink(missing_ok=True)
+        raise
 
     print(f"store rows      {total:,}")
     print(f"eligible        {eligible:,}")

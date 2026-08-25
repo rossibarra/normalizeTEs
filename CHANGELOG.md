@@ -5,8 +5,8 @@
 - Adds `bootstrap_target_matcher.py`, which assigns every control replicate a
   reproducible bootstrap TE age CDF and minimizes exact-grid Wasserstein-1
   distance to that target rather than sampling against one fixed q50 boundary.
-- Uses prespecified closest and diversity restarts, improvement-only SNP swaps,
-  relative material-improvement convergence, and certified best-state output.
+- Uses prespecified stratified restarts, improvement-only SNP swaps, relative
+  material-improvement convergence, and certified best-state output.
 - Records bootstrap counts and targets, complete restart traces, selected and
   per-restart rows/CDFs, optimizer QC, all three paired W1 distances, matching
   error ratios, triangle checks, coordinate arrays, and SNP-reuse diagnostics.
@@ -16,10 +16,14 @@
 - Documents that matching-error thresholds diagnose optimizer convergence,
   while scientific validation requires SNP-to-observed distances to reproduce
   bootstrap-target-to-observed distances across the center and tails.
-- Retains hard-q50 matching as a sensitivity analysis and records the remaining
-  production gates: linkage-aware bootstrap selection, full-posterior
-  calibration, W1-repair versus SFS bias checks, effective replicate counts,
-  and distributed HPC execution.
+- Makes bootstrap-target matching the recommended matching stage and retains
+  hard-q50 matching for reproducing earlier analyses. `--disjoint-replicates` is
+  the production setting: it guarantees that the published sets share no control
+  rows, which is not the same as statistical independence and does not give an
+  effective replicate count of 100.
+- Records the remaining gates, all downstream of matching: the W1-repair versus
+  SFS bias diagnostic, an effective replicate count estimated from the Phi-SFS
+  scores themselves, and the chromosome 1-9 input VCF.
 
 Round 7 review (`CODE_REVIEW_ROUND7.md`) fixes, folded in before release:
 
@@ -49,11 +53,33 @@ Round 7 review (`CODE_REVIEW_ROUND7.md`) fixes, folded in before release:
 - Rejects `--output` equal to or nested inside `--work-dir`, which previously
   published a result and then deleted it while reporting success.
 - Publishes bootstrap and restart seeds, per-restart distances, ratios, QC,
-  runtimes, and per-epoch proposal counts, plus `seed_sets_digest`.
-- Documents which matching workflow is primary, labels bootstrap-target
-  matching experimental and pilot-only, shows the Φ-SFS command for both
+  runtimes, and per-epoch proposal counts.
+- Documents which matching workflow is primary, shows the Φ-SFS command for both
   bundle types, and brings the estimand caveats and the W1-repair-versus-SFS
   bias risk from the plan into the README.
+
+Post-release CLI simplification, folded into the same version:
+
+- Removes `--seed-sets`, `--closest-restarts` and `--diverse-restarts` from
+  `bootstrap_target_matcher.py`. Restarts are now stratified draws from the
+  target's own equal-mass age strata and `--restarts` sets their count, so the
+  §5 hard-q50 sampler is no longer a prerequisite for §6. Measured on the
+  4,067-site in-gene target, stratified initialization costs about 6% on the
+  median `E_r` (52.10 against 50.09 generations, on a 1,480-generation
+  acceptance threshold) with identical QC (100/100) and concordance
+  (`cor(B_r, O_r)` 0.99984 against 0.99986).
+- Removes `--search-grid-spacing`: the coarse swap screen is always a geometric
+  sub-sample of the exact grid. A uniform 20,000-generation screen put 50.06% of
+  the in-gene target's age mass in its first cell, giving +21.9% relative age
+  error at the 10% CDF quantile against -0.2% for the geometric screen.
+- Removes `--distance` and `--log-age-offset` from `bootstrap_target_matcher.py`
+  and `te_age_target.py`; W1 is always linear.
+- Makes `--ancestral-table` required in `phi_sfs.py` and removes
+  `--ancestral-mode` and `--ancestral-info`. Polarity is inferred by SINGER and
+  read off the ARG, so it cannot come from the VCF: 31% of chromosome-10 sites
+  are REF/ALT swapped relative to the ARG's calls.
+- Replaces ten experimental SLURM launchers with one parameterised production
+  launcher, `run_bootstrap_matching.sbatch`.
 
 ## v0.3.0 — 2026-08-16
 

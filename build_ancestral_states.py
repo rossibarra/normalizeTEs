@@ -1,17 +1,21 @@
 """Accumulate per-site ancestral-allele counts across posterior ARG draws.
 
 The ancestral allele is not a property of the input VCF. SINGER infers it, so it
-lives in each ARG's site table and differs between draws. `phi_sfs.py` can read
-polarity only from a VCF's REF column or an INFO field, so a separate table is
-required; this command builds it.
+lives in each ARG's site table and differs between draws. `phi_sfs.py` therefore
+takes polarity for control SNPs from the table this command builds, rather than
+from any VCF annotation.
 
 For every row of an interval store, the output records how many draws called
-each of A, C, G, T ancestral, together with the number of draws in which the
-site appeared at all. The posterior proportion for an allele is its count
-divided by that present-draw count -- conditioned on presence, so every site
-has a well-defined proportion regardless of how many draws contain it. That
-conditioning is what lets a downstream weighted-average SFS use every requested
-site without an intersection or a fallback rule.
+each of A, C, G, T ancestral, together with `present_draw_count`: the number of
+draws that gave the site a *usable* ancestral call, meaning a single uppercase
+A/C/G/T. That is narrower than raw presence -- a draw containing the site but
+annotating it with a multi-character or non-ACGT state is not counted -- so do
+not read the array as a missingness statistic.
+
+The posterior proportion for an allele is its count divided by that usable-call
+count, which gives every site a well-defined proportion regardless of how many
+draws contain it, and is what lets a downstream weighted-average SFS use every
+requested site without an intersection or a fallback rule.
 
 Downstream use is a *linear* mixture: a site with observed derived count `k`
 among `n` callable samples contributes `p*h(k,n) + (1-p)*h(n-k,n)`, which is
@@ -36,6 +40,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -138,15 +143,36 @@ def accumulate(store: object, tree_files: list[Path], *, chromosome: str | None,
 
 
 def _save(output: Path, counts: np.ndarray, present: np.ndarray, metadata: dict) -> None:
-    output.mkdir(parents=True, exist_ok=True)
-    for name, array in (("ancestral_counts", counts), ("present_draw_count", present)):
-        temporary = output / f".{name}.npy.tmp.{os.getpid()}"
-        with temporary.open("wb") as handle:
-            np.save(handle, array, allow_pickle=False)
-        os.replace(temporary, output / f"{name}.npy")
-    (output / "metadata.json").write_text(
-        json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    """Publish the table atomically, refusing to overwrite an existing one.
+
+    Writing the two arrays in place and then the metadata leaves a hybrid
+    directory if the run is interrupted between them -- arrays from one run
+    beside a schema document that still looks valid. Staging a sibling directory
+    and renaming it makes the published table either wholly old or wholly new,
+    and `complete` is written only once both arrays are on disk.
+    """
+    if output.exists():
+        raise SystemExit(
+            f"output already exists: {output}. Refusing to overwrite a published "
+            "ancestral table; remove it explicitly or choose another path."
+        )
+    staging = output.with_name(f".{output.name}.staging.{os.getpid()}")
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+    try:
+        for name, array in (("ancestral_counts", counts),
+                            ("present_draw_count", present)):
+            with (staging / f"{name}.npy").open("wb") as handle:
+                np.save(handle, array, allow_pickle=False)
+        (staging / "metadata.json").write_text(
+            json.dumps({**metadata, "complete": True}, indent=2, sort_keys=True)
+            + "\n", encoding="utf-8",
+        )
+        os.replace(staging, output)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -161,6 +187,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="chromosome label when each ARG covers one chromosome")
     parser.add_argument("--merge", type=Path, nargs="+",
                         help="per-task output directories to sum into --output")
+    parser.add_argument(
+        "--expect-draws", type=int,
+        help="number of draws the merged table must contain; without it a "
+             "merge cannot tell a complete gather from a silently partial one",
+    )
     return parser.parse_args(argv)
 
 
@@ -174,12 +205,91 @@ def main(argv: list[str] | None = None) -> int:
     present = np.zeros(n_rows, dtype=np.uint16)
 
     if args.merge:
-        detail: list[str] = []
+        # Summing parts blindly is how a merge silently produces a plausible but
+        # wrong table: parts from different stores, a part counted twice, or a
+        # previously merged table passed as though it were a part. Each of those
+        # yields a complete-looking output with inflated or mixed counts, so the
+        # parts have to agree on identity and contribute a disjoint draw set.
+        detail: list[dict] = []
+        seen_paths: set[Path] = set()
+        seen_draws: set[str] = set()
+        total = np.zeros((n_rows, 4), dtype=np.uint64)
+        total_present = np.zeros(n_rows, dtype=np.uint64)
         for part in args.merge:
-            counts += np.load(part / "ancestral_counts.npy", allow_pickle=False)
-            present += np.load(part / "present_draw_count.npy", allow_pickle=False)
-            detail.append(str(part))
-        report = {"merged": detail}
+            resolved_part = part.resolve()
+            if resolved_part in seen_paths:
+                raise SystemExit(f"--merge lists {part} more than once")
+            seen_paths.add(resolved_part)
+            part_meta = json.loads(
+                (part / "metadata.json").read_text(encoding="utf-8"))
+            if part_meta.get("schema_version") != "ancestral-state-counts-v1":
+                raise SystemExit(f"{part}: not an ancestral-state table")
+            if not part_meta.get("complete"):
+                raise SystemExit(f"{part}: table is incomplete")
+            if part_meta.get("store_content_sha256") != metadata_store.get(
+                    "content_sha256"):
+                raise SystemExit(
+                    f"{part}: built from a different interval store than --store")
+            if list(part_meta.get("bases", [])) != list(BASES):
+                raise SystemExit(f"{part}: base ordering differs")
+            if "merged" in part_meta:
+                raise SystemExit(
+                    f"{part}: already a merged table; merging it again would "
+                    "double-count every draw it contains")
+            # Identify draws by resolved path plus site count rather than the
+            # recorded string: two aliases of one file (a symlink, a relative
+            # and an absolute spelling) would otherwise look like two draws.
+            draws = [
+                f"{Path(entry['path']).resolve()}:{entry.get('sites')}"
+                for entry in part_meta.get("draws", [])
+            ]
+            if not draws:
+                raise SystemExit(f"{part}: records no contributing draws")
+            overlap = seen_draws.intersection(draws)
+            if overlap:
+                raise SystemExit(
+                    f"{part}: draws already counted by an earlier part: "
+                    + ", ".join(sorted(overlap)[:3])
+                )
+            seen_draws.update(draws)
+            # Accumulate in uint64: uint16 parts wrap at 65,536, which a large or
+            # accidentally repeated merge could reach without any error.
+            part_counts = np.load(part / "ancestral_counts.npy", allow_pickle=False)
+            part_present = np.load(part / "present_draw_count.npy", allow_pickle=False)
+            # Check shape and dtype before adding. A (n_rows, 1) counts array or
+            # a (1,) presence array broadcasts silently against the accumulator
+            # and corrupts every row rather than raising.
+            for name, array, shape in (
+                ("ancestral_counts", part_counts, (n_rows, 4)),
+                ("present_draw_count", part_present, (n_rows,)),
+            ):
+                if array.shape != shape:
+                    raise SystemExit(
+                        f"{part}: {name}.npy has shape {array.shape}, expected {shape}")
+                if array.dtype.kind != "u":
+                    raise SystemExit(
+                        f"{part}: {name}.npy has dtype {array.dtype}, expected unsigned")
+            if np.any(part_counts.sum(axis=1) > part_present):
+                raise SystemExit(
+                    f"{part}: some rows record more ancestral calls than draws")
+            total += part_counts.astype(np.uint64)
+            total_present += part_present.astype(np.uint64)
+            detail.append({"path": str(resolved_part), "draws": len(draws)})
+        if total.max() > np.iinfo(np.uint16).max or \
+                total_present.max() > np.iinfo(np.uint16).max:
+            raise SystemExit(
+                "merged counts exceed the uint16 output range; the table format "
+                "needs widening before this many draws can be combined"
+            )
+        counts = total.astype(np.uint16)
+        present = total_present.astype(np.uint16)
+        if args.expect_draws is not None and len(seen_draws) != args.expect_draws:
+            raise SystemExit(
+                f"merge produced {len(seen_draws)} distinct draws, expected "
+                f"{args.expect_draws}; a part is missing or duplicated"
+            )
+        report = {"merged": detail, "merged_draws": len(seen_draws),
+                  "expected_draws": args.expect_draws}
     else:
         if not args.trees:
             raise SystemExit("no tree files given and --merge not used")
@@ -206,7 +316,7 @@ def main(argv: list[str] | None = None) -> int:
     metadata = {
         "schema_version": "ancestral-state-counts-v1",
         "bases": list(BASES),
-        "store": str(args.store),
+        "store": str(Path(args.store).resolve()),
         "store_schema": store_schema(store),
         "store_content_sha256": metadata_store.get("content_sha256"),
         "store_rows": n_rows,

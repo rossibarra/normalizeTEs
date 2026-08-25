@@ -9,9 +9,8 @@ import os
 import shutil
 import tempfile
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Sequence
 
 import numpy as np
 
@@ -61,104 +60,12 @@ def wasserstein_1(
     return float(np.sum(np.abs(a[:-1] - b[:-1]) * np.diff(ages), dtype=np.float64))
 
 
-LOG_AGE_OFFSET = 1_000.0
-DISTANCE_CHOICES = ("linear", "log-age")
-
-
-def age_grid_weights(
-    bin_centers: np.ndarray,
-    *,
-    distance: str = "linear",
-    offset: float = LOG_AGE_OFFSET,
-) -> np.ndarray:
-    """Return the per-cell integration weights for a left-endpoint CDF distance.
-
-    ``linear`` returns ``np.diff(ages)``, i.e. exactly the weights
-    ``wasserstein_1`` uses, so the two metrics share one code path for
-    everything except the weight vector.
-
-    ``log-age`` returns ``np.diff(np.log(ages + offset))``. A displacement is
-    then priced by the fraction of a doubling it spans rather than by
-    generations, so an equal *relative* error at age 1,000 and at age 200,000
-    costs the same. Under ``linear`` weighting it does not: the same relative
-    error at 200,000 costs 200x more, which is why matched control sets track
-    the old tail of a TE age distribution almost exactly and the young end
-    loosely.
-    """
-    ages = np.asarray(bin_centers, dtype=np.float64)
-    if ages.ndim != 1 or ages.size < 2 or np.any(np.diff(ages) <= 0):
-        raise ValueError("bin_centers must be a strictly increasing 1-D array")
-    if distance == "linear":
-        return np.diff(ages)
-    if distance == "log-age":
-        if not np.isfinite(offset) or offset <= 0:
-            raise ValueError("log-age offset must be finite and positive")
-        if ages[0] < 0:
-            raise ValueError("log-age weighting requires nonnegative ages")
-        return np.diff(np.log(ages + float(offset)))
-    raise ValueError(f"unknown distance metric: {distance!r}")
-
-
-def wasserstein_1_log_age(
-    cdf_a: np.ndarray,
-    cdf_b: np.ndarray,
-    bin_centers: np.ndarray,
-    *,
-    offset: float = LOG_AGE_OFFSET,
-) -> float:
-    """Left-endpoint CDF distance integrated against ``d log(age + offset)``.
-
-    This is the log-age analogue of :func:`wasserstein_1`: same CDF difference,
-    same left-endpoint rule, but each cell is weighted by its width in log age
-    instead of in generations. Units are therefore log-age (dimensionless nats),
-    and values are NOT comparable with :func:`wasserstein_1` outputs.
-
-    ``offset`` exists because the analysis grid starts at age zero, where
-    ``log`` diverges. It defaults to 1,000 generations, one bin width of the
-    production grid, which is the natural choice for two reasons. First, ages
-    below one bin width are not resolved by the grid at all, so no metric built
-    on it can distinguish age 1 from age 999; softening the log below that scale
-    discards nothing real. Second, it gives the first cell ``[0, bin_width)`` a
-    weight of exactly ``log 2`` -- one doubling -- which is the finest
-    multiplicative step the grid can express, so the youngest cell is priced on
-    the same footing as every other cell rather than dominating the integral.
-    Pass a different offset only together with a different ``bin_width``, and
-    record it: the acceptance threshold is not transferable across offsets.
-    """
-    a = np.asarray(cdf_a)
-    b = np.asarray(cdf_b)
-    weights = age_grid_weights(bin_centers, distance="log-age", offset=offset)
-    return float(np.sum(np.abs(a[:-1] - b[:-1]) * weights, dtype=np.float64))
-
-
-def distance_function(
-    name: str, *, offset: float = LOG_AGE_OFFSET
-) -> Callable[[np.ndarray, np.ndarray, np.ndarray], float]:
-    """Return the CDF distance callable named by a ``--distance`` choice."""
-    if name == "linear":
-        return wasserstein_1
-    if name == "log-age":
-        return partial(wasserstein_1_log_age, offset=float(offset))
-    raise ValueError(f"unknown distance metric: {name!r}")
-
-
-def distance_units(name: str) -> str:
-    """Return a human-readable unit label for a distance metric."""
-    if name == "linear":
-        return "generations"
-    if name == "log-age":
-        return "log-age nats"
-    raise ValueError(f"unknown distance metric: {name!r}")
-
-
 def bootstrap_wasserstein(
     cdf_rows: np.ndarray,
     n_replicates: int,
     rng: np.random.Generator,
     batch_size: int = 256,
     *, bin_centers: np.ndarray,
-    distance: str = "linear",
-    log_age_offset: float = LOG_AGE_OFFSET,
 ) -> np.ndarray:
     """Bootstrap SNP rows and return W1 distances to the observed target.
 
@@ -174,7 +81,7 @@ def bootstrap_wasserstein(
         raise ValueError("n_replicates and batch_size must be positive")
     ages = np.asarray(bin_centers)
     target = aggregate_cdf(rows)
-    widths = age_grid_weights(ages, distance=distance, offset=log_age_offset)
+    widths = np.diff(ages)
     probabilities = np.full(rows.shape[0], 1.0 / rows.shape[0])
     output = np.empty(n_replicates, dtype=np.float64)
     for start in range(0, n_replicates, batch_size):
@@ -327,8 +234,6 @@ def build_target(
     bin_width: int = 1_000,
     scratch_dir: str | Path | None = None,
     cdf_block_rows: int = 512,
-    distance: str = "linear",
-    log_age_offset: float = LOG_AGE_OFFSET,
 ) -> TargetResult:
     """Resolve positions and calculate Stage 2 products with bounded memory."""
     positions = np.asarray(te_positions, dtype=np.float64)
@@ -368,8 +273,6 @@ def build_target(
             rng,
             batch_size,
             bin_centers=ages,
-            distance=distance,
-            log_age_offset=log_age_offset,
         )
         target = aggregate_cdf(cdf_rows)
         del cdf_rows
@@ -457,18 +360,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--missing-position-policy", choices=("error", "drop"), default="error"
     )
-    parser.add_argument(
-        "--distance", choices=DISTANCE_CHOICES, default="linear",
-        help="CDF distance used for the bootstrap tolerance: 'linear' weights "
-             "each cell by its width in generations (the published default), "
-             "'log-age' by its width in log(age + --log-age-offset), which "
-             "prices relative rather than absolute age error",
-    )
-    parser.add_argument(
-        "--log-age-offset", type=float, default=LOG_AGE_OFFSET,
-        help="generations added before taking logs under --distance log-age; "
-             "defaults to one 1,000-generation bin width",
-    )
     return parser.parse_args(argv)
 
 
@@ -501,8 +392,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         bin_width=args.bin_width,
         scratch_dir=args.scratch_dir,
         cdf_block_rows=args.cdf_block_rows,
-        distance=args.distance,
-        log_age_offset=args.log_age_offset,
     )
     boundary_set = result.boundaries
     metadata = {
@@ -541,11 +430,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             "regular-grid slope/intercept differences; O(intervals + output cells)"
             if is_interval_store(store) else "stored dense CDF"
         ),
-        "distance_metric": args.distance,
-        "distance_units": distance_units(args.distance),
-        "log_age_offset": (
-            args.log_age_offset if args.distance == "log-age" else None
-        ),
         "acceptance_quantile": args.acceptance_quantile,
         "acceptance_distance": args.acceptance_distance,
         "acceptance_threshold_source": (
@@ -564,8 +448,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     write_target(args.output, result, metadata)
     print(f"Wrote TE target to {args.output}")
     print(
-        f"W1 acceptance threshold: {result.threshold:.6g} "
-        f"{distance_units(args.distance)}"
+        f"W1 acceptance threshold: {result.threshold:.6g} generations"
     )
     return 0
 

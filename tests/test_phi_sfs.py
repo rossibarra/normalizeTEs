@@ -59,10 +59,10 @@ def test_projection_stable_at_large_n():
 
 def test_project_sites_filters_below_twenty_and_caches_pairs():
     counts = {
-        ("chr1", 1): SiteCount(derived=1, callable=19),
-        ("chr1", 2): SiteCount(derived=1, callable=20),
-        ("chr1", 3): SiteCount(derived=1, callable=21),
-        ("chr1", 4): SiteCount(derived=1, callable=21),
+        ("chr1", 1): SiteCount(alt=1, callable=19, p_alt_derived=1.0),
+        ("chr1", 2): SiteCount(alt=1, callable=20, p_alt_derived=1.0),
+        ("chr1", 3): SiteCount(alt=1, callable=21, p_alt_derived=1.0),
+        ("chr1", 4): SiteCount(alt=1, callable=21, p_alt_derived=1.0),
     }
     rows, projections, endpoints = project_sites(counts)
     assert ("chr1", 1) not in rows
@@ -76,8 +76,8 @@ def test_project_sites_filters_below_twenty_and_caches_pairs():
 
 def test_sites_are_not_renormalized_after_endpoint_removal():
     counts = {
-        ("chr1", 1): SiteCount(derived=1, callable=21),
-        ("chr1", 2): SiteCount(derived=10, callable=20),
+        ("chr1", 1): SiteCount(alt=1, callable=21, p_alt_derived=1.0),
+        ("chr1", 2): SiteCount(alt=10, callable=20, p_alt_derived=1.0),
     }
     rows, projections, endpoints = project_sites(counts)
     coordinates = [("chr1", 1), ("chr1", 2)]
@@ -94,8 +94,8 @@ def test_sites_are_not_renormalized_after_endpoint_removal():
 
 def test_accumulation_is_order_invariant_and_counts_repeats():
     counts = {
-        ("chr1", 1): SiteCount(derived=3, callable=25),
-        ("chr1", 2): SiteCount(derived=9, callable=25),
+        ("chr1", 1): SiteCount(alt=3, callable=25, p_alt_derived=1.0),
+        ("chr1", 2): SiteCount(alt=9, callable=25, p_alt_derived=1.0),
     }
     rows, projections, endpoints = project_sites(counts)
     forward = accumulate_spectrum([("chr1", 1), ("chr1", 2)], rows, projections, endpoints)
@@ -112,7 +112,7 @@ def test_accumulation_is_order_invariant_and_counts_repeats():
 
 
 def test_zero_retained_mass_fails():
-    counts = {("chr1", 1): SiteCount(derived=1, callable=10)}
+    counts = {("chr1", 1): SiteCount(alt=1, callable=10, p_alt_derived=1.0)}
     rows, projections, endpoints = project_sites(counts)
     raw_counts, _, eligible = accumulate_spectrum(
         [("chr1", 1)], rows, projections, endpoints
@@ -232,11 +232,48 @@ def _vcf_text(info: str = "."):
     return header + "\n".join(records) + "\n"
 
 
+def _ancestral_table(tmp_path, positions=(10, 20, 30, 40, 50)):
+    """A table asserting REF (`A`) is ancestral at every site, unanimously.
+
+    Every record in `_vcf_text` is `A`/`G`, so an ancestral call of `A` makes the
+    ALT allele derived with weight exactly 1. That reproduces the semantics these
+    tests were written against, when polarity came from the REF column, so their
+    hand-calculated expectations still hold. Tests that need a genuinely
+    uncertain site build their own table.
+    """
+    store = tmp_path / "fake_store"
+    store.mkdir(exist_ok=True)
+    np.save(store / "positions.npy", np.asarray(positions, dtype=np.float64))
+    (store / "metadata.json").write_text(json.dumps({
+        "chromosomes": [{"chrom": "chr1", "length": 1000, "offset": 0}],
+    }), encoding="utf-8")
+
+    table = tmp_path / "ancestral"
+    table.mkdir(exist_ok=True)
+    counts = np.zeros((len(positions), 4), dtype=np.uint16)
+    counts[:, 0] = 75                      # column 0 is "A"
+    np.save(table / "ancestral_counts.npy", counts)
+    np.save(table / "present_draw_count.npy",
+            np.full(len(positions), 75, dtype=np.uint16))
+    (table / "metadata.json").write_text(json.dumps({
+        "schema_version": "ancestral-state-counts-v1",
+        "bases": ["A", "C", "G", "T"],
+        "store": str(store),
+        "store_content_sha256": "store",   # matches the bundle fixture's digest
+        "store_rows": len(positions),
+        "complete": True,
+    }), encoding="utf-8")
+    return table
+
+
 def _run(target, matches, vcf, output, *extra):
-    return main([
+    argv = [
         "--target", str(target), "--matches", str(matches),
         "--vcf", str(vcf), "--output", str(output), *extra,
-    ])
+    ]
+    if "--ancestral-table" not in argv:
+        argv += ["--ancestral-table", str(_ancestral_table(Path(output).parent))]
+    return main(argv)
 
 
 # ------------------------------------------------------------- end to end
@@ -344,18 +381,6 @@ def test_compressed_input_is_read_and_hashed(tmp_path):
     assert np.load(tmp_path / "phi" / "phi_sfs.npy").tolist() == pytest.approx([0.5, 1.0])
 
 
-def test_alt_ancestral_reverses_polarization(tmp_path):
-    """With AA=G the ALT allele is ancestral, so k becomes n - alt_count."""
-    target, matches = _write_bundle(tmp_path)
-    vcf = tmp_path / "sites.vcf"
-    vcf.write_text(_vcf_text(info="AA=G"))
-    assert _run(target, matches, vcf, tmp_path / "phi",
-                "--ancestral-mode", "info") == 0
-    te = np.load(tmp_path / "phi" / "te_normalized_sfs.npy")
-    assert te[15] == pytest.approx(0.5)   # bin 16 = 20 - 4
-    assert te[11] == pytest.approx(0.5)   # bin 12 = 20 - 8
-    assert te[3] == pytest.approx(0)
-
 
 def test_heterozygous_calls_fail_by_default(tmp_path):
     target, matches = _write_bundle(tmp_path)
@@ -377,13 +402,6 @@ def test_heterozygous_missing_policy_drops_the_individual(tmp_path):
     assert metadata["target_eligible_sites"] == 1
     assert metadata["target_dropped_n_lt_20"] == 1
 
-
-def test_lowercase_ancestral_allele_is_rejected(tmp_path):
-    target, matches = _write_bundle(tmp_path)
-    vcf = tmp_path / "sites.vcf"
-    vcf.write_text(_vcf_text(info="AA=g"))
-    with pytest.raises(ValueError, match="neither REF"):
-        _run(target, matches, vcf, tmp_path / "phi", "--ancestral-mode", "info")
 
 
 def test_missing_site_is_reported(tmp_path):
@@ -437,11 +455,14 @@ def test_absent_store_provenance_is_rejected(tmp_path):
         _run(target, matches, vcf, tmp_path / "phi")
 
 
-def test_null_store_provenance_is_accepted(tmp_path):
-    """A dense store records neither digest, and no other step rejects that.
+def test_null_store_provenance_blocks_ancestral_binding(tmp_path):
+    """Null store digests are tolerated everywhere except table authentication.
 
-    The keys must still be present in both bundles; only their being null is
-    tolerated. `target_digest` is unconditional, so the bundles stay bound.
+    A dense store records no content digest, and `target_digest` alone binds the
+    target to its matched sets, so null provenance was previously harmless. The
+    ancestral table has no other identity to bind against: accepting null would
+    accept a table from any store, which is the silent wrong-polarity failure the
+    check exists to prevent. So it is fatal here and only here.
     """
     target, matches = _write_bundle(tmp_path)
     for path in (target / "metadata.json", matches / "metadata.json"):
@@ -451,8 +472,29 @@ def test_null_store_provenance_is_accepted(tmp_path):
         path.write_text(json.dumps(metadata))
     vcf = tmp_path / "sites.vcf"
     vcf.write_text(_vcf_text())
-    assert _run(target, matches, vcf, tmp_path / "phi") == 0
-    assert np.load(tmp_path / "phi" / "phi_sfs.npy").tolist() == pytest.approx([0.5, 1.0])
+    with pytest.raises(ValueError, match="no store content digest"):
+        _run(target, matches, vcf, tmp_path / "phi")
+
+
+def test_ancestral_table_from_another_store_is_rejected(tmp_path):
+    """The digest is the identity, so a table from elsewhere must not be used.
+
+    Row coordinates overlap between stores, so a foreign table yields a
+    complete, plausible result with the wrong control polarity rather than an
+    error. Only the digest catches it.
+    """
+    target, matches = _write_bundle(tmp_path)
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(_vcf_text())
+    other = tmp_path / "other"
+    other.mkdir()
+    table = _ancestral_table(other)
+    metadata = json.loads((table / "metadata.json").read_text())
+    metadata["store_content_sha256"] = "a-different-store"
+    (table / "metadata.json").write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match="different interval store"):
+        _run(target, matches, vcf, tmp_path / "phi",
+             "--ancestral-table", str(table))
 
 
 def test_null_store_provenance_still_requires_a_matching_target(tmp_path):
@@ -553,3 +595,63 @@ def test_duplicate_controls_within_a_set_are_rejected(tmp_path):
     vcf.write_text(_vcf_text())
     with pytest.raises(ValueError, match="duplicate control rows"):
         _run(target, matches, vcf, tmp_path / "phi")
+
+
+def test_table_calling_alt_ancestral_reverses_polarization(tmp_path):
+    """Flipping the table mirrors the control spectra and leaves the TE one alone.
+
+    Every record is `A`/`G`. For a control SNP, a table naming `A` ancestral
+    makes the derived count its ALT count, and naming `G` ancestral makes it
+    `n - alt`, so the two control spectra must be mirror images. TE sites are
+    polarized by biology and never consult the table, so the TE spectrum must be
+    identical across the two runs -- which is the asymmetry the two-arm design
+    exists to produce.
+    """
+    target, matches = _write_bundle(tmp_path)
+    vcf = tmp_path / "v.vcf"
+    vcf.write_text(_vcf_text(), encoding="utf-8")
+
+    fwd = tmp_path / "fwd"; fwd.mkdir()
+    forward = _ancestral_table(fwd)
+    out_f = tmp_path / "out_forward"
+    assert _run(target, matches, vcf, out_f, "--ancestral-table", str(forward)) == 0
+
+    rev = tmp_path / "rev"; rev.mkdir()
+    reversed_table = _ancestral_table(rev)
+    counts = np.load(reversed_table / "ancestral_counts.npy")
+    counts[:, 0] = 0                       # not A
+    counts[:, 2] = 75                      # G, the ALT allele, is ancestral
+    np.save(reversed_table / "ancestral_counts.npy", counts)
+    out_r = tmp_path / "out_reversed"
+    assert _run(target, matches, vcf, out_r, "--ancestral-table",
+                str(reversed_table)) == 0
+
+    # The TE spectrum is polarized by biology and must be untouched by the table.
+    np.testing.assert_allclose(
+        np.load(out_f / "te_normalized_sfs.npy"),
+        np.load(out_r / "te_normalized_sfs.npy"), atol=1e-12,
+    )
+    # The control spectra are polarized by the table, so they must mirror.
+    a = np.load(out_f / "snp_normalized_sfs.npy")
+    b = np.load(out_r / "snp_normalized_sfs.npy")
+    np.testing.assert_allclose(a, b[:, ::-1], atol=1e-12)
+
+
+def test_site_the_table_cannot_orient_is_rejected(tmp_path):
+    """A draw naming a third base cannot orient the site, and none may remain.
+
+    Conditioning on draws that named one of the two observed alleles is what
+    makes the weight meaningful. If no draw named either, there is no weight to
+    compute and guessing one would invent polarity the ARG never supplied.
+    """
+    target, matches = _write_bundle(tmp_path)
+    vcf = tmp_path / "v.vcf"
+    vcf.write_text(_vcf_text(), encoding="utf-8")
+    bad = tmp_path / "bad"; bad.mkdir()
+    table = _ancestral_table(bad)
+    counts = np.load(table / "ancestral_counts.npy")
+    counts[:] = 0
+    counts[:, 1] = 75                      # every draw says C, neither A nor G
+    np.save(table / "ancestral_counts.npy", counts)
+    with pytest.raises(ValueError, match="cannot be polarized"):
+        _run(target, matches, vcf, tmp_path / "out", "--ancestral-table", str(table))

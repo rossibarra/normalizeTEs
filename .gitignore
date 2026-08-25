@@ -33,3 +33,7 @@ results/*.err
 
 # Position lists are inputs staged from the upstream analysis directory
 *.pos.txt
+
+# Generated source snapshots and doc backups
+results/snapshot-*/
+*.bak2

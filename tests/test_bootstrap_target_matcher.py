@@ -1,5 +1,7 @@
 import csv
 import json
+import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -12,33 +14,11 @@ from bootstrap_target_matcher import (
     log_search_grid,
     main,
     optimize_restart,
-    select_seed_indices,
     validate_restart_result,
 )
-from te_age_target import wasserstein_1, wasserstein_1_log_age
 from snp_age_store import open_snp_age_store
 from swap_control_sampler import analysis_points, eligible_candidates, search_grid
 from test_swap_control_sampler import _interval_store, _target
-
-
-def _seed_bundle(path, store_path, target_path):
-    store = open_snp_age_store(store_path)
-    ages = np.load(target_path / "age_bins.npy")
-    points = analysis_points(ages)
-    rows = np.array([[2, 3], [4, 5], [3, 6]], dtype=np.int64)
-    cdfs = np.stack([
-        store.aggregate_cdf_at(row, points, side="left", weighting="interval")
-        for row in rows
-    ])
-    path.mkdir()
-    np.save(path / "row_indices.npy", rows)
-    np.save(path / "cdfs.npy", cdfs)
-    (path / "metadata.json").write_text(json.dumps({
-        "source_store_schema": store.metadata["schema_version"],
-        "source_catalog_sha256": "fixture-catalog",
-        "source_store_content_sha256": "a" * 64,
-    }))
-    return path
 
 
 def test_bootstrap_counts_and_cdf_are_reproducible():
@@ -54,22 +34,13 @@ def test_bootstrap_counts_and_cdf_are_reproducible():
         bootstrap_cdf(np.array([1]), rows)
 
 
-def test_seed_derivation_and_selection_are_stable():
-    cdfs = np.array([
-        [0.0, 0.2, 1.0],
-        [0.0, 0.5, 1.0],
-        [0.0, 0.8, 1.0],
-    ])
-    target = cdfs[1]
-    ages = np.array([0.0, 1.0, 2.0])
-    selected = select_seed_indices(
-        cdfs, target, ages, closest=1, diverse=1,
-        rng=np.random.default_rng(11),
-    )
-    assert selected[0] == (1, "closest")
-    assert selected[1][1] == "diverse"
+def test_seed_derivation_is_stable():
     assert derive_seed(3, "x", 2) == derive_seed(3, "x", 2)
     assert derive_seed(3, "x", 2, 0) != derive_seed(3, "x", 2, 1)
+    # The bootstrap seed and every restart seed of the same replicate differ,
+    # so restarts are independent stratified draws rather than repeats.
+    assert derive_seed(3, "x", 2) != derive_seed(3, "x", 2, 0)
+    assert derive_seed(3, "x", 2, 0) != derive_seed(3, "y", 2, 0)
 
 
 def test_exact_optimizer_trace_is_monotone_and_certified(tmp_path):
@@ -81,7 +52,7 @@ def test_exact_optimizer_trace_is_monotone_and_certified(tmp_path):
     ages = np.load(target_path / "age_bins.npy")
     candidates = eligible_candidates(store, target_rows)
     config = OptimizerConfig(
-        replicates=1, closest_restarts=1, diverse_restarts=0,
+        replicates=1, restarts=1,
         min_epochs=2, max_epochs=4, patience=2,
         material_improvement_ratio=0, cdf_block_rows=2,
         search_bin_width=int(ages[1] - ages[0]),
@@ -98,7 +69,7 @@ def test_exact_optimizer_trace_is_monotone_and_certified(tmp_path):
         coarse_target=coarse_target,
         coarse_ages=coarse_ages,
         coarse_points=coarse_points,
-        seed_index=0, restart_kind="closest", seed=19, config=config,
+        seed=19, config=config,
     )
     best = np.array([record["best_distance"] for record in result.trace])
     assert np.all(np.diff(best) <= 1e-12)
@@ -115,17 +86,15 @@ def test_exact_optimizer_trace_is_monotone_and_certified(tmp_path):
         bootstrap_target=target,
         observed_target=target,
         age_bins=ages,
-        expected_seed_index=0,
-        expected_kind="closest",
         expected_seed=19,
     )
 
 
-def _run_matcher(store, target, seeds, output, *extra):
+def _run_matcher(store, target, output, *extra):
     return main([
-        "--store", str(store), "--target", str(target), "--seed-sets", str(seeds),
+        "--store", str(store), "--target", str(target),
         "--all-eligible", "--output", str(output),
-        "--replicates", "2", "--closest-restarts", "1", "--diverse-restarts", "1",
+        "--replicates", "2", "--restarts", "2",
         "--min-epochs", "2", "--max-epochs", "3", "--patience", "1",
         "--material-improvement-ratio", "0", "--cdf-block-rows", "2",
         "--search-bin-width", "10",
@@ -146,9 +115,8 @@ def test_bootstrap_bundle_is_consumable_by_phi_sfs(tmp_path):
 
     store = _interval_store(tmp_path / "store")
     target = _target(tmp_path / "target", store)
-    seeds = _seed_bundle(tmp_path / "seeds", store, target)
     output = tmp_path / "bootstrap_matches"
-    assert _run_matcher(store, target, seeds, output) == 0
+    assert _run_matcher(store, target, output) == 0
 
     # The digest must certify against the target directory ...
     target_meta, match_meta, digest = phi_sfs._validate_provenance(target, output)
@@ -174,21 +142,19 @@ def test_bootstrap_bundle_is_consumable_by_phi_sfs(tmp_path):
 def test_output_inside_work_dir_is_rejected(tmp_path):
     store = _interval_store(tmp_path / "store")
     target = _target(tmp_path / "target", store)
-    seeds = _seed_bundle(tmp_path / "seeds", store, target)
     work = tmp_path / "work"
     with pytest.raises(ValueError, match="must not be inside"):
-        _run_matcher(store, target, seeds, work / "nested", "--work-dir", str(work))
+        _run_matcher(store, target, work / "nested", "--work-dir", str(work))
     with pytest.raises(ValueError, match="different paths"):
-        _run_matcher(store, target, seeds, work, "--work-dir", str(work))
+        _run_matcher(store, target, work, "--work-dir", str(work))
 
 
 def test_resume_rejects_a_changed_implementation(tmp_path):
     store = _interval_store(tmp_path / "store")
     target = _target(tmp_path / "target", store)
-    seeds = _seed_bundle(tmp_path / "seeds", store, target)
     work = tmp_path / "work"
     assert _run_matcher(
-        store, target, seeds, tmp_path / "out",
+        store, target, tmp_path / "out",
         "--work-dir", str(work), "--keep-work",
     ) == 0
     identity = json.loads((work / "identity.json").read_text())
@@ -198,7 +164,7 @@ def test_resume_rejects_a_changed_implementation(tmp_path):
     (work / "identity.json").write_text(json.dumps(identity, indent=2, sort_keys=True))
     with pytest.raises(ValueError, match="parameters or provenance differ"):
         _run_matcher(
-            store, target, seeds, tmp_path / "out2",
+            store, target, tmp_path / "out2",
             "--work-dir", str(work), "--resume",
         )
 
@@ -206,15 +172,14 @@ def test_resume_rejects_a_changed_implementation(tmp_path):
 def test_resume_reuses_completed_replicate_bundles(tmp_path):
     store = _interval_store(tmp_path / "store")
     target = _target(tmp_path / "target", store)
-    seeds = _seed_bundle(tmp_path / "seeds", store, target)
     work = tmp_path / "work"
     assert _run_matcher(
-        store, target, seeds, tmp_path / "first",
+        store, target, tmp_path / "first",
         "--work-dir", str(work), "--keep-work",
     ) == 0
     first = np.load(tmp_path / "first" / "row_indices.npy")
     assert _run_matcher(
-        store, target, seeds, tmp_path / "second",
+        store, target, tmp_path / "second",
         "--work-dir", str(work), "--resume",
     ) == 0
     np.testing.assert_array_equal(
@@ -225,12 +190,13 @@ def test_resume_reuses_completed_replicate_bundles(tmp_path):
 def test_source_store_provenance_is_the_store_not_the_repository(tmp_path):
     store = _interval_store(tmp_path / "store")
     target = _target(tmp_path / "target", store)
-    seeds = _seed_bundle(tmp_path / "seeds", store, target)
     output = tmp_path / "out"
-    assert _run_matcher(store, target, seeds, output) == 0
+    assert _run_matcher(store, target, output) == 0
     metadata = json.loads((output / "metadata.json").read_text())
     assert metadata["source_store"] == str(store.resolve())
-    assert metadata["seed_sets_digest"]
+    # The seed-library path is gone, so the bundle must not claim one.
+    assert metadata["initialisation"].startswith("stratified draw")
+    assert "seed_sets" not in metadata and "seed_sets_digest" not in metadata
 
 
 def test_bootstrap_cdf_accumulates_in_float64(tmp_path):
@@ -251,22 +217,22 @@ def test_bootstrap_cdf_accumulates_in_float64(tmp_path):
 def test_cli_writes_aligned_atomic_bundle(tmp_path):
     store = _interval_store(tmp_path / "store")
     target = _target(tmp_path / "target", store)
-    seeds = _seed_bundle(tmp_path / "seeds", store, target)
     output = tmp_path / "bootstrap_matches"
     assert main([
         "--store", str(store),
         "--target", str(target),
-        "--seed-sets", str(seeds),
         "--all-eligible",
         "--output", str(output),
         "--replicates", "2",
-        "--closest-restarts", "1",
-        "--diverse-restarts", "1",
+        "--restarts", "2",
         "--min-epochs", "2",
         "--max-epochs", "3",
         "--patience", "1",
         "--material-improvement-ratio", "0",
         "--cdf-block-rows", "2",
+        # The fixture store spans 27 generations, so the coarse log screen
+        # needs a search width it can put at least two points inside.
+        "--search-bin-width", "10",
         "--qc-max-ratio", "10",
         "--qc-max-absolute", "1000",
         "--seed", "23",
@@ -285,16 +251,6 @@ def test_cli_writes_aligned_atomic_bundle(tmp_path):
     assert metadata["restarts_per_replicate"] == 2
     assert metadata["qc_interpretation"].startswith("optimizer convergence")
     assert not any(path.name.startswith(f".{output.name}.tmp") for path in tmp_path.iterdir())
-
-
-def _retarget(path, metric, offset=None):
-    """Stamp a distance metric onto a fixture target's metadata."""
-    metadata = json.loads((path / "metadata.json").read_text())
-    metadata["distance_metric"] = metric
-    if offset is not None:
-        metadata["log_age_offset"] = offset
-    (path / "metadata.json").write_text(json.dumps(metadata))
-    return path
 
 
 def test_log_search_grid_resolves_the_young_end_without_costing_more_points():
@@ -325,71 +281,39 @@ def test_log_search_grid_resolves_the_young_end_without_costing_more_points():
         log_search_grid(ages, points, 1, 1_000.0)
 
 
-def test_matcher_refuses_a_metric_that_disagrees_with_its_target(tmp_path):
-    """The acceptance threshold is metric-specific, so a mismatch is not a
-    rescalable inconvenience -- it silently compares log-age nats to
-    generations. Both directions must fail loudly."""
-    store_path = _interval_store(tmp_path / "store")
-    linear_target = _target(tmp_path / "linear", store_path)
-    log_target = _retarget(
-        _target(tmp_path / "log", store_path), "log-age", 10.0
-    )
-    seeds = _seed_bundle(tmp_path / "seeds", store_path, linear_target)
-    with pytest.raises(ValueError, match="non-linear distance metric"):
-        _run_matcher(store_path, log_target, seeds, tmp_path / "a")
-    with pytest.raises(ValueError, match="requires a target built"):
-        _run_matcher(
-            store_path, linear_target, seeds, tmp_path / "b",
-            "--distance", "log-age", "--log-age-offset", "10",
-        )
-    with pytest.raises(ValueError, match="offsets differ"):
-        _run_matcher(
-            store_path, log_target, seeds, tmp_path / "c",
-            "--distance", "log-age", "--log-age-offset", "99",
-        )
+def test_resume_rejects_a_different_dirty_source_state(tmp_path, monkeypatch):
+    """Two dirty edits on one commit must not share a resume identity.
 
+    `software_provenance` records the HEAD commit and a dirty flag, which are
+    identical for any two sets of uncommitted edits. Without hashing the loaded
+    modules a long job could resume across an implementation change and mix
+    replicate bundles from two versions of the code.
+    """
+    import release_provenance
 
-def test_log_age_bundle_records_log_age_distances(tmp_path):
-    store_path = _interval_store(tmp_path / "store")
-    target_path = _retarget(
-        _target(tmp_path / "target", store_path), "log-age", 10.0
+    first = release_provenance.loaded_source_digest()
+    assert first["sha256"] and first["modules"]
+
+    # Simulate an edit to one loaded module by pointing the digest at a copy of
+    # the repo whose matcher source differs by a single byte.
+    shadow = tmp_path / "shadow"
+    shadow.mkdir()
+    root = Path(release_provenance.__file__).resolve().parent
+    for name in first["modules"]:
+        (shadow / name).write_bytes((root / name).read_bytes())
+    target = shadow / "bootstrap_target_matcher.py"
+    target.write_bytes(target.read_bytes() + b"\n# one byte of drift\n")
+
+    real_modules = {
+        name: sys.modules[stem]
+        for stem, name in ((Path(n).stem, n) for n in first["modules"])
+        if stem in sys.modules
+    }
+    for name, module in real_modules.items():
+        monkeypatch.setattr(module, "__file__", str(shadow / name), raising=False)
+    second = release_provenance.loaded_source_digest(shadow)
+
+    assert second["modules"] == first["modules"]
+    assert second["sha256"] != first["sha256"], (
+        "a one-byte change to a loaded module must change the resume identity"
     )
-    seeds = _seed_bundle(tmp_path / "seeds", store_path, target_path)
-    output = tmp_path / "matches"
-    assert _run_matcher(
-        store_path, target_path, seeds, output,
-        "--distance", "log-age", "--log-age-offset", "10",
-        "--search-grid-spacing", "log",
-    ) == 0
-    metadata = json.loads((output / "metadata.json").read_text())
-    assert metadata["distance_metric"] == "log-age"
-    assert metadata["distance_units"] == "log-age nats"
-    assert metadata["log_age_offset"] == 10.0
-    assert metadata["search_grid_spacing"] == "log"
-    store = open_snp_age_store(store_path)
-    ages = np.load(output / "age_bins.npy")
-    points = analysis_points(ages)
-    rows = np.load(output / "row_indices.npy")
-    observed = np.load(output / "target_cdf.npy")
-    bootstrap = np.load(output / "bootstrap_target_cdfs.npy")
-    recorded_e = np.load(output / "match_to_bootstrap_w1.npy")
-    recorded_o = np.load(output / "match_to_observed_w1.npy")
-    recorded_b = np.load(output / "bootstrap_to_observed_w1.npy")
-    for r in range(rows.shape[0]):
-        cdf = store.aggregate_cdf_at(
-            rows[r], points, side="left", weighting="interval"
-        )
-        assert np.isclose(
-            recorded_e[r], wasserstein_1_log_age(cdf, bootstrap[r], ages, offset=10.0)
-        )
-        assert np.isclose(
-            recorded_o[r], wasserstein_1_log_age(cdf, observed, ages, offset=10.0)
-        )
-        assert np.isclose(
-            recorded_b[r],
-            wasserstein_1_log_age(bootstrap[r], observed, ages, offset=10.0),
-        )
-        # Not merely a rescaling coincidence: the linear distance differs.
-        assert not np.isclose(
-            recorded_e[r], wasserstein_1(cdf, bootstrap[r], ages)
-        )
