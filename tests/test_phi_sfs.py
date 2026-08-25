@@ -246,6 +246,7 @@ def _ancestral_table(tmp_path, positions=(10, 20, 30, 40, 50)):
     np.save(store / "positions.npy", np.asarray(positions, dtype=np.float64))
     (store / "metadata.json").write_text(json.dumps({
         "chromosomes": [{"chrom": "chr1", "length": 1000, "offset": 0}],
+        "content_sha256": "store",
     }), encoding="utf-8")
 
     table = tmp_path / "ancestral"
@@ -493,6 +494,23 @@ def test_ancestral_table_from_another_store_is_rejected(tmp_path):
     metadata["store_content_sha256"] = "a-different-store"
     (table / "metadata.json").write_text(json.dumps(metadata))
     with pytest.raises(ValueError, match="different interval store"):
+        _run(target, matches, vcf, tmp_path / "phi",
+             "--ancestral-table", str(table))
+
+
+def test_ancestral_table_source_path_replacement_is_rejected(tmp_path):
+    """The coordinate catalog loaded by path must still be the authenticated one."""
+    target, matches = _write_bundle(tmp_path)
+    vcf = tmp_path / "sites.vcf"
+    vcf.write_text(_vcf_text())
+    table = _ancestral_table(tmp_path)
+    metadata_path = Path(json.loads(
+        (table / "metadata.json").read_text()
+    )["store"]) / "metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata["content_sha256"] = "replacement-store"
+    metadata_path.write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match="recorded source-store path"):
         _run(target, matches, vcf, tmp_path / "phi",
              "--ancestral-table", str(table))
 

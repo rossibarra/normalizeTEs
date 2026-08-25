@@ -694,8 +694,9 @@ Run `phi_sfs.py` on the T5 bundle and, separately, on the T2/T5 hard-q50 bundle.
 
 **C5 is now closed in code**: `phi_sfs.py` requires `--ancestral-table` and can
 no longer read polarity from the VCF, so the 31%-mis-polarization route is
-unreachable. T7 still requires chromosomes 1-9 of the input VCF (§1.4) and the
-C2 diagnostic below.
+unreachable. T7 still requires chromosomes 1-9 of the input VCF (§1.4), the
+polarity-confidence extension of C2, and the effective-N analysis below. The
+derived-frequency arm of C2 has been completed.
 
 **Pass:** an effective replicate count derived from the observed cross-replicate
 dependence by a **prespecified** method, with a sensitivity analysis if the
@@ -746,7 +747,7 @@ chromosomes; the ARG makes nearby sites' age posteriors correlated by
 construction, so the null of exchangeability is not the likely outcome), a
 documented iid-versus-block decision, and a block mode if iid fails.
 
-### C2 — W1-repair utility versus derived frequency: **measured, and clear**
+### C2 — W1-repair utility versus derived frequency: **frequency arm measured**
 
 The risk README §6 calls "the main risk to watch": the optimizer picks SNP
 membership to hit an age CDF, so if repair utility correlates with derived
@@ -787,16 +788,16 @@ conditioning on age collapses the association from +0.248 to +0.030, and the
 within-stratum correlations have no consistent sign (−0.314 in the youngest
 stratum, +0.11 to +0.17 in the older ones).
 
-**Conclusion: the optimizer selects on age, not on frequency.** This does not
-block Φ-SFS.
+**Conclusion: the optimizer selects on age, not on frequency.** This closes the
+derived-frequency arm, but not the polarity-confidence extension in §1.6.
 
 Two caveats. This is chromosome 10, 6,000 candidates, one bootstrap target, six
 age strata; the youngest stratum spans 20–64,720 generations, so residual
 within-stratum age variation could mask a weak effect. The claim is not "no
 association" but "none large enough to matter beside a 0.987 age correlation".
-And it tests frequency specifically — the separate finding that the optimizer
+And it tests frequency specifically. The separate finding that the optimizer
 prefers well-dated SNPs (posterior width 0.62 of the TE target against 0.83 for
-§5) is a different selection effect, unaddressed by this diagnostic.
+§5) is another selection effect, unaddressed by this diagnostic.
 
 ### C3 — effective-N method (gate 7)
 
@@ -1564,4 +1565,5 @@ banner and the §5-as-reference recommendation could not be relaxed while any
 gate stayed open — has been discharged for the **matching** stages: every gate
 in §5 above is closed or superseded, and README now recommends §6 and marks §5
 as retained. It still binds the **Phi-SFS** stage, which remains uncleared while
-C2 and the chromosome 1-9 VCF are outstanding, and README says so.
+C2's polarity-confidence extension, the effective-N analysis, and the chromosome
+1-9 VCF are outstanding, and README says so.

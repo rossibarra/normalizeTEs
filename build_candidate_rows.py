@@ -127,6 +127,38 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _publish(
+    output: Path, report_path: Path, candidates: np.ndarray, report: dict,
+) -> None:
+    """Stage both files and expose the NPY last as the artifact commit marker.
+
+    Two independent files cannot be renamed atomically as a pair. Publishing the
+    report first and the array last preserves the useful invariant: whenever the
+    requested NPY exists after a normal return or caught write failure, its
+    provenance report exists too. An exception removes a report installed by
+    this attempt before re-raising.
+    """
+    output.parent.mkdir(parents=True, exist_ok=True)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    staged_rows = output.with_name(f".{output.name}.tmp.{os.getpid()}")
+    staged_report = report_path.with_name(f".{report_path.name}.tmp.{os.getpid()}")
+    report_installed = False
+    try:
+        with staged_rows.open("wb") as handle:
+            np.save(handle, candidates, allow_pickle=False)
+        staged_report.write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(staged_report, report_path)
+        report_installed = True
+        os.replace(staged_rows, output)
+    except BaseException:
+        for leftover in (staged_rows, staged_report):
+            leftover.unlink(missing_ok=True)
+        if report_installed and not output.exists():
+            report_path.unlink(missing_ok=True)
+        raise
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     store = open_snp_age_store(args.store)
@@ -187,26 +219,7 @@ def main(argv: list[str] | None = None) -> int:
             "output paths collide with input position lists: "
             + ", ".join(str(p) for p in sorted(collisions))
         )
-    # The array and its report are one artifact: the report carries the digest
-    # and the provenance that make the array interpretable. Publishing the array
-    # first and then writing the report in place leaves a candidate universe
-    # with no record of how it was built if the second write fails. Stage both,
-    # then rename both.
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    staged_rows = args.output.with_name(f".{args.output.name}.tmp.{os.getpid()}")
-    staged_report = report_path.with_name(f".{report_path.name}.tmp.{os.getpid()}")
-    try:
-        with staged_rows.open("wb") as handle:
-            np.save(handle, candidates, allow_pickle=False)
-        staged_report.write_text(
-            json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        os.replace(staged_rows, args.output)
-        os.replace(staged_report, report_path)
-    except BaseException:
-        for leftover in (staged_rows, staged_report):
-            leftover.unlink(missing_ok=True)
-        raise
+    _publish(args.output, report_path, candidates, report)
 
     print(f"store rows      {total:,}")
     print(f"eligible        {eligible:,}")

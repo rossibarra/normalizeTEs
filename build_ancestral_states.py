@@ -128,7 +128,7 @@ def accumulate(store: object, tree_files: list[Path], *, chromosome: str | None,
             present[rows] += 1
 
         entry = {
-            "path": str(path),
+            "path": str(path.resolve()),
             "sites": int(ts.num_sites),
             "resolved": int(np.count_nonzero(resolved)),
             "unusable_ancestral": int(np.count_nonzero(resolved & ~usable)),
@@ -200,6 +200,25 @@ def main(argv: list[str] | None = None) -> int:
     store = open_snp_age_store(args.store)
     n_rows = int(np.asarray(store.positions).size)
     metadata_store = getattr(store, "metadata", {})
+    if not metadata_store.get("content_sha256"):
+        raise SystemExit(
+            "the interval store records no content_sha256; an ancestral table "
+            "cannot be authenticated against targets and matched bundles built "
+            "from this store"
+        )
+    if args.merge and args.expect_draws is None:
+        raise SystemExit(
+            "--merge requires --expect-draws so a partial gather cannot be "
+            "published as complete"
+        )
+    if args.expect_draws is not None and args.expect_draws <= 0:
+        raise SystemExit("--expect-draws must be positive")
+    if not args.merge and args.expect_draws is not None:
+        raise SystemExit("--expect-draws is valid only with --merge")
+    if args.merge and args.trees:
+        raise SystemExit("tree arguments cannot be combined with --merge")
+    if args.merge and args.draws:
+        raise SystemExit("--draws cannot be combined with --merge")
 
     counts = np.zeros((n_rows, 4), dtype=np.uint16)
     present = np.zeros(n_rows, dtype=np.uint16)
@@ -236,15 +255,19 @@ def main(argv: list[str] | None = None) -> int:
                 raise SystemExit(
                     f"{part}: already a merged table; merging it again would "
                     "double-count every draw it contains")
-            # Identify draws by resolved path plus site count rather than the
-            # recorded string: two aliases of one file (a symlink, a relative
-            # and an absolute spelling) would otherwise look like two draws.
+            # Identify draws by resolved path rather than the recorded string:
+            # two aliases of one file (a symlink, a relative and an absolute
+            # spelling) would otherwise look like two draws. Site count is not
+            # part of identity: inconsistent metadata must not make the same
+            # physical draw appear distinct.
             draws = [
-                f"{Path(entry['path']).resolve()}:{entry.get('sites')}"
+                str(Path(entry["path"]).resolve())
                 for entry in part_meta.get("draws", [])
             ]
             if not draws:
                 raise SystemExit(f"{part}: records no contributing draws")
+            if len(set(draws)) != len(draws):
+                raise SystemExit(f"{part}: records the same draw more than once")
             overlap = seen_draws.intersection(draws)
             if overlap:
                 raise SystemExit(
@@ -299,6 +322,13 @@ def main(argv: list[str] | None = None) -> int:
             trees = trees[int(start or 0):int(stop or len(trees))]
         if not trees:
             raise SystemExit("--draws selected no tree files")
+        resolved_trees = [path.resolve() for path in trees]
+        if len(set(resolved_trees)) != len(resolved_trees):
+            raise SystemExit(
+                "tree arguments select the same draw more than once (possibly "
+                "through relative, absolute, or symlink aliases)"
+            )
+        trees = resolved_trees
         offsets = {c["chrom"]: int(c["offset"])
                    for c in metadata_store.get("chromosomes", [])}
         report = accumulate(

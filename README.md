@@ -162,10 +162,9 @@ is closed or superseded on the 75-draw production store, and
 summarized in [CHANGELOG.md](CHANGELOG.md).
 
 The **matching** stages (§4 and §6) are cleared for production. The **Φ-SFS**
-stage (§7) is not: `BOOTSTRAP_HPC_VALIDATION.md` still records two open items
-against it — the W1-repair-versus-derived-frequency diagnostic (C2), which must
-be read before any Φ-SFS number is interpreted, and the input VCF for
-chromosomes 1–9.
+stage (§7) is not: the derived-frequency arm of C2 is complete, but its
+polarity-confidence extension, an effective replicate count estimated from the
+Φ-SFS scores, and the input VCF for chromosomes 1–9 remain open.
 
 ## 2. Build the compact all-SNP interval store
 
@@ -431,7 +430,7 @@ of the TE sites' posterior age CDFs, and a control set is scored by the mean of
 *its* sites' CDFs. Nothing requires any individual control SNP to resemble any
 individual TE. On the 4,067-site in-gene target the aggregate CDF reaches 10% at
 1,614 generations, while the median *site's own* CDF reaches 10% only at 6,845
-— because 75.2% of sites put a little mass below 2,000 generations, and a little
+— because 73.8% of sites put a little mass below 2,000 generations, and a little
 mass from three quarters of the sites is most of the young tail. Reading the
 aggregate 10% crossing as "10% of these TEs are younger than 1,614 generations"
 is wrong, and it is the easiest mistake to make with this output.
@@ -613,10 +612,11 @@ python build_ancestral_states.py \
 ```
 
 For a job array, give each task a slice with `--draws START:STOP` and a distinct
-`--output`, then sum the parts with
-`--merge part_000 part_001 ...` and no tree arguments. The output directory must
-not already exist; a merge validates that the parts share a store identity and
-contribute a disjoint draw set.
+`--output`, then sum the parts with `--merge part_000 part_001 ...`, no tree
+arguments, and `--expect-draws N` for the number of posterior draws in the full
+store. The output directory must not already exist; a merge validates that the
+parts share a non-null store identity, contribute a disjoint draw set, and
+contain exactly `N` distinct draws.
 
 Then run Φ-SFS against a matched bundle. The §6 bootstrap bundle is the reported
 one:

@@ -21,9 +21,11 @@
   the production setting: it guarantees that the published sets share no control
   rows, which is not the same as statistical independence and does not give an
   effective replicate count of 100.
-- Records the remaining gates, all downstream of matching: the W1-repair versus
-  SFS bias diagnostic, an effective replicate count estimated from the Phi-SFS
-  scores themselves, and the chromosome 1-9 input VCF.
+- Records the remaining gates, all downstream of matching: the
+  polarity-confidence extension of the W1-repair/SFS diagnostic, an effective
+  replicate count estimated from the Phi-SFS scores themselves, and the
+  chromosome 1-9 input VCF. The derived-frequency arm of that diagnostic is
+  complete.
 
 Round 7 review (`CODE_REVIEW_ROUND7.md`) fixes, folded in before release:
 
@@ -64,10 +66,13 @@ Post-release CLI simplification, folded into the same version:
   `bootstrap_target_matcher.py`. Restarts are now stratified draws from the
   target's own equal-mass age strata and `--restarts` sets their count, so the
   §5 hard-q50 sampler is no longer a prerequisite for §6. Measured on the
-  4,067-site in-gene target, stratified initialization costs about 6% on the
-  median `E_r` (52.10 against 50.09 generations, on a 1,480-generation
-  acceptance threshold) with identical QC (100/100) and concordance
-  (`cor(B_r, O_r)` 0.99984 against 0.99986).
+  same 100 bootstrap targets for the 4,067-site in-gene set, the median paired
+  proportional increase in `E_r` is 5.62%. The two marginal medians are 52.10
+  against 50.09 generations (a 4.03% ratio of medians), on a 1,480-generation
+  acceptance threshold, with identical QC (100/100) and concordance
+  (`cor(B_r, O_r)` 0.99984 against 0.99986). The paired statistic is the stated
+  cost estimand; the marginal medians are retained to make the distinction
+  explicit.
 - Removes `--search-grid-spacing`: the coarse swap screen is always a geometric
   sub-sample of the exact grid. A uniform 20,000-generation screen put 50.06% of
   the in-gene target's age mass in its first cell, giving +21.9% relative age

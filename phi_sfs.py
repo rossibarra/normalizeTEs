@@ -670,7 +670,8 @@ def calculate(args: argparse.Namespace) -> None:
     # Without this a table from another store with overlapping row coordinates
     # produces a complete, plausible result with the wrong control polarity --
     # a silent scientific error rather than a crash. The digest is the identity;
-    # the recorded path is only a convenience and may not even be portable.
+    # the recorded path supplies the row-coordinate catalog and is therefore
+    # required at analysis time as well as recorded for provenance.
     table_digest = store_meta.get("store_content_sha256")
     expected_digest = (
         target_meta.get("source_store_content_sha256")
@@ -688,8 +689,17 @@ def calculate(args: argparse.Namespace) -> None:
             f"records {table_digest!r}, the target and matches record "
             f"{expected_digest!r}"
         )
+    source_store = Path(store_meta["store"])
+    source_metadata = json.loads(
+        (source_store / "metadata.json").read_text(encoding="utf-8")
+    )
+    if source_metadata.get("content_sha256") != table_digest:
+        raise ValueError(
+            "the ancestral table's recorded source-store path no longer carries "
+            "the content digest used to build the table"
+        )
     store_positions = np.load(
-        Path(store_meta["store"]) / "positions.npy", mmap_mode="r", allow_pickle=False)
+        source_store / "positions.npy", mmap_mode="r", allow_pickle=False)
     declared_rows = store_meta.get("store_rows")
     if declared_rows is not None and int(declared_rows) != store_positions.size:
         raise ValueError(
@@ -698,9 +708,7 @@ def calculate(args: argparse.Namespace) -> None:
         )
     chromosome_offsets = {
         entry["chrom"]: int(entry["offset"])
-        for entry in json.loads(
-            (Path(store_meta["store"]) / "metadata.json").read_text(encoding="utf-8")
-        )["chromosomes"]
+        for entry in source_metadata["chromosomes"]
     }
     # Validated for shape and dtype even though the resolver conditions on the
     # two observed alleles rather than this total; a malformed table should fail
