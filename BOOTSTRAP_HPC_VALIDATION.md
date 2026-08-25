@@ -1825,6 +1825,46 @@ sites instead.
 > Neither supersedes the other. Quote −1.53% when justifying `X = 0.5`, and
 > −4.09% when describing what polarity masking did to the target overall.
 
+### The two resolution thresholds, and why production uses 0.70
+
+`--min-resolved-fraction` and `--min-usable-fraction` are easy to read as the
+same idea. They are not, and only one of them is a per-site filter.
+
+`--min-usable-fraction` (`build_snp_interval_store.py`, default `0.1`) is the
+per-SNP quality gate. A SNP is eligible only when at least this share of the
+posterior draws gave it a usable age interval:
+`required_usable_draws = ceil(min_usable_fraction * n_draws)`. Production leaves
+it at the default, so a SNP needs an age in at least 8 of the 75 draws.
+
+`--min-resolved-fraction` (`build_candidate_rows.py`, default `0.95`) is not a
+filter at all. It is a whole-run abort, comparing how many of the *listed*
+positions exist in the store's catalog at all:
+`resolved_count / requested_count`. Positions that fail to resolve are dropped
+either way, so the threshold changes nothing about which rows are selected. What
+it decides is whether a low resolution rate should be read as "these positions
+were filtered upstream, before the ARGs were built" or as "the position list and
+the store disagree about coordinates".
+
+That second reading is the one worth stopping for. Under a chromosome-offset
+mismatch the TE positions fail to resolve, stay in the candidate pool, and the
+report states they were excluded. The exclusion looks successful and the control
+universe silently contains TEs.
+
+Production uses `0.70`. Measured on the published universe
+(`results/candidate-rows-75draw.npy.json`):
+
+| list | resolved | rate |
+|---|---:|---:|
+| `all_snp.pos.txt` (inclusion) | 23,359,072 / 23,359,072 | 100.00% |
+| all TE positions (exclusion) | 136,714 / 185,232 | 73.81% |
+
+The default `0.95` would abort this build: 26% of the TE list is genuinely absent
+from the store, having been removed before ARG inference. `0.70` sits just below
+the observed 73.81%, which keeps the mismatch check live — a convention error
+would drive the rate far below 70% — while accommodating the real absence rate.
+Values near `0.1` were considered and rejected: they pass the observed data but
+disable the detector, since a mismatch resolving 15% of TEs would also pass.
+
 ### Φ-SFS site assumptions
 
 These are assumptions about the input, not things `phi_sfs.py` derives. Each is
