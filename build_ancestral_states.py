@@ -177,8 +177,10 @@ def _save(output: Path, counts: np.ndarray, present: np.ndarray, metadata: dict)
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--store", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--store", type=Path, required=True,
+                        help="interval store whose rows the table is aligned to")
+    parser.add_argument("--output", type=Path, required=True,
+                        help="destination directory for the ancestral-state table")
     parser.add_argument("trees", nargs="*", type=Path,
                         help="tree-sequence draws; omit when using --merge")
     parser.add_argument("--draws", type=str,

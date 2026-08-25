@@ -72,6 +72,9 @@ git checkout COMMIT_HASH
 
 ## Pipeline
 
+Each step lists the flags used in its command. `--help` on any script gives the
+full set, including options not shown here.
+
 ### 1. Build the all-SNP interval store
 
 Each usable mutation gives a SNP a uniform age distribution between its mutation
@@ -89,6 +92,16 @@ python build_snp_interval_store.py \
   --bucket-memory-gb 2 \
   --scratch-dir "${TMPDIR:?TMPDIR is not set}"
 ```
+
+| flag | meaning |
+|---|---|
+| `trees` (positional) | the posterior draw files, one ARG per draw |
+| `--interval-store` | output directory for the store |
+| `--chrom-offsets` | per-chromosome global coordinate offset; store positions are offset + VCF POS |
+| `--min-usable-fraction` | a SNP is eligible only if this fraction of draws gave it a usable interval |
+| `--num-buckets` | how many row ranges the records are split into on disk. Buckets are sorted one at a time, so more buckets means lower peak memory and more scratch files |
+| `--bucket-memory-gb` | memory ceiling for sorting one bucket. The build aborts naming the offending bucket rather than being OOM-killed; raise `--num-buckets` in response, not this |
+| `--scratch-dir` | where bucket files are written. Use node-local scratch |
 
 Omit `--chrom-offsets` when every ARG carries compatible chromosome metadata. By
 default a SNP is eligible when at least 10% of draws give it a usable interval,
@@ -113,6 +126,14 @@ python build_candidate_rows.py \
   --output candidate_rows.npy \
   --min-resolved-fraction 0.70
 ```
+
+| flag | meaning |
+|---|---|
+| `--store` | the store whose rows define the universe |
+| `--include-positions` | restrict the pool to these positions before excluding |
+| `--exclude-positions` | positions to remove; pass every TE variant here |
+| `--output` | destination `.npy` for the candidate rows |
+| `--min-resolved-fraction` | minimum share of listed positions that must resolve to store rows |
 
 Construction stops when fewer than `--min-resolved-fraction` of the listed
 positions resolve to store rows (default 0.95); lower it only with evidence that
@@ -139,6 +160,16 @@ python te_age_target.py \
   --acceptance-quantile 0.50 \
   --seed 1002
 ```
+
+| flag | meaning |
+|---|---|
+| `--store` | store to read posterior ages from |
+| `--te-positions` | chromosome and 1-based VCF position, one TE per line |
+| `--output` | destination directory for the target bundle |
+| `--scratch-dir` | node-local parent for the temporary TE-by-age CDF matrix |
+| `--bootstrap-replicates` | resamples of the TE set used to calibrate the threshold |
+| `--acceptance-quantile` | quantile of the bootstrap distance distribution taken as the threshold |
+| `--seed` | seed for the bootstrap resampling |
 
 `--acceptance-quantile 0.50` is the default and the matching-quality
 specification; use another quantile only for a labeled sensitivity analysis, and
@@ -175,6 +206,19 @@ python bootstrap_target_matcher.py \
   --seed 1002
 ```
 
+| flag | meaning |
+|---|---|
+| `--store` | store supplying candidate SNP ages |
+| `--target` | target bundle from step 3: age CDF, threshold and strata |
+| `--candidate-rows` | control universe from step 2, TE variants removed |
+| `--output` | destination directory for the published sets |
+| `--work-dir` | where completed replicate bundles are staged for `--resume` |
+| `--resume` | continue an interrupted run; parameters and inputs must match |
+| `--replicates` | bootstrap replicates to match, one published set each |
+| `--restarts` | independent stratified restarts per replicate; the best W1 is published |
+| `--disjoint-replicates` | no control SNP may appear in two published sets |
+| `--seed` | seed for resampling, initialization and proposals |
+
 Keep `--work-dir` on durable storage: completed replicate bundles are what
 `--resume` reuses after a preemption or time limit, and node-local scratch does
 not survive the job. After an interruption, repeat the identical command; a
@@ -199,6 +243,12 @@ python build_ancestral_states.py \
   --output ancestral_states \
   project-data/posterior/*.tsz
 ```
+
+| flag | meaning |
+|---|---|
+| `--store` | store whose rows the table is aligned to |
+| `--output` | destination directory for the table |
+| `trees` (positional) | the posterior draws to accumulate |
 
 For a job array, give each task a slice with `--draws START:STOP` and its own
 `--output`, then gather with `--merge part_000 part_001 ...`, no tree arguments,
@@ -226,6 +276,14 @@ python phi_sfs.py \
   --ancestral-table ancestral_states \
   --output phi_sfs/in_gene
 ```
+
+| flag | meaning |
+|---|---|
+| `--target` | TE target directory from step 3 |
+| `--matches` | matched control sets from step 4 |
+| `--vcf` | biallelic genotype VCF covering every requested site |
+| `--ancestral-table` | polarity table from step 5, used for control SNPs only |
+| `--output` | destination directory for spectra and scores |
 
 Plain, `.gz`, and `.bgz`/`.bgzf` VCFs are accepted; `--quiet` suppresses scan
 progress, and `--heterozygous missing` excludes heterozygous individuals from a

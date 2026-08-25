@@ -109,7 +109,8 @@ def build(store: object, exclusion_rows: np.ndarray,
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--store", type=Path, required=True)
+    parser.add_argument("--store", type=Path, required=True,
+                        help="interval store defining the row universe")
     parser.add_argument(
         "--exclude-positions", type=Path, required=True, nargs="+",
         help="whitespace-delimited chromosome and 1-based VCF position files",
@@ -123,7 +124,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="destination .npy file for the candidate rows")
     parser.add_argument("--report", type=Path,
                         help="optional JSON summary; defaults to OUTPUT.json")
-    parser.add_argument("--min-resolved-fraction", type=float, default=0.95)
+    parser.add_argument("--min-resolved-fraction", type=float, default=0.95,
+                        help="stop if fewer than this fraction of listed positions "
+                             "resolve to store rows. An unresolved exclusion stays "
+                             "in the candidate pool while appearing to have been "
+                             "removed, so a low rate is treated as an error")
     return parser.parse_args(argv)
 
 

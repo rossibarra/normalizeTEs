@@ -501,12 +501,21 @@ def _format_values(values: np.ndarray, limit: int = 10) -> str:
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--store", type=Path, required=True)
-    parser.add_argument("--te-positions", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--bootstrap-replicates", type=int, default=10_000)
-    parser.add_argument("--bootstrap-batch-size", type=int, default=256)
-    parser.add_argument("--acceptance-quantile", type=float, default=0.50)
+    parser.add_argument("--store", type=Path, required=True,
+                        help="interval store to read posterior ages from")
+    parser.add_argument("--te-positions", type=Path, required=True,
+                        help="whitespace-delimited chromosome and 1-based VCF "
+                             "position, one TE per line")
+    parser.add_argument("--output", type=Path, required=True,
+                        help="destination directory for the target bundle")
+    parser.add_argument("--bootstrap-replicates", type=int, default=10_000,
+                        help="resamples of the TE set used to calibrate the "
+                             "acceptance threshold")
+    parser.add_argument("--bootstrap-batch-size", type=int, default=256,
+                        help="replicates evaluated per batch; trades memory for speed")
+    parser.add_argument("--acceptance-quantile", type=float, default=0.50,
+                        help="quantile of the bootstrap distance distribution "
+                             "adopted as the acceptance threshold")
     parser.add_argument(
         "--acceptance-distance", type=float,
         help=("absolute Wasserstein tolerance in generations; overrides the "
@@ -526,15 +535,23 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
              "disagrees with is unreliable whether the cause is inference failure "
              "or a genuine fixed-then-deleted insertion",
     )
-    parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--bin-width", type=int, default=1_000)
+    parser.add_argument("--seed", type=int, default=None,
+                        help="seed for the bootstrap resampling")
+    parser.add_argument("--bin-width", type=int, default=1_000,
+                        help="width in generations of the analysis age grid. Grid "
+                             "values are bin labels; a CDF cell holds P(age < "
+                             "label + bin-width/2)")
     parser.add_argument(
         "--scratch-dir", type=Path,
         help="node-local parent for temporary interval CDF storage",
     )
-    parser.add_argument("--cdf-block-rows", type=int, default=512)
+    parser.add_argument("--cdf-block-rows", type=int, default=512,
+                        help="rows per block when building per-site CDFs; lower "
+                             "means lower peak memory")
     parser.add_argument(
-        "--missing-position-policy", choices=("error", "drop"), default="error"
+        "--missing-position-policy", choices=("error", "drop"), default="error",
+        help="whether to stop or to drop the site when a TE position does not "
+             "resolve to an eligible store row",
     )
     return parser.parse_args(argv)
 

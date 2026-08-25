@@ -914,17 +914,24 @@ def calculate(args: argparse.Namespace) -> None:
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--target", type=Path, required=True)
-    parser.add_argument("--matches", type=Path, required=True)
-    parser.add_argument("--vcf", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--target", type=Path, required=True,
+                        help="TE target directory from te_age_target.py")
+    parser.add_argument("--matches", type=Path, required=True,
+                        help="matched control sets from bootstrap_target_matcher.py")
+    parser.add_argument("--vcf", type=Path, required=True,
+                        help="biallelic VCF of genotypes. Every requested site, TE "
+                             "and control alike, must be present or the run stops")
+    parser.add_argument("--output", type=Path, required=True,
+                        help="destination directory for spectra and scores")
     parser.add_argument(
         "--ancestral-table", type=Path, required=True,
         help="directory written by build_ancestral_states.py, giving each "
              "control SNP's posterior polarity; TE sites are polarized by "
              "biology and do not consult it",
     )
-    parser.add_argument("--heterozygous", choices=("error", "missing"), default="error")
+    parser.add_argument("--heterozygous", choices=("error", "missing"), default="error",
+                        help="how to treat a heterozygous call in these inbred "
+                             "lines: stop, or count the genotype as missing")
     parser.add_argument(
         "--quiet", action="store_true",
         help="suppress periodic VCF scan progress",

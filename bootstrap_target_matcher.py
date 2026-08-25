@@ -1049,33 +1049,66 @@ def run(args: argparse.Namespace) -> None:
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--store", type=Path, required=True)
-    parser.add_argument("--target", type=Path, required=True)
-    parser.add_argument("--init-oversample", type=int, default=20)
+    parser.add_argument("--store", type=Path, required=True,
+                        help="interval store supplying candidate SNP ages")
+    parser.add_argument("--target", type=Path, required=True,
+                        help="TE target directory from te_age_target.py; supplies "
+                             "the age CDF, the acceptance threshold and the strata")
+    parser.add_argument("--init-oversample", type=int, default=20,
+                        help="candidates drawn per required site when filling the "
+                             "initial age strata. Larger fills the strata better "
+                             "and costs one narrow store read per candidate")
     candidates = parser.add_mutually_exclusive_group(required=True)
-    candidates.add_argument("--candidate-rows", type=Path)
-    candidates.add_argument("--all-eligible", action="store_true")
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--work-dir", type=Path)
-    parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--keep-work", action="store_true")
-    parser.add_argument("--replicates", type=int, default=100)
+    candidates.add_argument("--candidate-rows", type=Path,
+                            help="control universe from build_candidate_rows.py, "
+                                 "with all TE variants removed. This is the "
+                                 "production setting")
+    candidates.add_argument("--all-eligible", action="store_true",
+                            help="use every eligible store row instead. This leaves "
+                                 "TE variants in the control pool, so controls can "
+                                 "be matched against other TEs")
+    parser.add_argument("--output", type=Path, required=True,
+                        help="destination directory for the published sets")
+    parser.add_argument("--work-dir", type=Path,
+                        help="where completed replicate bundles are staged so an "
+                             "interrupted run can be resumed")
+    parser.add_argument("--resume", action="store_true",
+                        help="continue an interrupted run from --work-dir. Input "
+                             "identities and parameters must match or it stops")
+    parser.add_argument("--keep-work", action="store_true",
+                        help="keep the work directory after a successful publish")
+    parser.add_argument("--replicates", type=int, default=100,
+                        help="bootstrap replicates to match, one published control "
+                             "set each")
     parser.add_argument(
         "--restarts", type=int, default=3,
         help="independent stratified restarts per replicate; the published set "
              "is the one with the smallest certified W1",
     )
-    parser.add_argument("--min-epochs", type=int, default=10)
-    parser.add_argument("--max-epochs", type=int, default=50)
-    parser.add_argument("--patience", type=int, default=5)
-    parser.add_argument("--material-improvement-ratio", type=float, default=1e-3)
-    parser.add_argument("--cdf-block-rows", type=int, default=256)
+    parser.add_argument("--min-epochs", type=int, default=10,
+                        help="exact proposal epochs run before convergence may be "
+                             "declared")
+    parser.add_argument("--max-epochs", type=int, default=50,
+                        help="hard ceiling on epochs per restart")
+    parser.add_argument("--patience", type=int, default=5,
+                        help="end a restart after this many consecutive epochs "
+                             "without material improvement")
+    parser.add_argument("--material-improvement-ratio", type=float, default=1e-3,
+                        help="an epoch counts as improving only if W1 falls by this "
+                             "fraction of B_r, so the bar scales with how far the "
+                             "replicate moved the target")
+    parser.add_argument("--cdf-block-rows", type=int, default=256,
+                        help="rows per block when building CDFs; lower means lower "
+                             "peak memory")
     parser.add_argument(
         "--search-bin-width", type=int, default=20_000,
         help="coarse grid width in generations used to screen swaps; every "
              "reported distance is still certified on the exact grid",
     )
-    parser.add_argument("--qc-max-ratio", type=float, default=0.5)
+    parser.add_argument("--qc-max-ratio", type=float, default=0.5,
+                        help="QC gate on R_r = E_r/B_r: optimizer error as a "
+                             "fraction of the displacement being reproduced. This "
+                             "is convergence QC, not evidence of validity")
     parser.add_argument(
         "--qc-max-absolute", type=float, default=None,
         help="fixed absolute cap on E_r in generations; overrides the "
@@ -1096,7 +1129,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
              "share the observed TE sample and the store, and later sets draw "
              "from a pool the earlier ones depleted",
     )
-    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--seed", type=int, default=0,
+                        help="seed for bootstrap resampling, initialization and "
+                             "proposals")
     return parser.parse_args(argv)
 
 

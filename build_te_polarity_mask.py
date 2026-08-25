@@ -115,15 +115,21 @@ def polarity_mask(store: object, te_rows: np.ndarray, tree_files: list[Path],
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--store", type=Path, required=True)
+    parser.add_argument("--store", type=Path, required=True,
+                        help="interval store the target rows index into; supplies "
+                             "the draw_id for each tree file")
     parser.add_argument("--target", type=Path, required=True,
                         help="target directory whose te_row_indices.npy defines the sites")
-    parser.add_argument("trees", nargs="+", type=Path)
+    parser.add_argument("trees", nargs="+", type=Path,
+                        help="every tsz the store was built from. A draw that is "
+                             "not passed is uncovered, and te_age_target refuses a "
+                             "mask that does not cover the whole store")
     parser.add_argument("--absence-allele", default="A",
                         help="allele encoding TE absence, which biology makes "
                              "ancestral; every TE record in this dataset is A/G "
                              "with A as absence (default: A)")
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True,
+                        help="destination directory for the mask")
     return parser.parse_args(argv)
 
 

@@ -708,14 +708,32 @@ def _expand(patterns: Sequence[str]) -> list[Path]:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("trees", nargs="+", help="tree-sequence files or glob patterns")
-    parser.add_argument("--interval-store", required=True, type=Path)
-    parser.add_argument("--scratch-dir", type=Path)
-    parser.add_argument("--chrom-offsets", type=Path)
-    parser.add_argument("--min-usable-fraction", type=float, default=0.1)
-    parser.add_argument("--missing", choices=("skip", "error"), default="skip")
-    parser.add_argument("--root", choices=("skip", "error"), default="skip")
-    parser.add_argument("--num-buckets", type=int, default=64)
-    parser.add_argument("--bucket-memory-gb", type=float, default=4.0)
+    parser.add_argument("--interval-store", required=True, type=Path,
+                        help="output directory for the published store")
+    parser.add_argument("--scratch-dir", type=Path,
+                        help="parent for the bucket files written while sorting; "
+                             "point this at node-local scratch, not shared storage")
+    parser.add_argument("--chrom-offsets", type=Path,
+                        help="table giving each chromosome its global coordinate "
+                             "offset; store positions are offset + VCF POS")
+    parser.add_argument("--min-usable-fraction", type=float, default=0.1,
+                        help="a SNP is eligible only if at least this fraction of "
+                             "draws gave it a usable age interval")
+    parser.add_argument("--missing", choices=("skip", "error"), default="skip",
+                        help="what to do when a site is absent from a draw")
+    parser.add_argument("--root", choices=("skip", "error"), default="skip",
+                        help="what to do when a mutation sits on a root node, "
+                             "which has no parent time and so no age interval")
+    parser.add_argument("--num-buckets", type=int, default=64,
+                        help="how many row ranges to split the extracted records "
+                             "into on disk. Buckets are sorted one at a time, so "
+                             "more buckets means lower peak memory and more "
+                             "scratch files. Raise this, not --bucket-memory-gb, "
+                             "when a build runs out of memory")
+    parser.add_argument("--bucket-memory-gb", type=float, default=4.0,
+                        help="memory ceiling for sorting one bucket, workspace "
+                             "included. The build aborts naming the bucket that "
+                             "exceeds it rather than being killed by the OS")
     args = parser.parse_args(argv)
     try:
         build_interval_store(
