@@ -163,6 +163,7 @@ def largest_remainder_quotas(
 def _analysis_cdfs(
     store: object, rows: np.ndarray, *, bin_width: int,
     output_path: Path | None = None, block_rows: int = 512,
+    keep_draws: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return legacy-compatible CDF rows and their age-bin centers."""
     if is_interval_store(store):
@@ -184,7 +185,12 @@ def _analysis_cdfs(
                 f"{free_bytes} bytes are free in {output_path.parent}"
             )
         writer = getattr(store, "write_regular_grid_cdfs", None)
-        if writer is not None:
+        if keep_draws is not None:
+            # The fast writer has no per-draw filter, so a masked target takes
+            # the general path. Targets are thousands of rows, not millions, so
+            # the cost is bounded.
+            cdfs = masked_row_cdfs(store, rows, right_edges, keep_draws).astype(np.float32)
+        elif writer is not None:
             cdfs = writer(
                 rows, right_edges, output_path,
                 block_rows=block_rows, dtype=np.float32,
@@ -207,6 +213,44 @@ def _analysis_cdfs(
     )
 
 
+def masked_row_cdfs(store: object, rows: np.ndarray, right_edges: np.ndarray,
+                    keep: np.ndarray) -> np.ndarray:
+    """Per-site CDFs built only from the draws `keep` marks true.
+
+    A draw that mis-polarized a TE placed its mutation on a different branch, so
+    the age it recorded belongs to a different event. Dropping those draws is
+    the same decision already taken for Phi-SFS, applied to the ages.
+
+    `keep` is `(n_rows, n_draws)`. A row with no agreeing draw keeps all of its
+    draws: an empty CDF is not a better estimate than a contaminated one, and
+    silently emitting NaN would propagate into the target.
+    """
+    from snp_interval_dataset import _batch_cdf, IntervalBatch
+
+    batch = store.intervals(np.asarray(rows, dtype=np.int64))
+    below, above, draws = batch.below, batch.above, batch.draw_id
+    kept_below, kept_above, kept_draw, offsets = [], [], [], [0]
+    dropped = 0
+    for i in range(np.asarray(rows).size):
+        start, stop = int(batch.offsets[i]), int(batch.offsets[i + 1])
+        d = np.asarray(draws[start:stop])
+        selector = keep[i][d] if keep[i].any() else np.ones(d.size, dtype=bool)
+        dropped += int((~selector).sum())
+        kept_below.append(np.asarray(below[start:stop])[selector])
+        kept_above.append(np.asarray(above[start:stop])[selector])
+        kept_draw.append(d[selector])
+        offsets.append(offsets[-1] + int(selector.sum()))
+    filtered = IntervalBatch(
+        rows=np.asarray(rows, dtype=np.int64),
+        offsets=np.asarray(offsets, dtype=np.int64),
+        below=np.concatenate(kept_below) if kept_below else np.empty(0),
+        above=np.concatenate(kept_above) if kept_above else np.empty(0),
+        draw_id=np.concatenate(kept_draw) if kept_draw else np.empty(0, dtype=np.int64),
+    )
+    print(f"  dropped {dropped:,} mis-polarized intervals", flush=True)
+    return _batch_cdf(filtered, right_edges, side="left", weighting="interval")
+
+
 def analysis_grid_edges(age_bins: np.ndarray) -> np.ndarray:
     """Return physical half-open cell edges for a uniform center grid."""
     centers = np.asarray(age_bins, dtype=np.float64)
@@ -217,6 +261,123 @@ def analysis_grid_edges(age_bins: np.ndarray) -> np.ndarray:
         raise ValueError("analysis age bins must be uniformly spaced")
     half = widths[0] / 2
     return np.concatenate(([centers[0] - half], centers + half))
+
+
+@dataclass(frozen=True)
+class PolaritySelection:
+    """Which draws to trust per TE site, and which TEs to keep at all."""
+
+    keep_draws: np.ndarray          # (n_sites, n_draws) bool, aligned to kept sites
+    keep_sites: np.ndarray          # (n_sites_in,) bool over the resolved rows
+    report: dict
+
+
+def load_polarity_selection(
+    mask_dir: Path, rows: np.ndarray, store: object,
+    max_flipped_fraction: float | None,
+) -> PolaritySelection:
+    """Read a TE polarity mask and turn it into per-site draw and site filters.
+
+    A draw that called the insertion allele ancestral placed the mutation on a
+    different branch of the ARG and recorded that branch's age, so its age is an
+    estimate of something else. Those draws are dropped from the site's CDF.
+
+    A site where *every* draw disagrees is a different problem: dropping all of
+    its draws would leave no age at all, and an absent site is not a better
+    estimate than a contaminated one. Such sites keep their draws and are
+    counted in the report, so the fallback is visible rather than silent.
+    `max_flipped_fraction` is the deliberate way to remove them instead.
+    """
+    metadata = json.loads((mask_dir / "metadata.json").read_text(encoding="utf-8"))
+    if metadata.get("schema_version") != "te-polarity-mask-v1":
+        raise SystemExit(
+            f"{mask_dir}: unsupported polarity mask schema "
+            f"{metadata.get('schema_version')!r}; rebuild with "
+            "build_te_polarity_mask.py"
+        )
+    if not metadata.get("complete"):
+        raise SystemExit(f"{mask_dir}: polarity mask is incomplete")
+    expected = getattr(store, "metadata", {}).get("content_sha256")
+    recorded = metadata.get("store_content_sha256")
+    if expected and recorded and expected != recorded:
+        raise SystemExit(
+            f"{mask_dir}: polarity mask was built against a different store "
+            f"({recorded[:12]} != {expected[:12]}). Its rows index that store, "
+            "so applying it here would mask the wrong sites."
+        )
+    # A draw the mask does not cover is *unknown*, not flipped, but it reaches
+    # the arithmetic below as an all-false column and would be dropped from
+    # every site. Six covered draws out of 75 would silently discard 69 of them
+    # and still report a healthy-looking target, so partial coverage is refused
+    # here rather than trusted. Partial masks remain useful for diagnostics.
+    store_draws = (getattr(store, "metadata", {}) or {}).get("n_posterior_draws")
+    covered = metadata.get("covered_draw_ids")
+    if covered is None:
+        raise SystemExit(
+            f"{mask_dir}: mask predates draw-id column indexing and cannot be "
+            "aligned to the store; rebuild it with build_te_polarity_mask.py"
+        )
+    if store_draws is not None and sorted(covered) != list(range(int(store_draws))):
+        missing = sorted(set(range(int(store_draws))) - set(covered))
+        raise SystemExit(
+            f"{mask_dir}: covers {len(covered)} of the store's {store_draws} "
+            f"posterior draws (missing draw ids {missing[:8]}"
+            f"{'...' if len(missing) > 8 else ''}). An uncovered draw is "
+            "indistinguishable from a flipped one here, so it would be dropped "
+            "from every site. Rebuild the mask against all source trees."
+        )
+    agrees = np.load(mask_dir / "agrees_with_biology.npy", allow_pickle=False)
+    present = np.load(mask_dir / "draw_present.npy", allow_pickle=False)
+    mask_rows = np.load(mask_dir / "te_row_indices.npy", allow_pickle=False)
+    # Order-sensitive: the mask is a positional array, not a lookup keyed by
+    # row. A permuted TE list would mask each site with another site's draws
+    # and nothing downstream would notice.
+    if mask_rows.shape != rows.shape or not np.array_equal(mask_rows, rows):
+        raise SystemExit(
+            f"{mask_dir}: polarity mask covers {mask_rows.size:,} sites that do "
+            f"not match the {rows.size:,} resolved TE rows in the same order. "
+            "Rebuild the mask from this run's target."
+        )
+
+    if agrees.shape != present.shape:
+        raise SystemExit(f"{mask_dir}: agreement and presence arrays disagree in shape")
+    if store_draws is not None and agrees.shape[1] != int(store_draws):
+        raise SystemExit(
+            f"{mask_dir}: mask has {agrees.shape[1]} draw columns but the store "
+            f"has {store_draws} draws"
+        )
+    usable = present.sum(axis=1)
+    agreeing = (present & agrees).sum(axis=1)
+    flipped = usable - agreeing
+    with np.errstate(invalid="ignore", divide="ignore"):
+        flipped_fraction = np.where(usable > 0, flipped / np.maximum(usable, 1), 0.0)
+
+    keep_sites = np.ones(rows.size, dtype=bool)
+    if max_flipped_fraction is not None:
+        # Sites with no draw at all carry no evidence of being flipped, so the
+        # threshold cannot speak to them; they are left to the usual coverage
+        # handling rather than discarded here.
+        keep_sites = (usable == 0) | (flipped_fraction <= max_flipped_fraction)
+
+    keep_draws = present & agrees
+    no_agreeing = keep_draws.sum(axis=1) == 0
+    keep_draws[no_agreeing] = present[no_agreeing]
+
+    report = {
+        "mask": str(mask_dir.resolve()),
+        "n_draws": int(present.shape[1]),
+        "draw_site_observations": int(usable.sum()),
+        "flipped_observations": int(flipped.sum()),
+        "flipped_observation_fraction": (
+            float(flipped.sum() / usable.sum()) if usable.sum() else 0.0
+        ),
+        "sites_with_any_flipped_draw": int((flipped > 0).sum()),
+        "sites_with_no_agreeing_draw": int(no_agreeing.sum()),
+        "max_flipped_fraction": max_flipped_fraction,
+        "sites_discarded_by_threshold": int((~keep_sites).sum()),
+        "sites_kept": int(keep_sites.sum()),
+    }
+    return PolaritySelection(keep_draws[keep_sites], keep_sites, report)
 
 
 def build_target(
@@ -234,6 +395,7 @@ def build_target(
     bin_width: int = 1_000,
     scratch_dir: str | Path | None = None,
     cdf_block_rows: int = 512,
+    keep_draws: np.ndarray | None = None,
 ) -> TargetResult:
     """Resolve positions and calculate Stage 2 products with bounded memory."""
     positions = np.asarray(te_positions, dtype=np.float64)
@@ -264,7 +426,7 @@ def build_target(
             cdf_path = None
         cdf_rows, ages = _analysis_cdfs(
             store, rows, bin_width=bin_width, output_path=cdf_path,
-            block_rows=cdf_block_rows,
+            block_rows=cdf_block_rows, keep_draws=keep_draws,
         )
         rng = np.random.default_rng(seed)
         distances = bootstrap_wasserstein(
@@ -350,6 +512,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help=("absolute Wasserstein tolerance in generations; overrides the "
               "bootstrap quantile threshold"),
     )
+    parser.add_argument(
+        "--te-polarity-mask", type=Path,
+        help="directory from build_te_polarity_mask.py. Each TE site's age CDF "
+             "is then built only from draws that polarized it in agreement with "
+             "biology, because a draw that called the insertion ancestral placed "
+             "the mutation on a different branch and recorded that branch's age",
+    )
+    parser.add_argument(
+        "--max-flipped-fraction", type=float, default=None,
+        help="discard any TE whose flipped fraction, among draws with data for "
+             "it, exceeds this. Requires --te-polarity-mask. A TE the ARG mostly "
+             "disagrees with is unreliable whether the cause is inference failure "
+             "or a genuine fixed-then-deleted insertion",
+    )
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--bin-width", type=int, default=1_000)
     parser.add_argument(
@@ -378,6 +554,46 @@ def main(argv: Sequence[str] | None = None) -> int:
     included_chromosomes = resolution.included_chromosomes
     included_vcf_positions = resolution.included_native_positions
     assert included_chromosomes is not None and included_vcf_positions is not None
+    included_rows = resolution.included_rows
+
+    if args.max_flipped_fraction is not None and args.te_polarity_mask is None:
+        raise SystemExit("--max-flipped-fraction requires --te-polarity-mask")
+    if args.max_flipped_fraction is not None and not 0.0 <= args.max_flipped_fraction <= 1.0:
+        raise SystemExit("--max-flipped-fraction must lie in [0, 1]")
+
+    keep_draws = None
+    polarity_report: dict | None = None
+    if args.te_polarity_mask is not None:
+        selection = load_polarity_selection(
+            args.te_polarity_mask, np.asarray(included_rows, dtype=np.int64),
+            store, args.max_flipped_fraction,
+        )
+        polarity_report = selection.report
+        keep = selection.keep_sites
+        if not keep.any():
+            raise SystemExit(
+                "--max-flipped-fraction discarded every TE; raise the threshold"
+            )
+        positions = positions[keep]
+        included_chromosomes = included_chromosomes[keep]
+        included_vcf_positions = included_vcf_positions[keep]
+        included_rows = np.asarray(included_rows)[keep]
+        keep_draws = selection.keep_draws
+        print(
+            f"polarity mask   {polarity_report['flipped_observations']:,} of "
+            f"{polarity_report['draw_site_observations']:,} draw-site ages dropped "
+            f"({polarity_report['flipped_observation_fraction']:.2%})"
+        )
+        print(
+            f"TEs discarded   {polarity_report['sites_discarded_by_threshold']:,} "
+            f"of {keep.size:,}, {polarity_report['sites_kept']:,} kept"
+        )
+        if polarity_report["sites_with_no_agreeing_draw"]:
+            print(
+                f"  note: {polarity_report['sites_with_no_agreeing_draw']:,} kept TEs "
+                "had no agreeing draw and retain all of theirs"
+            )
+
     result = build_target(
         store,
         positions,
@@ -388,10 +604,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         acceptance_distance=args.acceptance_distance,
         seed=args.seed,
         batch_size=args.bootstrap_batch_size,
-        row_indices=resolution.included_rows,
+        row_indices=included_rows,
         bin_width=args.bin_width,
         scratch_dir=args.scratch_dir,
         cdf_block_rows=args.cdf_block_rows,
+        keep_draws=keep_draws,
     )
     boundary_set = result.boundaries
     metadata = {
@@ -409,6 +626,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "position_resolution": resolution.summary(),
         "excluded_positions": resolution.excluded_coordinates(),
         "missing_position_policy": args.missing_position_policy,
+        "te_polarity": polarity_report,
         "bin_width": int(np.diff(result.age_bins[:2])[0]),
         "cdf_evaluation": (
             "P(X < right_cell_edge); equal interval weighting"

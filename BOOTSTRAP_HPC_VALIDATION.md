@@ -739,8 +739,8 @@ These are not scheduling problems. No amount of HPC time closes them.
 Plan §10.2 and status item 1–2. The implemented bootstrap is iid multinomial
 over TE sites. Nothing in the repository tests spatial dependence among TE
 age-CDF contributions, and there is no block-bootstrap mode. Both must be
-written. Until then the 100 replicates carry no inferential interpretation, as
-README §6 already states.
+written. Until then the 100 replicates carry no inferential interpretation, as §5b
+records.
 
 **Required:** a dependence test (TE sites are physically clustered along
 chromosomes; the ARG makes nearby sites' age posteriors correlated by
@@ -749,7 +749,7 @@ documented iid-versus-block decision, and a block mode if iid fails.
 
 ### C2 — W1-repair utility versus derived frequency: **frequency arm measured**
 
-The risk README §6 calls "the main risk to watch": the optimizer picks SNP
+The risk formerly flagged in README §6 as "the main risk to watch": the optimizer picks SNP
 membership to hit an age CDF, so if repair utility correlates with derived
 allele frequency, the matcher biases the SFS — the exact quantity Φ-SFS
 measures, invisible in every matching diagnostic.
@@ -976,8 +976,9 @@ Two properties make it cheap and safe:
   `h(k,n)` once per distinct `(k,n)` pair, the mixture is
   `p * h + (1 - p) * h[::-1]`. No new projection machinery.
 - **It never reweights sites against each other.** `h_0` and `h_20` swap under
-  the reversal, so the retained mass `1 - h_0 - h_20` that README §7 defines as
-  a site's contribution is invariant under polarity. The weighting redistributes
+  the reversal, so the retained mass `1 - h_0 - h_20` that
+  `PHI_SFS_IMPLEMENTATION_PLAN.md` §2 defines as a site's contribution is
+  invariant under polarity. The weighting redistributes
   mass *within* a site only, which keeps the `retained_fraction` and
   `endpoint_fraction` diagnostics comparable across sets.
 
@@ -1622,6 +1623,156 @@ global=offset+POS" describes how *VCF position lists* are converted, not what
 `positions.npy` contains. With the shift applied, draw 99 resolved 16.7% of its
 sites; without it, 24,929,209 of 24,929,209 (100%).
 
+## 5b. Measurements relocated from the README
+
+The README was reduced to a how-to, and the quantitative material it carried was
+moved here verbatim. Nothing below is new evidence; several items restate or sit
+beside numbers already recorded above, and where the two disagree both are kept
+and the disagreement is flagged rather than resolved.
+
+### Interval-store build resources
+
+For approximately 25–30 million SNPs and 75 combined SINGER draws, a
+conservative starting request is one CPU, 48 GB RAM, 16 hours, and at least 32
+GiB free in node-local `$TMPDIR`. The measured projection is approximately 17.1
+GiB for a final 75-draw float32 store and 22.6 GiB of packed bucket scratch.
+Keep additional Quobyte headroom for atomic publication and any older store
+retained at the destination. The production builder is single-worker and its
+final merge is I/O-bound, so more CPUs do not speed that phase.
+
+> **Discrepancy to resolve.** §1.2 records the completed 75-draw production
+> store as **18.2 GB on disk**, while the README's projection above is **17.1
+> GiB** (≈18.4 GB). One is a pre-build projection and the other a measurement of
+> the built store, so they are not the same quantity, but they are close enough
+> to be confused for each other. Both are kept as written.
+
+### Target-construction scratch
+
+For an interval store, target construction creates a temporary float32
+TE-by-age CDF matrix under `--scratch-dir`. At roughly 185,000 TEs and the
+measured maximum age, allow approximately 27 GB of additional scratch on the
+75-draw production store, whose 36,746-point grid is 1.6x wider than earlier
+two-draw measurements implied.
+
+> **Note.** §1.2 quotes the same grid as "~36,745 points" and the T5 section as
+> a "36,746-point grid"; the README used 36,746. Both figures already appear in
+> this document and are left as written.
+
+### What the matching stage actually matches
+
+**Aggregate posterior age CDFs, not per-variant ages.** The target is the mean
+of the TE sites' posterior age CDFs, and a control set is scored by the mean of
+*its* sites' CDFs. Nothing requires any individual control SNP to resemble any
+individual TE. On the 4,067-site in-gene target the aggregate CDF reaches 10% at
+1,614 generations, while the median *site's own* CDF reaches 10% only at 6,845
+— because 73.8% of sites put a little mass below 2,000 generations, and a little
+mass from three quarters of the sites is most of the young tail. Reading the
+aggregate 10% crossing as "10% of these TEs are younger than 1,614 generations"
+is wrong, and it is the easiest mistake to make with this output.
+
+**The acceptance threshold is a percentile of distances, not of ages.**
+`te_age_target.py` resamples the TE sites 10,000 times with replacement, and for
+each resample measures the Wasserstein-1 distance between the resampled age CDF
+and the observed one. The threshold is the median of those 10,000 *distances* —
+1,480.48 generations for the in-gene target. It answers "how far from the
+observed age distribution does the TE sample's own sampling noise typically put
+you?", and a control set is acceptable when it is no further away than that. It
+is not the median TE age, nor an age quantile of any kind.
+
+### Why the swap screen is geometric
+
+Scoring every proposed swap on the exact 36,746-point analysis grid dominates
+the run, so proposals are screened on a coarse grid first and every recorded
+distance is then recertified exactly. The old coarse grid was uniform at
+`--search-bin-width` 20,000 generations, and on the in-gene target that put
+50.06% of the age mass inside its single first cell: the optimizer could not see
+young-end structure at all and rejected young-improving swaps before the exact
+grid ever evaluated them. The coarse grid is now a geometric sub-sample of the
+exact grid, so the young end keeps full exact resolution. Measured effect on the
+relative age error at the 10% CDF quantile: +21.9% under the uniform screen,
+−0.2% under the geometric one, with no loss at the old end. Every coarse point
+is an exact-grid point, so the screen is a sub-sample of the exact objective
+rather than a different discretization, and a coarse misjudgement can cost
+search efficiency but never the correctness of the published state.
+
+> **Discrepancy to resolve.** The README recorded the geometric screen's
+> relative age error at the 10% quantile as **−0.2%**. The "Recommended route"
+> table above records **−0.0%**, `BOOTSTRAP_DISCARDED_APPROACHES.md`'s log-age
+> table records **−0.0%** for the linear metric with a log screen and −0.1% for
+> the log metric, and `CHANGELOG.md` v0.4.0 records **−0.0%**. The +21.9%
+> uniform-screen figure is identical everywhere. Both values are kept; one of
+> them needs correcting at source.
+
+### Production-launcher resource measurements
+
+Resource requests come from measurement, not from a formula. At
+`run_bootstrap_matching.sbatch`'s defaults (6 CPUs, 96 GB, 12 h) a 4,067-site
+target with 100 replicates × 3 restarts took 2 h 12 m wall clock and 37.7 GiB
+peak RSS. Target construction is the other memory peak: 16.0 GB for a
+35,512-site target. Scale `--time` roughly linearly in target size and replicate
+count. Against the store on Quobyte the job is I/O-bound and projects to 4–21 h
+of pure store reads for one target; staged to node-local scratch, the same run
+measured 97% CPU with 21 major page faults. The production store is 18.2 GB.
+
+> **Note.** T5 above records 34.9 GB peak RSS and 2 h 40 m wall clock for its
+> 100-replicate run. That run used the uniform screen and non-disjoint
+> replicates, so it is a different configuration and not directly comparable to
+> the 37.7 GiB / 2 h 12 m figure; both are kept.
+
+### What the bootstrap-target Φ-SFS distribution does and does not mean
+
+- It **holds the observed TE SFS fixed** and varies only which SNPs are matched.
+  It therefore measures how the matched-control comparison responds to
+  uncertainty in the TE *age* CDF, and nothing else.
+- It is **not a bootstrap confidence distribution** for the TE SFS, and **not a
+  p-value**. Do not compute the TE SFS from the resampled TE rows: that would
+  additionally propagate finite-TE-set SFS uncertainty and answer a different
+  question. A joint age-and-SFS bootstrap would be a separately named analysis.
+- 100 replicates give **weak tail resolution**, and disjoint membership does not
+  make them 100 independent observations. `reuse_counts.npy` shows whether
+  membership is shared — under `--disjoint-replicates` it is not — but shared
+  membership is only one of the couplings.
+- The implemented bootstrap is an iid multinomial TE-site bootstrap. Do not give
+  the 100 replicates an inferential interpretation until spatial dependence
+  among TE age contributions has been assessed (C1). If iid exchangeability is
+  unsupported, a prespecified genomic-block bootstrap must replace it.
+
+### Φ-SFS site assumptions
+
+These are assumptions about the input, not things `phi_sfs.py` derives. Each is
+recorded in the output `metadata.json`.
+
+- **Biallelic.** Records are assumed biallelic, which is what the upstream
+  preprocessing produces. A comma in ALT is treated as an error rather than
+  split into separate alleles.
+- **FILTER is ignored.** The declared input is the already-filtered
+  preprocessing VCF, so every record at a requested coordinate is used
+  regardless of its FILTER value.
+- **Polarity comes from the ancestral table, not the VCF.** REF is not assumed
+  ancestral and no INFO field is consulted. TE target sites are polarized
+  biologically; control sites take the posterior-weighted mixture from
+  `--ancestral-table`.
+- **One allele per individual.** Each callable inbred individual contributes one
+  observed allele. Haploid and homozygous diploid calls are accepted; a missing
+  diploid allele makes that individual missing at the site. Heterozygous calls
+  fail by default, and `--heterozygous missing` excludes those individuals from
+  the site's callable count instead.
+- Every requested site must be present in the VCF; the run fails listing the
+  missing coordinates rather than analyzing a subset.
+- **Normalization discards absolute scale.** Two sets with very different
+  eligible-site counts, missingness, or endpoint mass can give identical
+  spectra, and those differences are invisible in Φ. `replicates.csv` reports
+  `input_sites`, `eligible_sites`, `dropped_n_lt_20`, `retained_fraction`, and
+  `endpoint_fraction` for every set, with the matching `target_*` values in
+  `metadata.json`. A target and a control set whose retained fractions differ
+  substantially are not comparable however small Φ is.
+
+`PHI_SFS_IMPLEMENTATION_PLAN.md` §2 carries the hypergeometric projection and
+the four equivalent forms of Φ-SFS, including the identity that makes it the
+total variation distance between the two projected, normalized spectra.
+`phi_sfs.py` computes three of those forms independently and reports the
+discrepancy as `identity_max_abs_error`.
+
 ## 6. Recording
 
 Every test writes a durable record under `results/` containing the git commit,
@@ -1631,12 +1782,14 @@ publish the **complete best-distance trace for every replicate**, not just final
 ratios, because the traces are the evidence that the epoch budget was calibrated
 rather than assumed. Apply that to T3, T4, and T5.
 
-Update `BOOTSTRAP_TARGET_MATCHING_PLAN.md` §12 and README §6 as gates close.
+Update `BOOTSTRAP_TARGET_MATCHING_PLAN.md` §12 and the README's matching step
+as gates close.
 
 The original rule here — that the README's "not yet cleared for production"
 banner and the §5-as-reference recommendation could not be relaxed while any
 gate stayed open — has been discharged for the **matching** stages: every gate
-in §5 above is closed or superseded, and README now recommends §6 and marks §5
-as retained. It still binds the **Phi-SFS** stage, which remains uncleared while
+in §5 above is closed or superseded, and the README now documents
+bootstrap-target matching as the only matching step, with the hard-q50 sampler
+moved to `BOOTSTRAP_DISCARDED_APPROACHES.md` as abandoned. It still binds the **Phi-SFS** stage, which remains uncleared while
 C2's polarity-confidence extension, the effective-N analysis, and the chromosome
 1-9 VCF are outstanding, and README says so.

@@ -119,6 +119,190 @@ polarity perturbation, which keeps all 19 bins.
 
 ---
 
+## Abandoned pipeline stages
+
+Whole stages that were once part of the documented workflow and are not run any
+more. They are recorded here rather than in the README, which is a how-to for
+the supported route.
+
+### The hard-q50 swap sampler (former README §5) — abandoned
+
+`sample_age_matched_controls.py`. **Abandoned**: the bootstrap-target matcher
+(now README step 4) replaced it as the reported result, and it is no longer a
+prerequisite for anything. It is not part of the pipeline and should not be run
+for a new analysis; the code and `SWAP_SAMPLER_HPC_HOWTO.md` are retained only
+for reproducing earlier analyses.
+
+**Why it was replaced.** Hard-q50 defines its tolerance from bootstrap
+uncertainty but does not propagate it, so its saved sets occupy a narrow shell
+just inside q50. On the 75-draw in-gene target its 100 sets span
+1,367.98–1,480.47 generations against a 1,480.48 threshold, a median 1.27%
+inside it with a standard deviation of 1.4% of the threshold. The bootstrap
+matcher instead gives every replicate its own bootstrap target, so the
+replicates span that uncertainty instead of sitting against one fixed boundary.
+`BOOTSTRAP_HPC_VALIDATION.md` T2 carries the measurement.
+
+**A second reason it stopped being a prerequisite.** An earlier design seeded the
+optimizer from a hard-q50 bundle through `--seed-sets`. That flag is gone: each
+restart is now a stratified draw from the target's own equal-mass age strata,
+which the target bundle already ships.
+
+**Gate 10.** The gate originally required hard-q50 to be run alongside as a
+sensitivity analysis. It was **superseded** — see "Running both samplers side by
+side" above — because publishing two null distributions requires justifying
+which one is reported.
+
+**What the sampler did.** It found a set inside the single threshold and then ran
+a constrained random swap walk; the construction state itself was not saved.
+Each chain performed one fixed accepted-swap sweep per set member before its
+first save and another fixed sweep between saves, so saving was not triggered by
+a path-dependent replacement crossing. Membership replacement was reported as a
+mixing diagnostic rather than used as a stopping rule. Every saved set was
+recomputed on the exact 1,000-generation grid and had to remain inside the
+target threshold. Construction started on the coarse `--search-bin-width 20000`
+grid; if an epoch accepted no improving swaps while the exact distance was still
+too large, the sampler halved that width and recomputed construction state,
+stopping at the exact target-grid width, and three consecutive zero-acceptance
+epochs at exact resolution raised an explicit plateau error. The matching
+threshold was never relaxed.
+
+The command, as it was documented:
+
+```bash
+python sample_age_matched_controls.py \
+  --store age_interval_store \
+  --target targets/in_gene \
+  --all-eligible \
+  --output matches/in_gene \
+  --work-dir "${TMPDIR:?TMPDIR is not set}/match-in-gene" \
+  --sets 100 \
+  --chains 10 \
+  --sets-per-chain 10 \
+  --workers 1 \
+  --seed 1002
+```
+
+Defaults were 100 saved sets as 10 independent chains × 10 sets, one
+accepted-swap sweep per set member during burn-in, and one per member between
+saved states. `--all-eligible` used every eligible non-target SNP as the
+candidate universe; `--candidate-rows` restricted it. The local CLI defaulted to
+one worker to bound memory, and the SLURM workflow ran each chain as a separate
+one-CPU array task.
+
+Each output directory held `row_indices.npy` of shape `(100, X)`; `positions`,
+`chromosome_codes`, and `chromosome_labels`; `cdfs.npy` and `wasserstein.npy`;
+the `target_cdf` and `age_bins` used for exact certification; `chain_index.npy`
+and `sample_index.npy`; `diagnostics.csv`; `reuse_row_indices.npy` and
+`reuse_counts.npy`; and a `metadata.json` with seeds, settings, chain histories,
+membership overlap, Wasserstein autocorrelation, an overlap-based ESS heuristic,
+store identity, and provenance. Publication failed if any set contained
+duplicate controls, violated the declared candidate universe, had a stored CDF
+inconsistent with its rows, or exceeded the exact Wasserstein threshold.
+
+**Its 100 sets are correlated Monte Carlo states**, with correlation confined
+within each ten-set chain — a different object from the bootstrap matcher's
+replicates. Retain `chain_index.npy` and `sample_index.npy` when joining
+results, plot the downstream statistic by chain, and measure its within-chain
+autocorrelation before interpreting the empirical null. Correlation does not
+bias a simple Monte Carlo average, but it reduces precision and must not be
+ignored in standard errors or effective replicate counts.
+
+**Φ-SFS still reads these bundles**, with no flag to distinguish them: the
+per-replicate identifier arrays are selected from the bundle's
+`schema_version`, and are carried into every output.
+
+| bundle | `schema_version` | identifiers |
+|---|---|---|
+| hard-q50 swap sampler | `swap-age-matched-controls-v1` | `chain_index`, `sample_index` |
+| bootstrap-target matcher | `bootstrap-target-matches-v1` | `replicate_id` |
+
+**Its SLURM manifest workflow**, also abandoned, drove many categories from one
+tab-delimited manifest on Quobyte:
+
+```text
+label	positions	target	output	seed
+all_te	/quobyte/project/te/all.pos.txt	/quobyte/project/targets/all_te	/quobyte/project/matches/all_te	1001
+in_gene	/quobyte/project/te/in_gene.pos.txt	/quobyte/project/targets/in_gene	/quobyte/project/matches/in_gene	1002
+young	/quobyte/project/te/young.pos.txt	/quobyte/project/targets/young	/quobyte/project/matches/young	1003
+```
+
+`positions` is the input chromosome/VCF-position file; `target` and `output` are
+durable output *directories*, unique per row, that must not already contain
+incomplete results. `build_age_targets.sbatch` built the targets;
+`sample_age_matches.sbatch` ran one independently seeded chain per array task
+and `gather_age_matches.sbatch` validated ten durable chain bundles before
+publishing one 100-set directory. For `T` manifest rows that is `10*T` chain
+tasks and `T` gather tasks, with the gather array submitted under an `afterok`
+dependency:
+
+```bash
+export PROJECT=/quobyte/project/normalizeTE
+export STORE=/quobyte/project/data/snp_interval_store
+export MANIFEST=/quobyte/project/manifests/te_manifest.tsv
+export AGE_MATCH_TASK_COUNT=10
+
+sbatch --export=ALL,PROJECT,STORE,MANIFEST,AGE_MATCH_TASK_COUNT \
+  build_age_targets.sbatch
+
+export T=3
+export AGE_MATCH_CHAINS=10
+export AGE_MATCH_SETS_PER_CHAIN=10
+export AGE_MATCH_CHAIN_TASK_COUNT=$((10 * T))
+export AGE_MATCH_GATHER_TASK_COUNT=$T
+
+chain_job=$(sbatch --parsable \
+  --export=ALL,PROJECT,STORE,MANIFEST,AGE_MATCH_CHAINS,AGE_MATCH_SETS_PER_CHAIN,AGE_MATCH_CHAIN_TASK_COUNT \
+  sample_age_matches.sbatch)
+
+sbatch --dependency="afterok:${chain_job}" \
+  --export=ALL,PROJECT,STORE,MANIFEST,AGE_MATCH_CHAINS,AGE_MATCH_SETS_PER_CHAIN,AGE_MATCH_GATHER_TASK_COUNT \
+  gather_age_matches.sbatch
+```
+
+Each launcher verified `SLURM_ARRAY_TASK_COUNT` against its declared task count,
+staged the store to its own `$TMPDIR`, and wrote one atomically published
+`OUTPUT.chains/chain-NNN.npz` bundle per chain task. Reruns validated and skipped
+complete bundles, and the gather refused to publish until all ten matched the
+target, candidate universe, store identity, derived chain seeds, provenance, and
+every exact row-derived CDF check. `SWAP_SAMPLER_HPC_HOWTO.md` holds the full
+manifest rules, memory model, and restart behavior, and
+`AGE_MATCHED_CONTROL_SAMPLER_PLAN.md` the sampler design and its gates.
+
+### Legacy alternatives kept for reproducibility
+
+Neither is part of the pipeline; both predate the interval-store route and are
+retained only to reproduce older analyses.
+
+**Dense CDF store.** `build_snp_age_store.py` is an alternative to
+`build_snp_interval_store.py` — never run both as sequential steps. It quantizes
+every SNP posterior to a CDF on a fixed age grid:
+
+```bash
+python build_snp_age_store.py \
+  project-data/posterior/*.tsz \
+  --numpy-store age_store \
+  --bin-width 1000 \
+  --block-snps 100000 \
+  --min-usable-fraction 0.1 \
+  --scratch-dir "$TMPDIR"
+```
+
+Its temporary float32 accumulator uses about
+`4 * number_of_SNPs * number_of_age_bins` bytes — roughly 15 GiB for 20 million
+SNPs and 200 bins, or 75 GiB for 1,000 bins — so fine grids cost substantially
+more disk and scratch, and changing the bin width requires a rebuild.
+`--omit-transpose` reduces final disk use at the cost of slower candidate scans.
+
+**Stratified rejection sampler.** `sample_age_matched_syn.py` divides a target
+into equal-mass age strata, materializes candidate weights, draws complete
+proposed sets, and accepts those below the Wasserstein threshold. It is less
+suitable for many large TE datasets because it builds target-specific candidate
+weights and can spend many proposals in rejection; §1.3 of
+`BOOTSTRAP_HPC_VALIDATION.md` records the O(pool) inner loop behind its 19-hour
+job.
+
+---
+
 ## Superseded readings
 
 Conclusions that later measurements overturned. Recorded because each was stated

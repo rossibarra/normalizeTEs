@@ -1,12 +1,12 @@
 # Swap-chain age matching on Farm/Quobyte
 
-> **This is the retained hard-q50 workflow (README §5), not the production
-> path.** Bootstrap-target matching (README §6) replaced it as the reported
+> **This is the abandoned hard-q50 workflow, not the production path.**
+> Bootstrap-target matching (README step 4) replaced it as the reported
 > result, and it is no longer a prerequisite for that stage: the matcher's
 > `--seed-sets` option is gone and each restart is a stratified draw from the
 > target's own age strata. `run_bootstrap_matching.sbatch` is the production
-> launcher. Use this runbook to reproduce an earlier analysis or to run a
-> labelled sensitivity analysis.
+> launcher. Use this runbook only to reproduce an earlier analysis;
+> `BOOTSTRAP_DISCARDED_APPROACHES.md` records why the stage was abandoned.
 
 This runbook produces 100 posterior-age-matched SNP sets for every TE dataset.
 The production layout is ten independently seeded chains with ten saved states
