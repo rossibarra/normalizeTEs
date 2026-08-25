@@ -1,0 +1,172 @@
+{
+  "bootstrap_by_link_bp": {
+    "0": {
+      "clusters": 4067,
+      "effective_n_loss": 0.0,
+      "excess_over_permuted_q50": 1.0112550031863492,
+      "excess_over_permuted_q95": 1.0080481716864675,
+      "largest_cluster": 1,
+      "observed": {
+        "max": 5786.261545457104,
+        "mean": 1640.8820503451368,
+        "quantiles": {
+          "q25": 1011.7948753254499,
+          "q5": 592.9961182226243,
+          "q50": 1479.2292553023753,
+          "q75": 2070.5946662104666,
+          "q95": 3337.8960606871715,
+          "q99": 4327.35502254956
+        },
+        "sd": 844.694175858591
+      },
+      "permuted": {
+        "max": 5658.2880484245115,
+        "mean": 1647.6473431441423,
+        "quantiles": {
+          "q25": 1012.971397841843,
+          "q5": 603.4330910444512,
+          "q50": 1462.765821322508,
+          "q75": 2078.4008023744746,
+          "q95": 3311.2465797173772,
+          "q99": 4094.2825780435905
+        },
+        "sd": 840.8434812652661
+      },
+      "singletons": 4067
+    },
+    "1000": {
+      "clusters": 3819,
+      "effective_n_loss": 0.06097860831079416,
+      "excess_over_permuted_q50": 1.0343026549212002,
+      "excess_over_permuted_q95": 1.0075929747715273,
+      "largest_cluster": 4,
+      "observed": {
+        "max": 5502.230738089956,
+        "mean": 1667.5401654403254,
+        "quantiles": {
+          "q25": 1024.3115084071176,
+          "q5": 598.7979460541125,
+          "q50": 1509.2666314444068,
+          "q75": 2114.548493422002,
+          "q95": 3328.5686295833634,
+          "q99": 4462.342942084536
+        },
+        "sd": 861.8826886631589
+      },
+      "permuted": {
+        "max": 6361.7140407326315,
+        "mean": 1639.9243900989047,
+        "quantiles": {
+          "q25": 1015.1619691144797,
+          "q5": 592.687150298204,
+          "q50": 1459.2117928570842,
+          "q75": 2080.983524119455,
+          "q95": 3303.4853486727807,
+          "q99": 4371.207693086685
+        },
+        "sd": 862.165027548276
+      },
+      "singletons": 3596
+    },
+    "10000": {
+      "clusters": 3203,
+      "effective_n_loss": 0.212441603147283,
+      "excess_over_permuted_q50": 1.030734330338457,
+      "excess_over_permuted_q95": 1.043931982012861,
+      "largest_cluster": 8,
+      "observed": {
+        "max": 6293.1640420306785,
+        "mean": 1718.7659285454977,
+        "quantiles": {
+          "q25": 1033.1727684884536,
+          "q5": 593.6273857053386,
+          "q50": 1529.5536653283018,
+          "q75": 2224.87209188646,
+          "q95": 3475.296032047725,
+          "q99": 4675.336955248186
+        },
+        "sd": 914.7549743123958
+      },
+      "permuted": {
+        "max": 5544.485443011972,
+        "mean": 1656.2059970162882,
+        "quantiles": {
+          "q25": 1018.3619613616002,
+          "q5": 618.2086681122076,
+          "q50": 1483.9455913203647,
+          "q75": 2098.701265634828,
+          "q95": 3329.0445085769106,
+          "q99": 4167.0192738027745
+        },
+        "sd": 842.8554066990104
+      },
+      "singletons": 2558
+    }
+  },
+  "exact_grid_points": 36746,
+  "interpretation": "excess_over_permuted_* is the dependence signal; the raw cluster-versus-iid ratio confounds dependence with the mechanical variance of resampling fewer, larger units",
+  "n_te_sites": 4067,
+  "q50_ratio_to_iid": {
+    "0": 1.0,
+    "1000": 1.0203060992975639,
+    "10000": 1.0340206968227108
+  },
+  "replicates": 2000,
+  "schema_version": "te-bootstrap-dependence-v1",
+  "seed": 7,
+  "software": {
+    "git_commit": "b8aaee7a9bb7da715d0a6a6b3037fcf4eaf5daf2",
+    "git_describe": "v0.3.1",
+    "git_dirty": false,
+    "git_tag": "v0.3.1",
+    "name": "normalizeTE",
+    "version": "0.3.1"
+  },
+  "spatial": {
+    "age_summary": "mean age (integral of survival)",
+    "morans_i": 0.020655645818071573,
+    "morans_i_expectation": -0.00024594195769798326,
+    "morans_i_neighbours": 5,
+    "variogram": [
+      {
+        "high_bp": 10000.0,
+        "low_bp": 0.0,
+        "pairs": 1117,
+        "ratio_to_variance": 0.668243749221984,
+        "semivariance": 7457379436.720713
+      },
+      {
+        "high_bp": 100000.0,
+        "low_bp": 10000.0,
+        "pairs": 1840,
+        "ratio_to_variance": 0.9243820361050634,
+        "semivariance": 10315798083.78272
+      },
+      {
+        "high_bp": 1000000.0,
+        "low_bp": 100000.0,
+        "pairs": 12972,
+        "ratio_to_variance": 0.9273648025249959,
+        "semivariance": 10349084771.447876
+      },
+      {
+        "high_bp": 5000000.0,
+        "low_bp": 1000000.0,
+        "pairs": 51309,
+        "ratio_to_variance": 0.9882335640652519,
+        "semivariance": 11028360037.66241
+      },
+      {
+        "high_bp": 20000000.0,
+        "low_bp": 5000000.0,
+        "pairs": 148274,
+        "ratio_to_variance": 0.9814054853945577,
+        "semivariance": 10952160935.866951
+      }
+    ]
+  },
+  "store": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/all_te_snp_age_interval_store",
+  "target": "results/targets/in_gene_75draw",
+  "target_source_store_content_sha256": "8e53c668edd34802a0f239d0b6fc207fcffd3f002139c8001e178d65dd87cd97",
+  "target_threshold_generations": 1480.4798714210222
+}

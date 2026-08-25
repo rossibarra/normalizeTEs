@@ -447,7 +447,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     write_target(args.output, result, metadata)
     print(f"Wrote TE target to {args.output}")
-    print(f"W1 acceptance threshold: {result.threshold:.6g} generations")
+    print(
+        f"W1 acceptance threshold: {result.threshold:.6g} generations"
+    )
     return 0
 
 

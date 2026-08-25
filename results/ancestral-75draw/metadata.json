@@ -1,0 +1,553 @@
+{
+  "bases": [
+    "A",
+    "C",
+    "G",
+    "T"
+  ],
+  "conditioning": "proportions are conditioned on presence: divide by present_draw_count",
+  "draws": [
+    {
+      "accumulated": 25030335,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.100.tsz",
+      "resolved": 25030335,
+      "sites": 25030335,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24745302,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.101.tsz",
+      "resolved": 24745302,
+      "sites": 24745302,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24909871,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.102.tsz",
+      "resolved": 24909871,
+      "sites": 24909871,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24673224,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.103.tsz",
+      "resolved": 24673224,
+      "sites": 24673224,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24619575,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.104.tsz",
+      "resolved": 24619575,
+      "sites": 24619575,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24829243,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.105.tsz",
+      "resolved": 24829243,
+      "sites": 24829243,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24741125,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.106.tsz",
+      "resolved": 24741125,
+      "sites": 24741125,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24693482,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.107.tsz",
+      "resolved": 24693482,
+      "sites": 24693482,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24666593,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.108.tsz",
+      "resolved": 24666593,
+      "sites": 24666593,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24636529,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.109.tsz",
+      "resolved": 24636529,
+      "sites": 24636529,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24865544,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.110.tsz",
+      "resolved": 24865544,
+      "sites": 24865544,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24669743,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.111.tsz",
+      "resolved": 24669743,
+      "sites": 24669743,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24649916,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.112.tsz",
+      "resolved": 24649916,
+      "sites": 24649916,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24692599,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.113.tsz",
+      "resolved": 24692599,
+      "sites": 24692599,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 25150363,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.114.tsz",
+      "resolved": 25150363,
+      "sites": 25150363,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24733382,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.115.tsz",
+      "resolved": 24733382,
+      "sites": 24733382,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24883822,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.116.tsz",
+      "resolved": 24883822,
+      "sites": 24883822,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24783376,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.117.tsz",
+      "resolved": 24783376,
+      "sites": 24783376,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24749694,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.118.tsz",
+      "resolved": 24749694,
+      "sites": 24749694,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24768231,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.119.tsz",
+      "resolved": 24768231,
+      "sites": 24768231,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24725267,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.120.tsz",
+      "resolved": 24725267,
+      "sites": 24725267,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24746122,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.121.tsz",
+      "resolved": 24746122,
+      "sites": 24746122,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24800642,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.122.tsz",
+      "resolved": 24800642,
+      "sites": 24800642,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24607968,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.123.tsz",
+      "resolved": 24607968,
+      "sites": 24607968,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24836620,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.124.tsz",
+      "resolved": 24836620,
+      "sites": 24836620,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24818329,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.125.tsz",
+      "resolved": 24818329,
+      "sites": 24818329,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24652868,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.126.tsz",
+      "resolved": 24652868,
+      "sites": 24652868,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24671385,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.127.tsz",
+      "resolved": 24671385,
+      "sites": 24671385,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24654277,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.128.tsz",
+      "resolved": 24654277,
+      "sites": 24654277,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24815999,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.129.tsz",
+      "resolved": 24815999,
+      "sites": 24815999,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24693747,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.130.tsz",
+      "resolved": 24693747,
+      "sites": 24693747,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24874380,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.131.tsz",
+      "resolved": 24874380,
+      "sites": 24874380,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24869859,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.132.tsz",
+      "resolved": 24869859,
+      "sites": 24869859,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24794952,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.133.tsz",
+      "resolved": 24794952,
+      "sites": 24794952,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24760014,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.134.tsz",
+      "resolved": 24760014,
+      "sites": 24760014,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24870463,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.135.tsz",
+      "resolved": 24870463,
+      "sites": 24870463,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24660760,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.136.tsz",
+      "resolved": 24660760,
+      "sites": 24660760,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24658325,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.137.tsz",
+      "resolved": 24658325,
+      "sites": 24658325,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24719293,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.138.tsz",
+      "resolved": 24719293,
+      "sites": 24719293,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24829784,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.139.tsz",
+      "resolved": 24829784,
+      "sites": 24829784,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24668914,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.140.tsz",
+      "resolved": 24668914,
+      "sites": 24668914,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24839729,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.141.tsz",
+      "resolved": 24839729,
+      "sites": 24839729,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24791891,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.142.tsz",
+      "resolved": 24791891,
+      "sites": 24791891,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24855285,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.143.tsz",
+      "resolved": 24855285,
+      "sites": 24855285,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24828020,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.144.tsz",
+      "resolved": 24828020,
+      "sites": 24828020,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24642421,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.145.tsz",
+      "resolved": 24642421,
+      "sites": 24642421,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24701298,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.146.tsz",
+      "resolved": 24701298,
+      "sites": 24701298,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24849585,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.147.tsz",
+      "resolved": 24849585,
+      "sites": 24849585,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24654748,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.148.tsz",
+      "resolved": 24654748,
+      "sites": 24654748,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24615869,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.149.tsz",
+      "resolved": 24615869,
+      "sites": 24615869,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24902712,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.75.tsz",
+      "resolved": 24902712,
+      "sites": 24902712,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24546076,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.76.tsz",
+      "resolved": 24546076,
+      "sites": 24546076,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 25018890,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.77.tsz",
+      "resolved": 25018890,
+      "sites": 25018890,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24751617,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.78.tsz",
+      "resolved": 24751617,
+      "sites": 24751617,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24763580,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.79.tsz",
+      "resolved": 24763580,
+      "sites": 24763580,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24564716,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.80.tsz",
+      "resolved": 24564716,
+      "sites": 24564716,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24778806,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.81.tsz",
+      "resolved": 24778806,
+      "sites": 24778806,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24770051,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.82.tsz",
+      "resolved": 24770051,
+      "sites": 24770051,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24772380,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.83.tsz",
+      "resolved": 24772380,
+      "sites": 24772380,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24788676,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.84.tsz",
+      "resolved": 24788676,
+      "sites": 24788676,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24734650,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.85.tsz",
+      "resolved": 24734650,
+      "sites": 24734650,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24742691,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.86.tsz",
+      "resolved": 24742691,
+      "sites": 24742691,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24612677,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.87.tsz",
+      "resolved": 24612677,
+      "sites": 24612677,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24784260,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.88.tsz",
+      "resolved": 24784260,
+      "sites": 24784260,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24976315,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.89.tsz",
+      "resolved": 24976315,
+      "sites": 24976315,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 25020011,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.90.tsz",
+      "resolved": 25020011,
+      "sites": 25020011,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24721947,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.91.tsz",
+      "resolved": 24721947,
+      "sites": 24721947,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24824289,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.92.tsz",
+      "resolved": 24824289,
+      "sites": 24824289,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 25032164,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.93.tsz",
+      "resolved": 25032164,
+      "sites": 25032164,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24738501,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.94.tsz",
+      "resolved": 24738501,
+      "sites": 24738501,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24727065,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.95.tsz",
+      "resolved": 24727065,
+      "sites": 24727065,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24695208,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.96.tsz",
+      "resolved": 24695208,
+      "sites": 24695208,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24716214,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.97.tsz",
+      "resolved": 24716214,
+      "sites": 24716214,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24805868,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.98.tsz",
+      "resolved": 24805868,
+      "sites": 24805868,
+      "unusable_ancestral": 0
+    },
+    {
+      "accumulated": 24929209,
+      "path": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/run.combined.99.tsz",
+      "resolved": 24929209,
+      "sites": 24929209,
+      "unusable_ancestral": 0
+    }
+  ],
+  "intended_use": "linear mixture p*h(k,n) + (1-p)*h(n-k,n); do not threshold",
+  "max_present_draw_count": 75,
+  "rows_contested_below_0.9": 6698584,
+  "rows_with_any_draw": 31240944,
+  "schema_version": "ancestral-state-counts-v1",
+  "software": {
+    "git_commit": "b8aaee7a9bb7da715d0a6a6b3037fcf4eaf5daf2",
+    "git_describe": "v0.3.1",
+    "git_dirty": false,
+    "git_tag": "v0.3.1",
+    "name": "normalizeTE",
+    "version": "0.3.1"
+  },
+  "store": "/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/combined/all_te_snp_age_interval_store",
+  "store_content_sha256": "8e53c668edd34802a0f239d0b6fc207fcffd3f002139c8001e178d65dd87cd97",
+  "store_rows": 31240944,
+  "store_schema": "snp-age-interval-v1"
+}

@@ -1,0 +1,12 @@
+{
+  "observed_phi": 0.14490936157726242,
+  "n_te": 8019,
+  "n_control": 8019,
+  "draws": 200,
+  "mean_flip_probability": 0.18570165132029065,
+  "flip_scale": 0.6,
+  "perturbed_phi_median": 0.10855098559381299,
+  "perturbed_phi_2.5pct": 0.1003290189107216,
+  "perturbed_phi_97.5pct": 0.11627104372616462,
+  "caveat": "chr10 only; frequency-blind control sample; not the scientific result"
+}

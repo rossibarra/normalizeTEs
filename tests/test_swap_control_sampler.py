@@ -58,6 +58,11 @@ def _interval_store(path):
 
 def _target(path, store_path, *, rows=None, threshold=1_000.0):
     from snp_interval_dataset import SNPAgeIntervalDataset
+    from te_age_target import (
+        analysis_grid_edges,
+        equal_mass_boundaries,
+        largest_remainder_quotas,
+    )
 
     store = SNPAgeIntervalDataset.open(store_path)
     rows = np.asarray(
@@ -65,11 +70,20 @@ def _target(path, store_path, *, rows=None, threshold=1_000.0):
     )
     ages = np.array([0, 10, 20, 30], dtype=np.float64)
     cdf = store.aggregate_cdf_at(rows, ages + 5, side="left", weighting="interval")
+    # The equal-mass strata a real te_age_target directory ships; the
+    # bootstrap-target matcher initialises every restart from them.
+    boundaries = equal_mass_boundaries(cdf, bin_centers=ages)
+    quotas = largest_remainder_quotas(rows.size, boundaries.interval_shares)
     path.mkdir()
     np.save(path / "te_row_indices.npy", rows)
     np.save(path / "age_bins.npy", ages)
     np.save(path / "target_cdf.npy", cdf)
     np.save(path / "bootstrap_wasserstein.npy", np.array([threshold]))
+    np.save(path / "interval_quotas.npy", quotas)
+    np.save(
+        path / "interval_boundary_ages.npy",
+        analysis_grid_edges(ages)[boundaries.indices],
+    )
     (path / "metadata.json").write_text(json.dumps({
         "source_store_schema": INTERVAL_SCHEMA_VERSION,
         "source_catalog_sha256": "fixture-catalog",
@@ -252,7 +266,7 @@ def test_cli_writes_four_exact_sets_atomically(tmp_path):
     assert metadata["complete"] is True
     assert metadata["sets"] == 4
     assert metadata["software"]["name"] == "normalizeTE"
-    assert metadata["software"]["version"] == "0.3.1"
+    assert metadata["software"]["version"] == "0.4.0"
     assert metadata["algorithm_version"] == (
         "swap-age-controls-v2.1-adaptive-construction"
     )

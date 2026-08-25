@@ -12,11 +12,12 @@ Input assumptions, all of which are recorded in the output metadata:
   separate biallelic records, so a comma in ALT is treated as an error rather
   than split here.
 * The VCF FILTER column is ignored. The declared input is the already
-  filtered, already polarized preprocessing VCF, so every record at a
-  requested coordinate is used.
-* Ancestral alleles are matched case-sensitively. A lowercase INFO value
-  conventionally marks a low-confidence call and is rejected rather than
-  silently folded to upper case.
+  filtered preprocessing VCF, so every record at a requested coordinate is used.
+* The VCF is **not** assumed to be polarized, and no REF or INFO annotation is
+  consulted. TE sites are polarized by biology -- an insertion is the derived
+  state -- and control SNPs by the ARG-derived table given to
+  `--ancestral-table`, as a posterior-weighted mixture over the two observed
+  alleles.
 """
 
 from __future__ import annotations
@@ -48,10 +49,11 @@ SCHEMA_VERSION = "phi-sfs-v1"
 # Per-replicate identifier arrays published by each supported matched-control
 # schema. The swap sampler saves ten correlated states from each of ten chains,
 # so its replicates are identified by chain and position within that chain. The
-# bootstrap-target matcher produces independent replicates with no chain
-# structure, so it identifies them by replicate alone; inventing chain and
-# sample columns for it would imply a within-chain correlation that does not
-# exist.
+# bootstrap-target matcher produces replicates with no chain structure, so it
+# identifies them by replicate alone; inventing chain and sample columns would
+# imply a within-chain correlation that does not exist. "No chain structure" is
+# the whole claim -- these replicates are not statistically independent, since
+# they share the observed TE sample and the interval store.
 MATCH_IDENTIFIERS = {
     "swap-age-matched-controls-v1": ("chain_index", "sample_index"),
     "bootstrap-target-matches-v1": ("replicate_id",),
@@ -72,8 +74,18 @@ _GENOTYPE_ERRORS = {
 
 @dataclass(frozen=True)
 class SiteCount:
-    derived: int
+    """One site's observed counts, with polarity carried rather than applied.
+
+    `alt` and `callable` come from the genotypes and are polarity-independent.
+    `p_alt_derived` is the probability that ALT is the derived allele: exactly 1
+    at a TE site, where insertion is derived by biology, and the ARG's posterior
+    proportion at a control SNP. Orientation is applied when spectra are summed,
+    not here, because that is the only step that depends on it.
+    """
+
+    alt: int
     callable: int
+    p_alt_derived: float
 
 
 class PhiResult(NamedTuple):
@@ -147,6 +159,12 @@ def project_sites(
     less polymorphic mass, which is the intended weighting. The companion
     endpoint array holds the excluded `h_0 + h_20` mass for diagnostics.
 
+    Each projection is a polarity-weighted mixture of the site's two possible
+    orientations (see below). Because reversing a projection swaps `h_0` with
+    `h_20`, the retained mass `1 - h_0 - h_20` is invariant under polarity, so
+    the weighting redistributes mass within a site and never reweights sites
+    against each other.
+
     Returns the coordinate-to-row map, an (n_distinct, 19) projection matrix,
     and the aligned (n_distinct,) endpoint masses.
     """
@@ -159,11 +177,23 @@ def project_sites(
             continue
         row = distinct.get(item)
         if row is None:
-            vector = hypergeometric_projection(item.derived, item.callable)
+            # Polarity is a probability, not a decision, so a site contributes
+            # the posterior mean of its two orientations:
+            #     p * h(k, n) + (1 - p) * h(n - k, n)
+            # and h(n - k, n) is exactly h(k, n) reversed, so one projection
+            # serves both. The mixture is linear in p and therefore unbiased at
+            # any number of posterior draws, and a site the ARG cannot polarize
+            # (p near 0.5) contributes a near-symmetric, effectively folded
+            # shape rather than a confidently wrong one.
+            vector = hypergeometric_projection(item.alt, item.callable)
+            p = float(item.p_alt_derived)
+            if not 0.0 <= p <= 1.0:
+                raise ValueError(f"polarity weight out of range at {coordinate}: {p}")
+            mixed = p * vector + (1.0 - p) * vector[::-1]
             row = len(retained)
             distinct[item] = row
-            retained.append(vector[1:PROJECTION_SIZE])
-            endpoints.append(float(vector[0] + vector[PROJECTION_SIZE]))
+            retained.append(mixed[1:PROJECTION_SIZE])
+            endpoints.append(float(mixed[0] + mixed[PROJECTION_SIZE]))
         rows[coordinate] = row
     projections = (
         np.asarray(retained, dtype=np.float64) if retained
@@ -288,15 +318,6 @@ def _open_vcf(path: Path):
     return io.TextIOWrapper(stream, encoding="utf-8"), hashing, buffered
 
 
-def _parse_info(info: str) -> dict[str, str | None]:
-    result: dict[str, str | None] = {}
-    if info == ".":
-        return result
-    for item in info.split(";"):
-        key, separator, value = item.partition("=")
-        result[key] = value if separator else None
-    return result
-
 
 def _decode_genotype(gt: str, heterozygous: str) -> int | None | str:
     """Return one individual's allele, None when not callable, or an error tag.
@@ -322,12 +343,110 @@ def _decode_genotype(gt: str, heterozygous: str) -> int | None | str:
     return values[0]
 
 
+def _checked_table_array(path: Path, shape: tuple[int, ...]) -> np.ndarray:
+    """Load an ancestral-table array, refusing a wrong shape or a signed dtype.
+
+    Both arrays are counts indexed by store row, so a shape mismatch means the
+    table does not describe this store and a signed or floating dtype means it
+    was not written by the builder. Either would otherwise surface as silently
+    misaligned polarity rather than an error.
+    """
+    array = np.load(path, mmap_mode="r", allow_pickle=False)
+    if array.shape != shape:
+        raise ValueError(f"{path.name} has shape {array.shape}, expected {shape}")
+    if array.dtype.kind != "u":
+        raise ValueError(f"{path.name} has dtype {array.dtype}, expected unsigned")
+    return array
+
+
+class PolarityResolver:
+    """Resolves P(ALT is derived) per site, from two sources.
+
+    TE sites are polarized by biology: a TE insertion is the derived state, and
+    the genotyping convention encodes presence as ALT, so the weight is exactly
+    1. The rare exception -- a TE that fixed and was later removed by a deletion
+    -- is not modelled; it accounts for about 3% of TE sites and identifying it
+    would need an independent outgroup.
+
+    Control SNPs cannot be polarized that way. Their weight is the posterior
+    proportion of ARG draws calling REF ancestral -- equivalently, ALT derived --
+    among the draws that named one of the two observed alleles. Conditioning that
+    way rather than on the raw present-draw count is what lets every requested
+    site carry a weight without an intersection across draws or a fallback rule,
+    and it discards draws naming a third base, which cannot orient the site.
+
+    The proportion is used as reported. Against TE ground truth the ARG is only
+    about 91% correct where all its draws agree, so this weight is somewhat
+    overconfident and control spectra come out sharper than the ARG's measured
+    accuracy warrants. That is a deliberate, recorded choice, not an oversight.
+
+    Resolution happens during the VCF scan because the weight depends on which
+    allele is ALT, which only the scan knows.
+    """
+
+    BASES = "ACGT"
+
+    def __init__(
+        self,
+        te_coordinates: set[tuple[str, int]],
+        *,
+        store_positions: np.ndarray,
+        chromosome_offsets: dict[str, int],
+        ancestral_counts: np.ndarray,
+        present_draw_count: np.ndarray,
+    ) -> None:
+        self._te = te_coordinates
+        self._positions = np.asarray(store_positions)
+        self._offsets = chromosome_offsets
+        self._counts = ancestral_counts
+        self._present = present_draw_count
+        self.te_sites = 0
+        self.control_sites = 0
+
+    def __call__(self, chrom: str, position: int, ref: str, alt: str) -> float:
+        if (chrom, position) in self._te:
+            self.te_sites += 1
+            return 1.0
+        offset = self._offsets.get(chrom)
+        if offset is None:
+            raise ValueError(f"no chromosome offset for {chrom!r}")
+        target = float(offset + position)
+        index = int(np.searchsorted(self._positions, target))
+        if index >= self._positions.size or self._positions[index] != target:
+            raise ValueError(
+                f"control site {chrom}:{position} is absent from the ancestral "
+                "table; it cannot be polarized"
+            )
+        if ref not in self.BASES or alt not in self.BASES:
+            raise ValueError(f"non-ACGT allele at {chrom}:{position}: {ref}/{alt}")
+        # The table counts how many draws called each base ANCESTRAL, so ALT is
+        # derived exactly when REF is the ancestral call. Condition on draws that
+        # picked one of the two observed alleles: a draw naming a third base
+        # cannot orient this site and is not evidence either way.
+        row = self._counts[index]
+        if row.sum() > self._present[index]:
+            raise ValueError(
+                f"ancestral table is inconsistent at {chrom}:{position}: "
+                f"{int(row.sum())} ancestral calls across {int(self._present[index])} "
+                "draws"
+            )
+        ref_calls = float(row[self.BASES.index(ref)])
+        alt_calls = float(row[self.BASES.index(alt)])
+        oriented = ref_calls + alt_calls
+        if oriented <= 0:
+            raise ValueError(
+                f"no posterior draw at {chrom}:{position} calls either observed "
+                f"allele ({ref}/{alt}) ancestral; it cannot be polarized"
+            )
+        self.control_sites += 1
+        return ref_calls / oriented
+
+
 def read_site_counts(
     vcf: Path,
     coordinates: set[tuple[str, int]],
     *,
-    ancestral_mode: str,
-    ancestral_info: str,
+    polarity: PolarityResolver,
     heterozygous: str,
     progress: bool = True,
 ) -> tuple[dict[tuple[str, int], SiteCount], str]:
@@ -369,25 +488,10 @@ def read_site_counts(
             fields = rest.rstrip("\n").split("\t")
             if len(fields) < 8:
                 raise ValueError(f"{vcf}:{line_number}: expected VCF samples and FORMAT")
-            ref, alt, info, formats = fields[1], fields[2], fields[5], fields[6]
+            ref, alt, formats = fields[1], fields[2], fields[6]
             if "," in alt:
                 raise ValueError(f"multiallelic VCF record at {chrom}:{position}")
-            if ancestral_mode == "ref":
-                ancestral = ref
-            else:
-                value = _parse_info(info).get(ancestral_info)
-                if value is None or "," in value:
-                    raise ValueError(
-                        f"missing or ambiguous INFO/{ancestral_info} at {chrom}:{position}"
-                    )
-                ancestral = value
-            if ancestral not in (ref, alt):
-                raise ValueError(
-                    f"ancestral allele {ancestral!r} is neither REF {ref!r} nor ALT "
-                    f"{alt!r} at {chrom}:{position}; ancestral alleles are compared "
-                    "case-sensitively, and a lowercase value conventionally marks a "
-                    "low-confidence call that this analysis does not accept"
-                )
+            weight = polarity(chrom, position, ref, alt)
             format_fields = formats.split(":")
             if "GT" not in format_fields:
                 raise ValueError(f"VCF record lacks GT at {chrom}:{position}")
@@ -413,8 +517,9 @@ def read_site_counts(
                     ))
                 alt_count += allele
                 callable_count += 1
-            derived = alt_count if ancestral == ref else callable_count - alt_count
-            found[coordinate] = SiteCount(derived=derived, callable=callable_count)
+            found[coordinate] = SiteCount(
+                alt=alt_count, callable=callable_count, p_alt_derived=weight,
+            )
         while buffered.read(1 << 20):
             pass
     finally:
@@ -552,13 +657,88 @@ def calculate(args: argparse.Namespace) -> None:
         f"across {len(snp_coordinates)} matched sets",
         flush=True,
     )
+    table = Path(args.ancestral_table)
+    store_meta = json.loads((table / "metadata.json").read_text(encoding="utf-8"))
+    if store_meta.get("schema_version") != "ancestral-state-counts-v1":
+        raise ValueError(f"unexpected ancestral table schema in {table}")
+    if list(store_meta.get("bases", [])) != ["A", "C", "G", "T"]:
+        raise ValueError(
+            f"ancestral table declares bases {store_meta.get('bases')!r}; the "
+            "count columns are read positionally and must be A, C, G, T"
+        )
+    # Bind the table to the same store the target and matches were built from.
+    # Without this a table from another store with overlapping row coordinates
+    # produces a complete, plausible result with the wrong control polarity --
+    # a silent scientific error rather than a crash. The digest is the identity;
+    # the recorded path supplies the row-coordinate catalog and is therefore
+    # required at analysis time as well as recorded for provenance.
+    table_digest = store_meta.get("store_content_sha256")
+    expected_digest = (
+        target_meta.get("source_store_content_sha256")
+        or match_meta.get("source_store_content_sha256")
+    )
+    if expected_digest is None:
+        raise ValueError(
+            "target and matches record no store content digest, so the ancestral "
+            "table cannot be bound to them; rebuild them from a store carrying "
+            "content_sha256"
+        )
+    if table_digest != expected_digest:
+        raise ValueError(
+            f"ancestral table was built from a different interval store: it "
+            f"records {table_digest!r}, the target and matches record "
+            f"{expected_digest!r}"
+        )
+    source_store = Path(store_meta["store"])
+    source_metadata = json.loads(
+        (source_store / "metadata.json").read_text(encoding="utf-8")
+    )
+    if source_metadata.get("content_sha256") != table_digest:
+        raise ValueError(
+            "the ancestral table's recorded source-store path no longer carries "
+            "the content digest used to build the table"
+        )
+    store_positions = np.load(
+        source_store / "positions.npy", mmap_mode="r", allow_pickle=False)
+    declared_rows = store_meta.get("store_rows")
+    if declared_rows is not None and int(declared_rows) != store_positions.size:
+        raise ValueError(
+            f"ancestral table declares {declared_rows:,} store rows but its store "
+            f"has {store_positions.size:,}"
+        )
+    chromosome_offsets = {
+        entry["chrom"]: int(entry["offset"])
+        for entry in source_metadata["chromosomes"]
+    }
+    # Validated for shape and dtype even though the resolver conditions on the
+    # two observed alleles rather than this total; a malformed table should fail
+    # here rather than in a later reader.
+    if not store_meta.get("complete"):
+        raise ValueError(
+            f"ancestral table at {table} is not marked complete; it may be a "
+            "partially written or interrupted build"
+        )
+    present_counts = _checked_table_array(
+        table / "present_draw_count.npy", (store_positions.size,))
+    polarity = PolarityResolver(
+        set(te_coordinates),
+        store_positions=store_positions,
+        chromosome_offsets=chromosome_offsets,
+        ancestral_counts=_checked_table_array(
+            table / "ancestral_counts.npy", (store_positions.size, 4)),
+        present_draw_count=present_counts,
+    )
     counts, vcf_sha256 = read_site_counts(
         args.vcf,
         requested,
-        ancestral_mode=args.ancestral_mode,
-        ancestral_info=args.ancestral_info,
+        polarity=polarity,
         heterozygous=args.heterozygous,
         progress=not args.quiet,
+    )
+    print(
+        f"polarity: {polarity.te_sites:,} TE sites from biology, "
+        f"{polarity.control_sites:,} control sites from the ancestral table",
+        flush=True,
     )
     missing = sorted(requested.difference(counts))
     if missing:
@@ -692,8 +872,14 @@ def calculate(args: argparse.Namespace) -> None:
             "target_digest": target_digest,
             "vcf": str(args.vcf.resolve()),
             "vcf_sha256": vcf_sha256,
-            "ancestral_mode": args.ancestral_mode,
-            "ancestral_info": args.ancestral_info if args.ancestral_mode == "info" else None,
+            "polarity_source": (
+                "TE sites: insertion is derived (biological); control SNPs: "
+                "posterior-weighted mixture over ARG ancestral calls, "
+                "conditioned on presence, used uncalibrated"
+            ),
+            "ancestral_table": str(Path(args.ancestral_table).resolve()),
+            "te_sites_polarized": polarity.te_sites,
+            "control_sites_polarized": polarity.control_sites,
             "ancestral_case_policy": (
                 "case-sensitive; a lowercase ancestral allele is rejected rather than folded"
             ),
@@ -733,10 +919,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--vcf", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
-        "--ancestral-mode", choices=("ref", "info"), default="ref",
-        help="take REF as ancestral (default) or read an INFO annotation",
+        "--ancestral-table", type=Path, required=True,
+        help="directory written by build_ancestral_states.py, giving each "
+             "control SNP's posterior polarity; TE sites are polarized by "
+             "biology and do not consult it",
     )
-    parser.add_argument("--ancestral-info", default="AA")
     parser.add_argument("--heterozygous", choices=("error", "missing"), default="error")
     parser.add_argument(
         "--quiet", action="store_true",

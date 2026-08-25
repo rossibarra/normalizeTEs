@@ -18,7 +18,7 @@ from typing import Callable, Sequence
 
 import numpy as np
 
-from release_provenance import software_provenance
+from release_provenance import loaded_source_digest, software_provenance
 from sample_age_matched_controls import _load_target, _sha256_arrays
 from snp_age_store import is_interval_store, open_snp_age_store, store_schema
 from swap_control_sampler import (
@@ -27,9 +27,10 @@ from swap_control_sampler import (
     eligible_candidates,
     incremental_cdf,
     row_cdfs,
-    search_grid,
 )
-from te_age_target import wasserstein_1
+from te_age_target import (
+    wasserstein_1,
+)
 
 
 SCHEMA_VERSION = "bootstrap-target-matches-v1"
@@ -39,8 +40,7 @@ ALGORITHM_VERSION = "bootstrap-target-exact-greedy-v1"
 @dataclass(frozen=True)
 class OptimizerConfig:
     replicates: int = 100
-    closest_restarts: int = 2
-    diverse_restarts: int = 1
+    restarts: int = 3
     min_epochs: int = 10
     max_epochs: int = 50
     patience: int = 5
@@ -50,15 +50,15 @@ class OptimizerConfig:
     cdf_block_rows: int = 256
     search_bin_width: int = 20_000
     qc_max_ratio: float = 0.5
-    qc_max_absolute: float = 500.0
+    qc_max_absolute: float | None = None
+    qc_max_absolute_fraction: float = 0.34
+    disjoint_replicates: bool = False
     algorithm_version: str = ALGORITHM_VERSION
 
     def validate(self) -> None:
         if self.replicates <= 0:
             raise ValueError("replicates must be positive")
-        if self.closest_restarts < 0 or self.diverse_restarts < 0:
-            raise ValueError("restart counts must be nonnegative")
-        if self.closest_restarts + self.diverse_restarts <= 0:
+        if self.restarts <= 0:
             raise ValueError("at least one restart is required")
         if not 0 < self.min_epochs <= self.max_epochs:
             raise ValueError("epochs must satisfy 0 < min <= max")
@@ -70,14 +70,14 @@ class OptimizerConfig:
             raise ValueError("material improvement ratio must be nonnegative")
         if self.absolute_tolerance < 0 or self.relative_tolerance < 0:
             raise ValueError("numerical tolerances must be nonnegative")
-        if self.qc_max_ratio <= 0 or self.qc_max_absolute <= 0:
+        if self.qc_max_absolute is not None and self.qc_max_absolute <= 0:
+            raise ValueError("QC thresholds must be positive")
+        if self.qc_max_ratio <= 0 or self.qc_max_absolute_fraction <= 0:
             raise ValueError("QC thresholds must be positive")
 
 
 @dataclass
 class RestartResult:
-    seed_index: int
-    restart_kind: str
     seed: int
     rows: np.ndarray
     cdf: np.ndarray
@@ -141,30 +141,56 @@ def bootstrap_cdf(counts: np.ndarray, cdf_rows: np.ndarray,
     return accumulated / total
 
 
-def select_seed_indices(
-    seed_cdfs: np.ndarray,
-    target_cdf: np.ndarray,
-    age_bins: np.ndarray,
-    *,
-    closest: int,
-    diverse: int,
-    rng: np.random.Generator,
-) -> list[tuple[int, str]]:
-    if seed_cdfs.ndim != 2 or seed_cdfs.shape[1:] != target_cdf.shape:
-        raise ValueError("seed CDFs do not align with target CDF")
-    total = closest + diverse
-    if total > seed_cdfs.shape[0]:
-        raise ValueError("requested restarts exceed available seed sets")
-    distances = np.asarray([
-        wasserstein_1(cdf, target_cdf, age_bins) for cdf in seed_cdfs
-    ])
-    order = np.argsort(distances, kind="stable")
-    chosen = [(int(index), "closest") for index in order[:closest]]
-    remaining = order[closest:]
-    if diverse:
-        selected = rng.choice(remaining, size=diverse, replace=False)
-        chosen.extend((int(index), "diverse") for index in selected)
-    return chosen
+def stratified_initial_set(
+    store: object, boundary_ages: np.ndarray, quotas: np.ndarray,
+    candidates: np.ndarray, rng: np.random.Generator, *,
+    oversample: int = 20,
+) -> np.ndarray:
+    """Draw an initial set matching the target's equal-mass age strata.
+
+    The target bundle ships `interval_boundary_ages` and `interval_quotas`: 20
+    equal-mass age strata and how many TE sites fall in each. Filling those
+    quotas from the candidate pool gives a starting state already shaped like
+    the target, which is what the hard-q50 sampler's construction phase
+    produced. Building it here removes the dependency on a hard-q50 seed
+    library entirely.
+
+    Candidates are assigned to a stratum by their median age, read off their
+    CDF at the 21 boundary ages rather than on the full analysis grid, so this
+    costs one narrow read per sampled candidate. A pool of `oversample` times
+    the target size is drawn first; any stratum the draw underfills is topped up
+    from the unused remainder, so the returned set always has exactly the
+    required size even where the pool is thin.
+    """
+    n_target = int(quotas.sum())
+    pool = rng.choice(candidates, size=min(candidates.size, n_target * oversample),
+                      replace=False)
+    at_boundary = row_cdfs(store, pool, np.asarray(boundary_ages, dtype=np.float64),
+                           block_rows=4096, dtype=np.dtype("float32"))
+    # median age = first boundary whose CDF reaches 0.5
+    reached = at_boundary >= 0.5
+    stratum = np.where(reached.any(axis=1), reached.argmax(axis=1) - 1,
+                       quotas.size - 1)
+    stratum = np.clip(stratum, 0, quotas.size - 1)
+
+    chosen: list[np.ndarray] = []
+    used = np.zeros(pool.size, dtype=bool)
+    for k, want in enumerate(quotas):
+        avail = np.flatnonzero((stratum == k) & ~used)
+        take = avail[:int(want)] if avail.size >= want else avail
+        used[take] = True
+        chosen.append(pool[take])
+    have = int(sum(c.size for c in chosen))
+    if have < n_target:
+        spare = np.flatnonzero(~used)
+        chosen.append(pool[spare[:n_target - have]])
+    out = np.concatenate(chosen)[:n_target]
+    if out.size < n_target:
+        raise ValueError(
+            f"stratified initialisation drew {out.size:,} of {n_target:,} rows; "
+            "raise --init-oversample or widen the candidate pool"
+        )
+    return np.sort(out)
 
 
 def optimize_restart(
@@ -179,8 +205,6 @@ def optimize_restart(
     coarse_target: np.ndarray,
     coarse_ages: np.ndarray,
     coarse_points: np.ndarray,
-    seed_index: int,
-    restart_kind: str,
     seed: int,
     config: OptimizerConfig,
     progress: Callable[[str], None] | None = None,
@@ -309,8 +333,6 @@ def optimize_restart(
     ):
         raise RuntimeError("best-state certification changed its W1 distance")
     return RestartResult(
-        seed_index=seed_index,
-        restart_kind=restart_kind,
         seed=seed,
         rows=best_rows,
         cdf=certified_best,
@@ -336,8 +358,6 @@ def validate_restart_result(
     bootstrap_target: np.ndarray,
     observed_target: np.ndarray,
     age_bins: np.ndarray,
-    expected_seed_index: int,
-    expected_kind: str,
     expected_seed: int,
 ) -> None:
     rows = np.asarray(result.rows, dtype=np.int64)
@@ -345,11 +365,7 @@ def validate_restart_result(
         raise ValueError("restart result rows must be nonempty and unique")
     if not np.all(np.isin(rows, candidates)):
         raise ValueError("restart result contains rows outside the candidate universe")
-    if (
-        result.seed_index != expected_seed_index
-        or result.restart_kind != expected_kind
-        or result.seed != expected_seed
-    ):
+    if result.seed != expected_seed:
         raise ValueError("restart result seed identity differs")
     certified = aggregate_cdf(store, rows, analysis_points(age_bins))
     if not np.allclose(result.cdf, certified, rtol=1e-10, atol=1e-8):
@@ -365,7 +381,7 @@ def validate_restart_result(
         raise ValueError("restart result best-distance trace is invalid")
 
 
-def target_digest_for(path: Path) -> tuple[str, np.ndarray, np.ndarray, np.ndarray, dict]:
+def target_digest_for(path: Path) -> tuple[str, np.ndarray, np.ndarray, np.ndarray, float, dict]:
     """Return the project-wide target digest and the target arrays behind it.
 
     The digest must be byte-identical to the one `sample_age_matched_controls`
@@ -378,33 +394,22 @@ def target_digest_for(path: Path) -> tuple[str, np.ndarray, np.ndarray, np.ndarr
     digest = _sha256_arrays(
         rows, cdf, ages, np.asarray([threshold], dtype=np.float64)
     )
-    return digest, rows, cdf, ages, metadata
+    return digest, rows, cdf, ages, threshold, metadata
 
 
-def _load_seed_bundle(path: Path) -> tuple[np.ndarray, np.ndarray, dict]:
-    rows = np.load(path / "row_indices.npy", allow_pickle=False).astype(np.int64)
-    cdfs = np.load(path / "cdfs.npy", allow_pickle=False).astype(np.float64)
-    with (path / "metadata.json").open(encoding="utf-8") as handle:
-        metadata = json.load(handle)
-    if rows.ndim != 2 or rows.shape[0] == 0 or cdfs.shape[0] != rows.shape[0]:
-        raise ValueError("seed rows and CDFs are incompatible")
-    return rows, cdfs, metadata
-
-
-def _validate_inputs(store: object, target_meta: dict, seed_meta: dict) -> None:
+def _validate_inputs(store: object, target_meta: dict) -> None:
     actual_schema = store_schema(store)
     actual_content = getattr(store, "metadata", {}).get("content_sha256")
     actual_catalog = getattr(store, "metadata", {}).get("catalog_sha256")
-    for label, metadata in (("target", target_meta), ("seed", seed_meta)):
-        expected_schema = metadata.get("source_store_schema")
-        expected_content = metadata.get("source_store_content_sha256")
-        expected_catalog = metadata.get("source_catalog_sha256")
-        if expected_schema is not None and expected_schema != actual_schema:
-            raise ValueError(f"{label} and store schemas differ")
-        if expected_content is not None and expected_content != actual_content:
-            raise ValueError(f"{label} and store content identities differ")
-        if expected_catalog is not None and expected_catalog != actual_catalog:
-            raise ValueError(f"{label} and store catalogs differ")
+    expected_schema = target_meta.get("source_store_schema")
+    expected_content = target_meta.get("source_store_content_sha256")
+    expected_catalog = target_meta.get("source_catalog_sha256")
+    if expected_schema is not None and expected_schema != actual_schema:
+        raise ValueError("target and store schemas differ")
+    if expected_content is not None and expected_content != actual_content:
+        raise ValueError("target and store content identities differ")
+    if expected_catalog is not None and expected_catalog != actual_catalog:
+        raise ValueError("target and store catalogs differ")
 
 
 def _candidate_rows(args: argparse.Namespace, store: object,
@@ -427,8 +432,6 @@ def _save_replicate_bundle(
     metadata = []
     for result in results:
         metadata.append({
-            "seed_index": result.seed_index,
-            "restart_kind": result.restart_kind,
             "seed": result.seed,
             "initial_distance": result.initial_distance,
             "best_distance": result.best_distance,
@@ -493,8 +496,6 @@ def _load_replicate_bundle(
     results = []
     for index, record in enumerate(metadata):
         results.append(RestartResult(
-            seed_index=int(record["seed_index"]),
-            restart_kind=str(record["restart_kind"]),
             seed=int(record["seed"]),
             rows=np.asarray(rows[index], dtype=np.int64),
             cdf=np.asarray(cdfs[index], dtype=np.float64),
@@ -511,15 +512,58 @@ def _load_replicate_bundle(
     return results
 
 
+SEARCH_LOG_OFFSET = 1_000.0
+
+
+def log_search_grid(
+    age_bins: np.ndarray, points: np.ndarray, n_points: int, offset: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Sub-sample the exact grid geometrically in ``age + offset``.
+
+    The linear coarse grid used to screen swaps is uniform at
+    ``search_bin_width`` generations -- 20,000 by default -- which puts the
+    whole lower quartile of a production TE age distribution inside its first
+    cell -- measured at 50.06% of the age mass on the in-gene target, with 35
+    of 1,837 cells holding 99%. The screen is therefore blind to structure in
+    the lower half of the distribution, and rejects young-improving swaps before
+    the exact grid ever evaluates them. Measured cost of that blindness: 31.5%
+    relative error at the 10% CDF quantile, falling to 0.0% once the screen is
+    log-spaced, with no loss at the old end.
+
+    So the coarse grid is a geometric sub-sample of the exact
+    analysis grid instead of a coarser uniform one. Every coarse point is an
+    exact-grid point, so the coarse objective is a strict sub-sample of the
+    exact objective rather than a different discretization, and the young end
+    is retained at full exact resolution (geometric spacing below one bin
+    width collapses to consecutive indices). ``n_points`` bounds the request;
+    the returned grid is usually smaller after deduplication, and never
+    larger, so per-proposal cost stays at or below the linear screen's.
+    """
+    ages = np.asarray(age_bins, dtype=np.float64)
+    exact_points = np.asarray(points, dtype=np.float64)
+    if ages.ndim != 1 or ages.size < 2 or exact_points.shape != ages.shape:
+        raise ValueError("age bins and analysis points are incompatible")
+    if n_points < 2:
+        raise ValueError("log search grid needs at least two points")
+    requested = np.geomspace(
+        ages[0] + offset, ages[-1] + offset, num=int(n_points)
+    ) - offset
+    indices = np.unique(
+        np.clip(np.searchsorted(ages, requested, side="left"), 0, ages.size - 1)
+    )
+    indices = np.union1d(indices, np.asarray([0, ages.size - 1], dtype=indices.dtype))
+    return ages[indices], exact_points[indices]
+
+
 def _write_outputs(
     output: Path,
     *,
     store: object,
     target_path: Path,
-    seed_path: Path,
     target_rows: np.ndarray,
     observed_target: np.ndarray,
     age_bins: np.ndarray,
+    acceptance_threshold: float,
     counts: np.ndarray,
     bootstrap_targets: np.ndarray,
     bootstrap_distances: np.ndarray,
@@ -529,7 +573,6 @@ def _write_outputs(
     config: OptimizerConfig,
     global_seed: int,
     candidate_digest: str | None,
-    seed_sets_digest: str,
     target_digest: str,
     store_dir: Path,
     elapsed: float,
@@ -540,7 +583,7 @@ def _write_outputs(
     staging = Path(tempfile.mkdtemp(prefix=f".{output.name}.tmp.", dir=output.parent))
     try:
         replicate_count = len(all_restarts)
-        restart_count = config.closest_restarts + config.diverse_restarts
+        restart_count = config.restarts
         selected = [all_restarts[r][selected_restart[r]] for r in range(replicate_count)]
         rows = np.stack([result.rows for result in selected])
         cdfs = np.stack([result.cdf for result in selected])
@@ -551,9 +594,21 @@ def _write_outputs(
             out=np.full_like(match_bootstrap, np.inf),
             where=bootstrap_distances > 0,
         )
+        # The absolute criterion guards against a large matching error that a
+        # large bootstrap displacement would hide from the ratio. Its scale has
+        # to be the target's own, because E_r grows as targets shrink -- roughly
+        # n^-0.34 measured across 600 to 35,466 sites -- while a fixed cap does
+        # not. A 500-generation cap calibrated on the 4,067-site in-gene target
+        # (threshold 1480.5) is 0.34 of that threshold, and rejects three
+        # quarters of replicates at 600 sites purely from size. Passing
+        # --qc-max-absolute restores a fixed cap for a prespecified analysis.
+        absolute_cap = (
+            config.qc_max_absolute if config.qc_max_absolute is not None
+            else config.qc_max_absolute_fraction * acceptance_threshold
+        )
         qc = (
             (ratios < config.qc_max_ratio)
-            & (match_bootstrap <= config.qc_max_absolute)
+            & (match_bootstrap <= absolute_cap)
         )
         triangle_ok = (
             match_observed + 1e-8 >= np.abs(bootstrap_distances - match_bootstrap)
@@ -608,14 +663,13 @@ def _write_outputs(
             "replicate_id.npy": np.arange(replicate_count, dtype=np.int64),
             "bootstrap_seeds.npy": np.asarray(bootstrap_seeds, dtype=np.uint64),
             "restart_seeds.npy": per_restart(lambda r: r.seed, np.uint64),
-            "restart_seed_indices.npy": per_restart(lambda r: r.seed_index, np.int64),
             "restart_initial_w1.npy": per_restart(lambda r: r.initial_distance),
             "restart_match_to_bootstrap_w1.npy": restart_best,
             "restart_match_to_observed_w1.npy": restart_observed,
             "restart_matching_error_ratio.npy": restart_ratio,
             "restart_qc_pass.npy": (
                 (restart_ratio < config.qc_max_ratio)
-                & (restart_best <= config.qc_max_absolute)
+                & (restart_best <= absolute_cap)
             ),
             "restart_elapsed_seconds.npy": per_restart(lambda r: r.elapsed_seconds),
             "restart_trace_proposals.npy": trace_proposals,
@@ -651,7 +705,7 @@ def _write_outputs(
 
         with (staging / "replicates.csv").open("w", newline="", encoding="utf-8") as handle:
             fields = [
-                "replicate", "selected_restart", "seed_index", "restart_kind",
+                "replicate", "selected_restart",
                 "bootstrap_to_observed_w1", "match_to_bootstrap_w1",
                 "match_to_observed_w1", "matching_error_ratio", "qc_pass",
                 "triangle_ok", "epochs", "proposals", "accepted", "termination",
@@ -662,8 +716,6 @@ def _write_outputs(
                 writer.writerow({
                     "replicate": r,
                     "selected_restart": int(selected_restart[r]),
-                    "seed_index": result.seed_index,
-                    "restart_kind": result.restart_kind,
                     "bootstrap_to_observed_w1": bootstrap_distances[r],
                     "match_to_bootstrap_w1": match_bootstrap[r],
                     "match_to_observed_w1": match_observed[r],
@@ -678,7 +730,7 @@ def _write_outputs(
 
         with (staging / "restarts.csv").open("w", newline="", encoding="utf-8") as handle:
             fields = [
-                "replicate", "restart", "selected", "seed_index", "restart_kind",
+                "replicate", "restart", "selected",
                 "seed", "initial_w1", "best_w1", "match_to_observed_w1",
                 "epochs", "proposals", "accepted", "termination",
             ]
@@ -690,8 +742,6 @@ def _write_outputs(
                         "replicate": r,
                         "restart": j,
                         "selected": j == selected_restart[r],
-                        "seed_index": result.seed_index,
-                        "restart_kind": result.restart_kind,
                         "seed": result.seed,
                         "initial_w1": result.initial_distance,
                         "best_w1": result.best_distance,
@@ -709,19 +759,26 @@ def _write_outputs(
             "algorithm_version": ALGORITHM_VERSION,
             "creation_command": " ".join(sys.argv),
             "target": str(target_path.resolve()),
-            "seed_sets": str(seed_path.resolve()),
+            "initialisation": (
+                "stratified draw from the target's equal-mass age strata"
+            ),
             "source_store": str(Path(store_dir).resolve()),
             "source_store_schema": store_schema(store),
             "source_catalog_sha256": getattr(store, "metadata", {}).get("catalog_sha256"),
             "source_store_content_sha256": getattr(store, "metadata", {}).get("content_sha256"),
             "target_digest": target_digest,
             "candidate_rows_digest": candidate_digest,
-            "seed_sets_digest": seed_sets_digest,
             "replicate_identifiers": ["replicate_id"],
             "global_seed": global_seed,
             "replicates": replicate_count,
             "set_size": int(target_rows.size),
             "restarts_per_replicate": restart_count,
+            "search_grid_spacing": "log",
+            "qc_absolute_cap_generations": float(absolute_cap),
+            "qc_absolute_cap_source": (
+                "fixed --qc-max-absolute" if config.qc_max_absolute is not None
+                else f"{config.qc_max_absolute_fraction} x acceptance threshold"
+            ),
             "qc_passes": int(qc.sum()),
             "qc_failures": int((~qc).sum()),
             "qc_interpretation": "optimizer convergence diagnostic, not biological validation",
@@ -750,8 +807,7 @@ def run(args: argparse.Namespace) -> None:
     started = time.perf_counter()
     config = OptimizerConfig(
         replicates=args.replicates,
-        closest_restarts=args.closest_restarts,
-        diverse_restarts=args.diverse_restarts,
+        restarts=args.restarts,
         min_epochs=args.min_epochs,
         max_epochs=args.max_epochs,
         patience=args.patience,
@@ -760,6 +816,8 @@ def run(args: argparse.Namespace) -> None:
         search_bin_width=args.search_bin_width,
         qc_max_ratio=args.qc_max_ratio,
         qc_max_absolute=args.qc_max_absolute,
+        qc_max_absolute_fraction=args.qc_max_absolute_fraction,
+        disjoint_replicates=args.disjoint_replicates,
     )
     config.validate()
     if args.output.exists():
@@ -767,25 +825,27 @@ def run(args: argparse.Namespace) -> None:
     store = open_snp_age_store(args.store)
     if not is_interval_store(store):
         raise ValueError("bootstrap-target optimization requires an interval store")
-    target_digest, target_rows, observed_target, age_bins, target_meta = (
-        target_digest_for(args.target)
-    )
-    seed_rows, seed_cdfs, seed_meta = _load_seed_bundle(args.seed_sets)
-    _validate_inputs(store, target_meta, seed_meta)
-    if seed_rows.shape[1] != target_rows.size or seed_cdfs.shape[1:] != observed_target.shape:
-        raise ValueError("seed sets do not match target size or age grid")
+    (target_digest, target_rows, observed_target, age_bins,
+     acceptance_threshold, target_meta) = target_digest_for(args.target)
+    boundary_ages = np.load(
+        args.target / "interval_boundary_ages.npy", allow_pickle=False)
+    quotas = np.load(args.target / "interval_quotas.npy", allow_pickle=False)
+    if int(quotas.sum()) != target_rows.size:
+        raise ValueError("target quotas do not sum to the target set size")
+    _validate_inputs(store, target_meta)
     candidates, candidate_digest = _candidate_rows(args, store, target_rows)
     if candidates.size <= target_rows.size:
         raise ValueError("candidate universe must exceed target set size")
-    if not np.all(np.isin(seed_rows, candidates)):
-        raise ValueError("one or more seed rows are outside the candidate universe")
     points = analysis_points(age_bins)
     exact_step = float(age_bins[1] - age_bins[0])
     if config.search_bin_width < exact_step:
         raise ValueError("search_bin_width cannot be finer than the exact target grid")
-    coarse_ages, coarse_points = search_grid(
-        float(store.metadata["maximum_above"]), config.search_bin_width
+    coarse_ages, coarse_points = log_search_grid(
+        age_bins, points,
+        int(float(store.metadata["maximum_above"]) // config.search_bin_width) + 1,
+        SEARCH_LOG_OFFSET,
     )
+    print(f"coarse_grid=log points={coarse_points.size}", flush=True)
     te_cdf_rows = row_cdfs(
         store, target_rows, points,
         block_rows=config.cdf_block_rows, dtype=np.dtype("float32"),
@@ -809,19 +869,20 @@ def run(args: argparse.Namespace) -> None:
                          "published and then deleted with the work directory")
     if resolved_work.is_relative_to(resolved_output):
         raise ValueError("--work-dir must not be inside --output")
-    seed_sets_digest = _sha256_arrays(seed_rows, seed_cdfs)
     identity = {
         "schema_version": SCHEMA_VERSION,
         "algorithm_version": ALGORITHM_VERSION,
         # A resumed run must not mix bundles produced by two implementations,
         # so the identity pins the checkout and NumPy, not just the declared
-        # algorithm version.
+        # algorithm version. On a dirty checkout the commit is not enough --
+        # two different sets of uncommitted edits share it -- so the loaded
+        # project modules are hashed as well.
         "software": software_provenance(),
+        "source_digest": loaded_source_digest(),
         "numpy_version": np.__version__,
         "target_digest": target_digest,
         "source_store_content_sha256": getattr(store, "metadata", {}).get("content_sha256"),
         "candidate_rows_digest": candidate_digest,
-        "seed_sets_digest": seed_sets_digest,
         "global_seed": args.seed,
         "config": asdict(config),
     }
@@ -851,7 +912,25 @@ def run(args: argparse.Namespace) -> None:
     all_restarts: list[list[RestartResult]] = []
     selected_restart = np.empty(config.replicates, dtype=np.int64)
 
+    claimed: set[int] = set()
+    claimed_arr = np.empty(0, dtype=np.int64)
     for replicate in range(config.replicates):
+        # Disjoint mode removes every row an earlier replicate published, so the
+        # published sets share no controls. That is zero membership OVERLAP, not
+        # zero dependence: each replicate draws from a pool the earlier ones
+        # depleted, and all of them bootstrap the same observed TE sample.
+        # Stratum depth makes the constraint cheap -- the scarcest age decile
+        # holds ~787 sets' worth of candidates against the 100 needed.
+        if config.disjoint_replicates and claimed_arr.size:
+            replicate_candidates = candidates[~np.isin(candidates, claimed_arr)]
+            if replicate_candidates.size < target_rows.size:
+                raise ValueError(
+                    f"disjoint mode exhausted the candidate pool at replicate "
+                    f"{replicate}: {replicate_candidates.size:,} left, "
+                    f"{target_rows.size:,} needed"
+                )
+        else:
+            replicate_candidates = candidates
         bootstrap_seed = derive_seed(args.seed, target_digest, replicate)
         bootstrap_seeds[replicate] = bootstrap_seed
         bootstrap_rng = np.random.default_rng(bootstrap_seed)
@@ -862,12 +941,6 @@ def run(args: argparse.Namespace) -> None:
         coarse_target = bootstrap_cdf(counts[replicate], te_coarse_rows)
         bootstrap_distances[replicate] = wasserstein_1(
             bootstrap_targets[replicate], observed_target, age_bins
-        )
-        choices = select_seed_indices(
-            seed_cdfs, bootstrap_targets[replicate], age_bins,
-            closest=config.closest_restarts,
-            diverse=config.diverse_restarts,
-            rng=bootstrap_rng,
         )
         results: list[RestartResult] = []
         bundle_path = bundle_dir / f"replicate-{replicate:04d}.npz"
@@ -884,23 +957,30 @@ def run(args: argparse.Namespace) -> None:
                 expected_counts=counts[replicate],
                 expected_target=bootstrap_targets[replicate],
                 expected_distance=bootstrap_distances[replicate],
-                expected_restarts=len(choices),
+                expected_restarts=config.restarts,
             )
             print(f"replicate={replicate} resumed complete bundle", flush=True)
         else:
-            for restart, (seed_index, kind) in enumerate(choices):
+            for restart in range(config.restarts):
                 restart_seed = derive_seed(
                     args.seed, target_digest, replicate, restart
                 )
+                # Every restart is an independent stratified draw from this
+                # replicate's own candidate universe, which in disjoint mode
+                # already excludes every row an earlier replicate published, so
+                # the starting state is legal by construction.
+                initial = stratified_initial_set(
+                    store, boundary_ages, quotas, replicate_candidates,
+                    np.random.default_rng(restart_seed),
+                    oversample=args.init_oversample,
+                )
                 result = optimize_restart(
-                    store, candidates, seed_rows[seed_index],
+                    store, replicate_candidates, initial,
                     bootstrap_targets[replicate], observed_target, age_bins,
                     bootstrap_distances[replicate],
                     coarse_target=coarse_target,
                     coarse_ages=coarse_ages,
                     coarse_points=coarse_points,
-                    seed_index=seed_index,
-                    restart_kind=kind,
                     seed=restart_seed,
                     config=config,
                     progress=lambda message, r=replicate, j=restart: print(
@@ -908,16 +988,14 @@ def run(args: argparse.Namespace) -> None:
                     ),
                 )
                 results.append(result)
-        for restart, ((seed_index, kind), result) in enumerate(zip(choices, results)):
+        for restart, result in enumerate(results):
             validate_restart_result(
                 result,
                 store=store,
-                candidates=candidates,
+                candidates=replicate_candidates,
                 bootstrap_target=bootstrap_targets[replicate],
                 observed_target=observed_target,
                 age_bins=age_bins,
-                expected_seed_index=seed_index,
-                expected_kind=kind,
                 expected_seed=derive_seed(
                     args.seed, target_digest, replicate, restart
                 ),
@@ -934,15 +1012,24 @@ def run(args: argparse.Namespace) -> None:
         selected_restart[replicate] = int(np.argmin([
             result.best_distance for result in results
         ]))
+        if config.disjoint_replicates:
+            # Claim from the restart that will be published. Selection must
+            # therefore be resolved per replicate here, not deferred, so the
+            # next replicate sees the rows this one actually took.
+            claimed.update(
+                int(v) for v in results[selected_restart[replicate]].rows
+            )
+            claimed_arr = np.fromiter(claimed, dtype=np.int64, count=len(claimed))
+
 
     _write_outputs(
         args.output,
         store=store,
         target_path=args.target,
-        seed_path=args.seed_sets,
         target_rows=target_rows,
         observed_target=observed_target,
         age_bins=age_bins,
+        acceptance_threshold=acceptance_threshold,
         counts=counts,
         bootstrap_targets=bootstrap_targets,
         bootstrap_distances=bootstrap_distances,
@@ -952,7 +1039,6 @@ def run(args: argparse.Namespace) -> None:
         config=config,
         global_seed=args.seed,
         candidate_digest=candidate_digest,
-        seed_sets_digest=seed_sets_digest,
         target_digest=target_digest,
         store_dir=getattr(store, "store_dir", args.store),
         elapsed=time.perf_counter() - started,
@@ -965,7 +1051,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--store", type=Path, required=True)
     parser.add_argument("--target", type=Path, required=True)
-    parser.add_argument("--seed-sets", type=Path, required=True)
+    parser.add_argument("--init-oversample", type=int, default=20)
     candidates = parser.add_mutually_exclusive_group(required=True)
     candidates.add_argument("--candidate-rows", type=Path)
     candidates.add_argument("--all-eligible", action="store_true")
@@ -974,8 +1060,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--keep-work", action="store_true")
     parser.add_argument("--replicates", type=int, default=100)
-    parser.add_argument("--closest-restarts", type=int, default=2)
-    parser.add_argument("--diverse-restarts", type=int, default=1)
+    parser.add_argument(
+        "--restarts", type=int, default=3,
+        help="independent stratified restarts per replicate; the published set "
+             "is the one with the smallest certified W1",
+    )
     parser.add_argument("--min-epochs", type=int, default=10)
     parser.add_argument("--max-epochs", type=int, default=50)
     parser.add_argument("--patience", type=int, default=5)
@@ -987,7 +1076,26 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
              "reported distance is still certified on the exact grid",
     )
     parser.add_argument("--qc-max-ratio", type=float, default=0.5)
-    parser.add_argument("--qc-max-absolute", type=float, default=500.0)
+    parser.add_argument(
+        "--qc-max-absolute", type=float, default=None,
+        help="fixed absolute cap on E_r in generations; overrides the "
+             "threshold-scaled default and does not adapt to target size",
+    )
+    parser.add_argument(
+        "--qc-max-absolute-fraction", type=float, default=0.34,
+        help="absolute E_r cap as a fraction of the target acceptance "
+             "threshold (default 0.34, which reproduces the historical "
+             "500-generation cap at the in-gene target)",
+    )
+    parser.add_argument(
+        "--disjoint-replicates", action="store_true",
+        help="publish 100 mutually disjoint sets: each replicate is optimized "
+             "against the candidate universe minus every row already published, "
+             "so no control SNP appears in two published sets. This removes "
+             "shared membership, not statistical dependence: replicates still "
+             "share the observed TE sample and the store, and later sets draw "
+             "from a pool the earlier ones depleted",
+    )
     parser.add_argument("--seed", type=int, default=0)
     return parser.parse_args(argv)
 

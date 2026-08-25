@@ -26,6 +26,10 @@ def test_wasserstein_identical_adjacent_distant_and_nonuniform():
     assert wasserstein_1(young, distant, ages) == 5_000
 
 
+
+
+
+
 def test_target_cli_defaults_to_bootstrap_median():
     args = parse_args([
         "--store", "store", "--te-positions", "te.txt", "--output", "target"
