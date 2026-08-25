@@ -710,13 +710,11 @@ TE target and within each matched SNP set; the two completed spectra are then
 normalized independently. For target spectrum `t` and matched-set spectrum
 `s_r`, the score is
 
-\$[
-\Phi_{\mathrm{SFS},r}
+\$\Phi_{\mathrm{SFS},r}
 =\sum_{j=1}^{19}\max(t_j-s_{rj},0)
 =\sum_{j=1}^{19}\max(s_{rj}-t_j,0)
 =\frac{1}{2}\sum_{j=1}^{19}|t_j-s_{rj}|
-=1-\sum_{j=1}^{19}\min(t_j,s_{rj}).
-]$\
+=1-\sum_{j=1}^{19}\min(t_j,s_{rj})$\
 
 All four forms are equal because both spectra sum to one. **Φ-SFS is therefore
 the total variation distance between the two projected, normalized spectra** —
