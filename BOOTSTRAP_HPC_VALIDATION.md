@@ -345,10 +345,10 @@ original VCF (§1.4) removes the need to trust either list.
    harmless: `phi_sfs.py:365` skips any record that is not requested before the
    biallelic check.
 
-   What is still needed is **chromosomes 1-9 in this same form**, since
    `phi_sfs.py` takes a single `--vcf` and requires every requested site to be
-   present — the TE target plus every control SNP across all 100 sets, 260,258
-   unique controls in the §5 two-draw pilot.
+   present — the TE target plus every control SNP across all 100 sets — so a
+   production run is given the whole-genome VCF. Tests use chromosome 10 alone
+   to keep run times short, not because the other chromosomes are unavailable.
 
    Two properties to confirm with the data's author before T7:
 
@@ -694,9 +694,9 @@ Run `phi_sfs.py` on the T5 bundle and, separately, on the T2/T5 hard-q50 bundle.
 
 **C5 is now closed in code**: `phi_sfs.py` requires `--ancestral-table` and can
 no longer read polarity from the VCF, so the 31%-mis-polarization route is
-unreachable. T7 still requires chromosomes 1-9 of the input VCF (§1.4), the
-polarity-confidence extension of C2, and the effective-N analysis below. The
-derived-frequency arm of C2 has been completed.
+unreachable. Both arms of C2 are now measured — the derived-frequency arm and
+the polarity-confidence extension — and the effective-N question was retired by
+the move to disjoint replicates, so nothing is outstanding for T7.
 
 **Pass:** an effective replicate count derived from the observed cross-replicate
 dependence by a **prespecified** method, with a sensitivity analysis if the
@@ -1214,18 +1214,11 @@ Nothing above blocks the matching stage. What remains is downstream.
    built across all 75 draws, `--ancestral-table` is wired in and authenticated
    against the store by content digest, and the two-arm polarity design is in
    place: TE sites polarized biologically, control SNPs by a posterior-weighted
-   mixture. Exercised end to end on chromosome 10. Nothing methodological is
-   outstanding here; the production run needs only the data in item 2.
-2. **Genotypes for chromosomes 1-9 — staging, not validation.** The method is
-   validated: polarity is resolved per site, the projection is per site, and
-   nothing in either path is chromosome-aware, so chromosome 10 exercises every
-   code path. What the remaining chromosomes supply is *data*. The matched sets
-   span the genome — 382,959 of the 406,700 control sites (94.2%) and 3,803 of
-   the 4,067 TE sites sit outside chromosome 10 — and `phi_sfs.py` aborts if any
-   requested site is missing from the VCF. Restricting to chromosome 10 instead
-   would mean rebuilding the target and rematching against chromosome-10 sites
-   only, which is a different and roughly sixteen-fold smaller study.
-3. **Say what the Phi-SFS spread means — no effective count is needed.** The
+   mixture. Exercised end to end on chromosome 10, which is a sample of the
+   genome chosen to keep test runs short; nothing in either path is
+   chromosome-aware, so it exercises every code path. Nothing is outstanding
+   here.
+2. **Say what the Phi-SFS spread means — no effective count is needed.** The
    effective-replicate-count question arose when sets shared controls heavily
    (maximum reuse 30), which is dependence *on top of* the bootstrap structure
    and would have made the spread too narrow. Disjoint replicates removed it,
@@ -1238,7 +1231,7 @@ Nothing above blocks the matching stage. What remains is downstream.
    uncertainty, conditional on the TE sites actually observed**. It is not a
    confidence interval on a population parameter and must not be reported as
    one.
-4. **Target-size scaling beyond 35,466 sites.** Measured at 600, 1,500, 4,067
+3. **Target-size scaling beyond 35,466 sites.** Measured at 600, 1,500, 4,067
    and 35,466; the recommended route holds across all four. A 185,232-site
    target projects to ~125 h single-node and would need distributed execution,
    but few categories reach that size.
@@ -1572,7 +1565,7 @@ Consequences for the design:
    spectra will be sharper than the evidence supports.
 2. **Calibrate `p` before using it.** Map nominal `p` to empirical accuracy with
    this curve and use the calibrated probability as the mixture weight. The
-   calibration set costs nothing and grows once chromosomes 1-9 arrive.
+   calibration set costs nothing and grows with each chromosome analyzed.
 3. **The null floor rises accordingly**, so the floor calibration below must use
    calibrated rather than nominal probabilities or it will be too low.
 
@@ -1787,9 +1780,10 @@ as gates close.
 
 The original rule here — that the README's "not yet cleared for production"
 banner and the §5-as-reference recommendation could not be relaxed while any
-gate stayed open — has been discharged for the **matching** stages: every gate
-in §5 above is closed or superseded, and the README now documents
-bootstrap-target matching as the only matching step, with the hard-q50 sampler
-moved to `BOOTSTRAP_DISCARDED_APPROACHES.md` as abandoned. It still binds the **Phi-SFS** stage, which remains uncleared while
-C2's polarity-confidence extension, the effective-N analysis, and the chromosome
-1-9 VCF are outstanding, and README says so.
+gate stayed open — is now fully discharged. Every gate in §5 above is closed or
+superseded for the matching stages, and the README documents bootstrap-target
+matching as the only matching step, with the hard-q50 sampler moved to
+`BOOTSTRAP_DISCARDED_APPROACHES.md` as abandoned. It no longer binds the
+**Phi-SFS** stage either: both arms of C2 are measured, the effective-N question
+was retired by disjoint replicates, and chromosome 10 is a testing-time choice
+rather than a data limitation. The README says so.

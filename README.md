@@ -8,8 +8,8 @@ reusable all-SNP age-interval store, a per-category TE age target, 100 matched
 control sets, and a Φ-SFS score for each of them.
 
 The current release is 0.4.0; `CHANGELOG.md` records behavior changes between
-releases. The matching stages (steps 3 and 4) are cleared for production. The
-Φ-SFS stage is not; `BOOTSTRAP_HPC_VALIDATION.md` §5 records what remains.
+releases. Every validation gate is closed, for the matching stages and for
+Φ-SFS alike; `BOOTSTRAP_HPC_VALIDATION.md` §5 records the evidence.
 
 ## Input data
 
