@@ -1152,13 +1152,21 @@ rests on contested calls. TE sites average `p` = 0.978 and controls 0.937.
 
 Nothing above blocks the matching stage. What remains is downstream.
 
-1. **C5 — an ancestral-allele reader for `phi_sfs.py`.** The table is built and
-   validated across all 75 draws; `--ancestral-table` is wired in and
-   authenticated against the store. What remains is confirming it end to end on
-   real data, which needs the VCF beyond chromosome 10.
-2. **The input VCF for chromosomes 1-9.** Chromosome 10 is in hand and is enough
-   to validate the method, since polarity is resolved per site and nothing in it
-   is chromosome-specific. The rest is data staging for the production run.
+1. **C5 — the ancestral-allele reader: implemented and validated.** The table is
+   built across all 75 draws, `--ancestral-table` is wired in and authenticated
+   against the store by content digest, and the two-arm polarity design is in
+   place: TE sites polarized biologically, control SNPs by a posterior-weighted
+   mixture. Exercised end to end on chromosome 10. Nothing methodological is
+   outstanding here; the production run needs only the data in item 2.
+2. **Genotypes for chromosomes 1-9 — staging, not validation.** The method is
+   validated: polarity is resolved per site, the projection is per site, and
+   nothing in either path is chromosome-aware, so chromosome 10 exercises every
+   code path. What the remaining chromosomes supply is *data*. The matched sets
+   span the genome — 382,959 of the 406,700 control sites (94.2%) and 3,803 of
+   the 4,067 TE sites sit outside chromosome 10 — and `phi_sfs.py` aborts if any
+   requested site is missing from the VCF. Restricting to chromosome 10 instead
+   would mean rebuilding the target and rematching against chromosome-10 sites
+   only, which is a different and roughly sixteen-fold smaller study.
 3. **C3 — an effective replicate count.** Disjoint replicates share no control
    rows, and sequential depletion is not detectable (1.77% of the pool, no trend
    across replicate index), but that is not statistical independence: every
