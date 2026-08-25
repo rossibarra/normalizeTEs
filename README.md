@@ -1,4 +1,4 @@
-# normalizeTE v0.3.1
+# normalizeTE v0.4.0
 
 normalizeTE generates SNP control sets whose posterior age distributions match
 an observed TE variant dataset. The production workflow is designed for many TE
