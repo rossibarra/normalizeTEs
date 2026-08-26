@@ -35,6 +35,7 @@ _CONTENT_IDENTITY_METADATA_KEYS = (
     "root_policy",
     "minimum_usable_fraction",
     "minimum_usable_draws",
+    "multiple_mutation_policy",
 )
 
 
@@ -251,6 +252,10 @@ class SNPAgeIntervalDataset:
         self.usable_draw_count = arrays["usable_draw_count"]
         self.usable_interval_count = arrays["usable_interval_count"]
         self.skipped_root_count = arrays["skipped_root_count"]
+        self.multiple_mutation_draw_count = arrays.get(
+            "multiple_mutation_draw_count",
+            np.zeros(self.positions.shape, dtype=np.uint32),
+        )
         self.n_posterior_draws = int(metadata["n_posterior_draws"])
         self.minimum_usable_draws = int(metadata.get("minimum_usable_draws", 1))
         self.chromosomes = tuple(metadata["chromosomes"])
@@ -267,6 +272,10 @@ class SNPAgeIntervalDataset:
             "usable_interval_count", "skipped_root_count",
         )
         arrays = {name: np.load(path / f"{name}.npy", mmap_mode="r") for name in names}
+        if "multiple_mutation_draw_count" in metadata.get("arrays", {}):
+            arrays["multiple_mutation_draw_count"] = np.load(
+                path / "multiple_mutation_draw_count.npy", mmap_mode="r"
+            )
         return cls(path, metadata, arrays)
 
     @property
@@ -275,7 +284,11 @@ class SNPAgeIntervalDataset:
 
     @property
     def eligible(self) -> np.ndarray:
-        return self.valid & (self.usable_draw_count >= self.minimum_usable_draws)
+        return (
+            self.valid
+            & (self.usable_draw_count >= self.minimum_usable_draws)
+            & (self.multiple_mutation_draw_count == 0)
+        )
 
     @property
     def n_intervals(self) -> int:
@@ -930,6 +943,13 @@ def validate_interval_store(
     }
     for name in ("present_draw_count", "missing_draw_count", "usable_draw_count", "usable_interval_count", "skipped_root_count"):
         required[name] = (np.dtype("uint32"), (n_snps,))
+    has_multiple_counts = "multiple_mutation_draw_count" in metadata["arrays"]
+    if has_multiple_counts:
+        required["multiple_mutation_draw_count"] = (np.dtype("uint32"), (n_snps,))
+    if metadata.get("multiple_mutation_policy") and not has_multiple_counts:
+        raise ValueError(
+            "multiple_mutation_policy requires multiple_mutation_draw_count.npy"
+        )
     arrays: dict[str, np.ndarray] = {}
     for name, (dtype, shape) in required.items():
         try:
@@ -963,6 +983,8 @@ def validate_interval_store(
         raise ValueError("present_draw_count + missing_draw_count must equal n_posterior_draws")
     if np.any(usable > present):
         raise ValueError("usable_draw_count exceeds present_draw_count")
+    if has_multiple_counts and np.any(arrays["multiple_mutation_draw_count"] > present):
+        raise ValueError("multiple_mutation_draw_count exceeds present_draw_count")
     if n_snps % 4:
         used_bits = 2 * (n_snps % 4)
         if np.any(arrays["status"][:, -1] >> np.uint8(used_bits)):

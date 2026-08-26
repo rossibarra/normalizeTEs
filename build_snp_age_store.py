@@ -255,7 +255,7 @@ def build_store(
         n, b = positions.size, age_bins.size
         cdf = np.lib.format.open_memmap(temp / "cdf_by_snp.npy", mode="w+", dtype=np.uint16, shape=(n, b))
         eligible = np.lib.format.open_memmap(temp / "eligible.npy", mode="w+", dtype=np.bool_, shape=(n,))
-        counts = {name: np.lib.format.open_memmap(temp / f"{name}.npy", mode="w+", dtype=np.uint32, shape=(n,)) for name in ("present_draw_count", "usable_draw_count", "usable_interval_count", "skipped_root_count", "missing_draw_count")}
+        counts = {name: np.lib.format.open_memmap(temp / f"{name}.npy", mode="w+", dtype=np.uint32, shape=(n,)) for name in ("present_draw_count", "usable_draw_count", "usable_interval_count", "skipped_root_count", "missing_draw_count", "multiple_mutation_draw_count")}
         for array in counts.values():
             array[:] = 0
         counts["missing_draw_count"][:] = len(paths)
@@ -286,6 +286,8 @@ def build_store(
                     # tskit guarantees unique site positions, so each row is
                     # decremented at most once per posterior draw.
                     counts["missing_draw_count"][row] -= 1
+                    if len(site.mutations) > 1:
+                        counts["multiple_mutation_draw_count"][row] += 1
                     intervals = []
                     for mutation in site.mutations:
                         parent = tree.parent(mutation.node)
@@ -318,7 +320,7 @@ def build_store(
             usable_draw_block = np.asarray(counts["usable_draw_count"][start:stop])
             eligible[start:stop] = (usable_draw_block > 0) & (
                 usable_draw_block >= required_usable_draws
-            )
+            ) & (np.asarray(counts["multiple_mutation_draw_count"][start:stop]) == 0)
         for name, array in counts.items():
             extraction_totals[name] = int(array.sum(dtype=np.uint64))
         del pdf_accumulator
@@ -348,6 +350,7 @@ def build_store(
             ),
             "minimum_usable_draws": required_usable_draws,
             "minimum_usable_fraction": min_usable_fraction,
+            "multiple_mutation_policy": "exclude site if any draw has multiple mutation records",
             "creation_command": " ".join(sys.argv),
             "extraction_totals": extraction_totals,
             "inputs": [{"path": str(path)} for path in paths],
@@ -356,6 +359,9 @@ def build_store(
                 "age_bins": {"dtype": "uint64", "shape": [int(b)]},
                 "cdf_by_snp": {"dtype": "uint16", "shape": [int(n), int(b)]},
                 "cdf_by_age": None if omit_transpose else {"dtype": "uint16", "shape": [int(b), int(n)]},
+                "multiple_mutation_draw_count": {
+                    "dtype": "uint32", "shape": [int(n)]
+                },
             },
         }
         (temp / "metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")

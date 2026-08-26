@@ -396,7 +396,10 @@ def _local_validate_store(path: Path) -> None:
         raise ValueError("invalid interval endpoints")
     if draw_id.size and int(draw_id.max()) >= metadata["n_posterior_draws"]:
         raise ValueError("draw ID out of range")
-    names = ("present_draw_count", "missing_draw_count", "usable_draw_count", "usable_interval_count", "skipped_root_count")
+    names = (
+        "present_draw_count", "missing_draw_count", "usable_draw_count",
+        "usable_interval_count", "skipped_root_count", "multiple_mutation_draw_count",
+    )
     counts = {name: np.load(path / f"{name}.npy", mmap_mode="r") for name in names}
     if any(array.shape != (n_snps,) or array.dtype != np.uint32 for array in counts.values()):
         raise ValueError("invalid count array")
@@ -404,6 +407,8 @@ def _local_validate_store(path: Path) -> None:
         raise ValueError("present and missing counts disagree")
     if np.any(counts["usable_draw_count"] > counts["present_draw_count"]):
         raise ValueError("usable draw count exceeds present count")
+    if np.any(counts["multiple_mutation_draw_count"] > counts["present_draw_count"]):
+        raise ValueError("multiple-mutation draw count exceeds present count")
     if np.any(np.diff(offsets).astype(np.uint64) != counts["usable_interval_count"]):
         raise ValueError("offsets disagree with usable interval counts")
     status = np.load(path / "status.npy", mmap_mode="r")
@@ -510,7 +515,10 @@ def build_interval_store(
         np.save(temp / "positions.npy", positions)
         counts = {
             name: np.zeros(n_snps, dtype=np.uint32)
-            for name in ("present_draw_count", "usable_draw_count", "usable_interval_count", "skipped_root_count")
+            for name in (
+                "present_draw_count", "usable_draw_count", "usable_interval_count",
+                "skipped_root_count", "multiple_mutation_draw_count",
+            )
         }
         status = np.lib.format.open_memmap(
             temp / "status.npy", mode="w+", dtype=np.uint8,
@@ -541,6 +549,11 @@ def build_interval_store(
 
             mutation_site = np.asarray(ts.tables.mutations.site, dtype=np.int64)
             mutation_rows = site_rows[mutation_site]
+            mutation_count = np.bincount(mutation_rows, minlength=n_snps)
+            multiple_rows = np.flatnonzero(mutation_count > 1)
+            if np.any(counts["multiple_mutation_draw_count"][multiple_rows] == UINT32_MAX):
+                raise OverflowError("multiple-mutation draw count exceeds uint32")
+            counts["multiple_mutation_draw_count"][multiple_rows] += np.uint32(1)
             parent = lookup_mutation_parents(ts)
             covered = parent != tskit.NULL
             root_rows = mutation_rows[~covered]
@@ -683,6 +696,7 @@ def build_interval_store(
             "root_policy": root,
             "minimum_usable_fraction": min_usable_fraction,
             "minimum_usable_draws": required_usable_draws,
+            "multiple_mutation_policy": "exclude site if any draw has multiple mutation records",
             "interval_weighting": "equal per usable mutation interval",
             "creation_command": " ".join(sys.argv),
             "inputs": [{"draw_id": i, "path": str(path)} for i, path in enumerate(paths)],
