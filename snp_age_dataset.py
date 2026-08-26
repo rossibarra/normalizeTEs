@@ -37,6 +37,10 @@ class SNPAgeDataset:
         self.usable_interval_count = arrays["usable_interval_count"]
         self.skipped_root_count = arrays["skipped_root_count"]
         self.missing_draw_count = arrays["missing_draw_count"]
+        self.multiple_mutation_draw_count = arrays.get(
+            "multiple_mutation_draw_count",
+            np.zeros(self.positions.shape, dtype=np.uint32),
+        )
         self.chromosomes = tuple(metadata["chromosomes"])
         self._chromosome_by_name = {str(row["chrom"]): row for row in self.chromosomes}
 
@@ -59,6 +63,10 @@ class SNPAgeDataset:
             "skipped_root_count", "missing_draw_count",
         ]
         arrays = {name: np.load(path / f"{name}.npy", mmap_mode="r") for name in names}
+        if "multiple_mutation_draw_count" in metadata.get("arrays", {}):
+            arrays["multiple_mutation_draw_count"] = np.load(
+                path / "multiple_mutation_draw_count.npy", mmap_mode="r"
+            )
         transpose = path / "cdf_by_age.npy"
         if transpose.exists():
             arrays["cdf_by_age"] = np.load(transpose, mmap_mode="r")
@@ -231,6 +239,14 @@ def validate_store(store_dir: str | Path, *, deep: bool = False) -> StoreReport:
         "skipped_root_count": (np.dtype("uint32"), (metadata["n_snps"],)),
         "missing_draw_count": (np.dtype("uint32"), (metadata["n_snps"],)),
     }
+    if "multiple_mutation_draw_count" in metadata.get("arrays", {}):
+        required["multiple_mutation_draw_count"] = (
+            np.dtype("uint32"), (metadata["n_snps"],)
+        )
+    if metadata.get("multiple_mutation_policy") and "multiple_mutation_draw_count" not in required:
+        raise ValueError(
+            "multiple_mutation_policy requires multiple_mutation_draw_count.npy"
+        )
     arrays = {}
     for name, (dtype, shape) in required.items():
         try:
@@ -273,6 +289,10 @@ def validate_store(store_dir: str | Path, *, deep: bool = False) -> StoreReport:
     required_draws = int(metadata.get("minimum_usable_draws", 1))
     valid = arrays["usable_interval_count"] > 0
     expected_eligible = valid & (arrays["usable_draw_count"] >= required_draws)
+    if "multiple_mutation_draw_count" in arrays:
+        if np.any(arrays["multiple_mutation_draw_count"] > arrays["present_draw_count"]):
+            raise ValueError("multiple mutation draw counts exceed present draw counts")
+        expected_eligible &= arrays["multiple_mutation_draw_count"] == 0
     if not np.array_equal(arrays["eligible"], expected_eligible):
         raise ValueError("eligible flags are inconsistent with the coverage threshold")
     cdf = arrays["cdf_by_snp"]

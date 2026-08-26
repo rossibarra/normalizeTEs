@@ -129,6 +129,8 @@ def test_build_union_ragged_records_counts_status_and_metadata(tmp_path):
     assert store.usable_draw_count.tolist() == [2, 0, 1]
     assert store.usable_interval_count.tolist() == [3, 0, 1]
     assert store.skipped_root_count.tolist() == [0, 1, 0]
+    assert store.multiple_mutation_draw_count.tolist() == [1, 0, 0]
+    assert store.eligible.tolist() == [False, False, True]
     assert store.read_status(rows=np.array([0, 1, 2])).tolist() == [[2, 1, 0], [2, 0, 2]]
     batch = store.intervals(np.array([0, 2]))
     assert batch.offsets.tolist() == [0, 3, 4]
@@ -143,6 +145,7 @@ def test_build_union_ragged_records_counts_status_and_metadata(tmp_path):
     )
     assert metadata["endpoint_dtype"] == "float32"
     assert metadata["maximum_above"] == 100
+    assert metadata["multiple_mutation_policy"].startswith("exclude site")
     assert metadata["minimum_usable_draws"] == 1
     assert list(scratch.iterdir()) == []
     below = np.load(output / "below.npy", mmap_mode="r+")

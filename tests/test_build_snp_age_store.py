@@ -68,6 +68,17 @@ def test_missing_and_root_error_policies(tmp_path):
         build_store([first], tmp_path / "root", bin_width=10, root="error")
 
 
+def test_multiple_mutations_in_any_draw_exclude_the_site(tmp_path):
+    first, second = tmp_path / "a.trees", tmp_path / "b.trees"
+    _write_ts(first, {10.0: [0, 2], 20.0: [0]})
+    _write_ts(second, {10.0: [0], 20.0: [0]})
+    output = tmp_path / "store"
+    build_store([first, second], output, bin_width=10)
+    dataset = SNPAgeDataset.open(output)
+    assert dataset.multiple_mutation_draw_count.tolist() == [1, 0]
+    assert dataset.eligible.tolist() == [False, True]
+
+
 def test_omit_transpose_and_discovery(tmp_path):
     tree = tmp_path / "a.trees"
     _write_ts(tree, {7.0: [0]})
