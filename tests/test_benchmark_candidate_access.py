@@ -1,7 +1,7 @@
 import numpy as np
 
-from benchmark_candidate_access import estimate_io, load_numeric_vector, run_benchmark
-from snp_interval_dataset import SNPAgeIntervalDataset
+from tools.benchmark_candidate_access import estimate_io, load_numeric_vector, run_benchmark
+from normalize_tes.snp_interval_dataset import SNPAgeIntervalDataset
 from test_snp_interval_dataset import _store
 
 

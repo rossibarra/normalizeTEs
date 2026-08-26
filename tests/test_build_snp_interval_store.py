@@ -5,15 +5,15 @@ import numpy as np
 import pytest
 import tskit
 
-import build_snp_interval_store as builder
-from build_snp_interval_store import (
+import normalize_tes.build_snp_interval_store as builder
+from normalize_tes.build_snp_interval_store import (
     audit_mutation_parent_lookup,
     build_interval_store,
     lookup_mutation_parents,
     pack_status_row,
     unpack_status_row,
 )
-from snp_interval_dataset import (
+from normalize_tes.snp_interval_dataset import (
     SNPAgeIntervalDataset,
     compute_interval_store_content_sha256,
     validate_interval_store,
@@ -213,7 +213,7 @@ def test_builder_rejects_the_same_draw_supplied_twice(tmp_path):
     list records the duplicate faithfully, so consumers that authenticate
     against the store agree with a corrupted posterior.
     """
-    import build_snp_interval_store as builder
+    import normalize_tes.build_snp_interval_store as builder
 
     real = tmp_path / "draw.tsz"
     real.write_bytes(b"")

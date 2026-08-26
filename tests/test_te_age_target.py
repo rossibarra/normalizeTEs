@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from te_age_target import (
+from normalize_tes.te_age_target import (
     aggregate_cdf,
     bootstrap_wasserstein,
     build_target,
@@ -12,8 +12,8 @@ from te_age_target import (
     wasserstein_1,
     write_target,
 )
-from snp_interval_dataset import INTERVAL_SCHEMA_VERSION, interval_cdf
-from snp_age_dataset import load_native_position_list
+from normalize_tes.snp_interval_dataset import INTERVAL_SCHEMA_VERSION, interval_cdf
+from normalize_tes.snp_age_dataset import load_native_position_list
 
 
 def test_wasserstein_identical_adjacent_distant_and_nonuniform():

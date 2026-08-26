@@ -3,7 +3,7 @@ import json
 import numpy as np
 import pytest
 
-from snp_age_dataset import SNPAgeDataset, validate_store
+from normalize_tes.snp_age_dataset import SNPAgeDataset, validate_store
 
 
 def _store(path, transpose=True):

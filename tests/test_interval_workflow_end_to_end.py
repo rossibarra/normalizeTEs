@@ -2,8 +2,8 @@ import json
 
 import numpy as np
 
-from sample_age_matched_syn import main as sample_main
-from te_age_target import main as target_main
+from normalize_tes.sample_age_matched_syn import main as sample_main
+from normalize_tes.te_age_target import main as target_main
 from test_snp_interval_dataset import _store
 
 
@@ -33,7 +33,7 @@ def test_interval_target_then_cached_matching_cleans_scratch(tmp_path):
     target_metadata = json.loads(
         (target / "metadata.json").read_text(encoding="utf-8")
     )
-    assert target_metadata["software"]["version"] == "0.5.1"
+    assert target_metadata["software"]["version"] == "0.5.2"
 
     matches = tmp_path / "matches"
     assert sample_main([

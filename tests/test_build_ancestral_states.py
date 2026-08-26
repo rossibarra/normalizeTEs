@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-import build_ancestral_states as builder
+import normalize_tes.build_ancestral_states as builder
 
 
 def _store(digest="store-digest"):

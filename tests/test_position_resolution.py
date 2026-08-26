@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from snp_position_resolution import (
+from normalize_tes.snp_position_resolution import (
     PositionResolutionError,
     resolve_native_position_requests,
     resolve_requested_positions,

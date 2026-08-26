@@ -3,8 +3,8 @@ import json
 import numpy as np
 import pytest
 
-from release_provenance import PROJECT_VERSION
-from run_age_match_manifest import _completed, _manifest, main, parse_args
+from normalize_tes.release_provenance import PROJECT_VERSION
+from normalize_tes.run_age_match_manifest import _completed, _manifest, main, parse_args
 
 
 def _two_target_manifest(path):
@@ -110,7 +110,7 @@ def test_sample_chain_flat_task_index_maps_to_target_and_chain(
     manifest = _two_target_manifest(tmp_path / "targets.tsv")
     commands = []
     monkeypatch.setattr(
-        "run_age_match_manifest.subprocess.run",
+        "normalize_tes.run_age_match_manifest.subprocess.run",
         lambda command, check: commands.append(command),
     )
     assert main([

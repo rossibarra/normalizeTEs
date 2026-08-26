@@ -13,10 +13,10 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-import build_ancestral_states
-import build_te_polarity_mask as maskbuilder
-import te_age_target
-from snp_interval_dataset import IntervalBatch
+from normalize_tes import build_ancestral_states
+from normalize_tes import build_te_polarity_mask as maskbuilder
+from normalize_tes import te_age_target
+from normalize_tes.snp_interval_dataset import IntervalBatch
 
 
 def _interval_store(intervals_by_row, *, n_draws=3, digest="store-digest",
@@ -221,7 +221,7 @@ def test_store_input_paths_requires_recorded_inputs():
 
 def _candidate_artifact(tmp_path, rows, *, content="store-digest",
                         catalog="catalog-digest", digest=None, count=None):
-    import bootstrap_target_matcher as matcher
+    import normalize_tes.bootstrap_target_matcher as matcher
     path = tmp_path / "candidates.npy"
     array = np.asarray(rows, dtype=np.int64)
     np.save(path, array)
@@ -245,7 +245,7 @@ def _catalog_store(digest="store-digest", catalog="catalog-digest"):
 
 
 def test_candidate_rows_require_a_provenance_report(tmp_path):
-    import bootstrap_target_matcher as matcher
+    import normalize_tes.bootstrap_target_matcher as matcher
     path = tmp_path / "candidates.npy"
     np.save(path, np.arange(5, dtype=np.int64))
     with pytest.raises(SystemExit, match="no provenance report"):
@@ -254,14 +254,14 @@ def test_candidate_rows_require_a_provenance_report(tmp_path):
 
 
 def test_candidate_rows_from_another_store_are_rejected(tmp_path):
-    import bootstrap_target_matcher as matcher
+    import normalize_tes.bootstrap_target_matcher as matcher
     path, array = _candidate_artifact(tmp_path, [1, 2, 3], content="other-store")
     with pytest.raises(SystemExit, match="different store"):
         matcher._authenticate_candidate_rows(path, _catalog_store(), array)
 
 
 def test_candidate_rows_modified_after_publication_are_rejected(tmp_path):
-    import bootstrap_target_matcher as matcher
+    import normalize_tes.bootstrap_target_matcher as matcher
     path, _ = _candidate_artifact(tmp_path, [1, 2, 3])
     tampered = np.array([1, 2, 4], dtype=np.int64)
     np.save(path, tampered)
@@ -270,7 +270,7 @@ def test_candidate_rows_modified_after_publication_are_rejected(tmp_path):
 
 
 def test_candidate_rows_accept_a_matching_report(tmp_path):
-    import bootstrap_target_matcher as matcher
+    import normalize_tes.bootstrap_target_matcher as matcher
     path, array = _candidate_artifact(tmp_path, [1, 2, 3])
     report = matcher._authenticate_candidate_rows(path, _catalog_store(), array)
     assert report["candidate_rows"] == 3

@@ -1,4 +1,4 @@
-# normalizeTE v0.5.1
+# normalizeTE v0.5.2
 
 normalizeTE builds SNP control sets matched to the posterior ages of a TE category,
 then compares the unfolded site-frequency spectra of the TEs and controls. The
@@ -8,6 +8,17 @@ genome-wide biallelic VCF.
 This README is the operator guide. Method definitions and the evidence behind the
 production settings are linked under [Methods and validation](#methods-and-validation).
 
+## Repository layout
+
+- `normalize_tes/` contains the production package and supported command modules.
+- `tools/` contains development benchmarks, diagnostics, probes, and simulations.
+- `slurm/` contains scheduler launchers and their shared conda bootstrap helper.
+- `tests/` contains the complete test suite.
+- `docs/` contains methods, validation records, plans, reviews, and the changelog.
+
+Run production commands from the repository root with
+`python -m normalize_tes.COMMAND`; examples below use that form throughout.
+
 ## Before you start
 
 Create the environment and run the tests on a Linux compute node:
@@ -15,7 +26,7 @@ Create the environment and run the tests on a Linux compute node:
 ```bash
 conda env create -f environment.yml
 conda activate normalizeTE
-python -m pytest -q tests test_snp_age_distribution.py
+python -m pytest -q tests
 ```
 
 Use an immutable release tag or commit for production:
@@ -78,7 +89,7 @@ inside a scheduled compute allocation, not on a login/head node.
 Build one reusable posterior-age store for all categories:
 
 ```bash
-python build_snp_interval_store.py \
+python -m normalize_tes.build_snp_interval_store \
   "$POSTERIOR_DIR"/*.tsz \
   --interval-store "$STORE" \
   --chrom-offsets "$CHROM_OFFSETS" \
@@ -106,7 +117,7 @@ The completed store records a content digest used by downstream identity checks.
 Restrict controls to the filtered SNP list and exclude all known TE positions:
 
 ```bash
-python build_candidate_rows.py \
+python -m normalize_tes.build_candidate_rows \
   --store "$STORE" \
   --include-positions "$SNP_POSITIONS" \
   --exclude-positions "$ALL_TE_POSITIONS" \
@@ -132,7 +143,7 @@ The preliminary target supplies the ordered TE rows needed to build the polarity
 mask. It is not the target used for matching.
 
 ```bash
-python te_age_target.py \
+python -m normalize_tes.te_age_target \
   --store "$STORE" \
   --te-positions "$TE_POSITIONS" \
   --output "$PRELIM_TARGET" \
@@ -158,7 +169,7 @@ Sizing note: an unmasked target streams its TE-by-age CDF through `--scratch-dir
 so scratch is the constraint. A masked target (step 5) does not — it builds the
 whole CDF block in memory — so there `--mem` is the constraint, and the run prints
 its projected peak before building. Measured resource figures are in
-[BOOTSTRAP_HPC_VALIDATION.md](BOOTSTRAP_HPC_VALIDATION.md).
+[BOOTSTRAP_HPC_VALIDATION.md](docs/BOOTSTRAP_HPC_VALIDATION.md).
 
 ### 4. Build the TE polarity mask
 
@@ -166,7 +177,7 @@ Record which posterior draws polarize each TE in agreement with TE presence bein
 derived:
 
 ```bash
-python build_te_polarity_mask.py \
+python -m normalize_tes.build_te_polarity_mask \
   --store "$STORE" \
   --target "$PRELIM_TARGET" \
   --output "$POLARITY_MASK" \
@@ -190,7 +201,7 @@ Build a new target from agreeing draws, discard TEs above the production flipped
 threshold, and construct the matched control sets:
 
 ```bash
-python te_age_target.py \
+python -m normalize_tes.te_age_target \
   --store "$STORE" \
   --te-positions "$TE_POSITIONS" \
   --output "$TARGET" \
@@ -201,7 +212,7 @@ python te_age_target.py \
   --acceptance-quantile 0.50 \
   --seed 1002
 
-python bootstrap_target_matcher.py \
+python -m normalize_tes.bootstrap_target_matcher \
   --store "$STORE" \
   --target "$TARGET" \
   --candidate-rows "$CANDIDATES" \
@@ -244,7 +255,7 @@ durable storage and repeat the identical command after preemption.
 Build one store-aligned ancestral-state table for control-SNP polarization:
 
 ```bash
-python build_ancestral_states.py \
+python -m normalize_tes.build_ancestral_states \
   --store "$STORE" \
   --output "$ANCESTRAL" \
   "$POSTERIOR_DIR"/*.tsz
@@ -265,7 +276,7 @@ pattern.
 Calculate the unfolded SFS comparison for the TE target and every matched set:
 
 ```bash
-python phi_sfs.py \
+python -m normalize_tes.phi_sfs \
   --target "$TARGET" \
   --matches "$MATCHES" \
   --vcf "$VCF" \
@@ -295,7 +306,7 @@ Build the polarity mask after the preliminary target exists:
 
 ```bash
 sbatch --export=ALL,STORE="$STORE",TARGET="$PRELIM_TARGET",OUTPUT="$POLARITY_MASK" \
-  run_te_polarity_mask.sbatch
+  slurm/run_te_polarity_mask.sbatch
 ```
 
 Build the final masked target and match controls:
@@ -305,7 +316,7 @@ sbatch --export=ALL,STORE="$STORE",TARGET="$TARGET",TE_POSITIONS="$TE_POSITIONS"
 OUTPUT="$MATCHES",CANDIDATE_ROWS="$CANDIDATES",WORK_DIR="$WORK_DIR",\
 TE_POLARITY_MASK="$POLARITY_MASK",MAX_FLIPPED_FRACTION=0.5,\
 REPLICATES=100,RESTARTS=3,SEED=1002,SCRATCH_HEADROOM_GB=32 \
-  run_bootstrap_matching.sbatch
+  slurm/run_bootstrap_matching.sbatch
 ```
 
 The launcher builds `TARGET` only when it is absent. If it already exists, the
@@ -317,11 +328,11 @@ Build the ancestral table as an array and merge it after every array task succee
 ```bash
 sbatch --array=0-14 --export=ALL,STORE="$STORE",\
 TREES="$POSTERIOR_DIR/*.tsz",OUTPUT=results/ancestral-parts,PER_TASK=5 \
-  run_ancestral_table.sbatch
+  slurm/run_ancestral_table.sbatch
 
 sbatch --export=ALL,STORE="$STORE",MERGE=1,\
 PARTS="results/ancestral-parts/part-*",OUTPUT="$ANCESTRAL",EXPECT_DRAWS=75 \
-  run_ancestral_table.sbatch
+  slurm/run_ancestral_table.sbatch
 ```
 
 Calculate Phi-SFS:
@@ -329,11 +340,11 @@ Calculate Phi-SFS:
 ```bash
 sbatch --export=ALL,TARGET="$TARGET",MATCHES="$MATCHES",VCF="$VCF",\
 ANCESTRAL="$ANCESTRAL",OUTPUT="$PHI" \
-  run_phi_sfs.sbatch
+  slurm/run_phi_sfs.sbatch
 ```
 
 Scheduler allocations, measured resource use, scratch sizing, and parameter evidence
-are recorded in [BOOTSTRAP_HPC_VALIDATION.md](BOOTSTRAP_HPC_VALIDATION.md).
+are recorded in [BOOTSTRAP_HPC_VALIDATION.md](docs/BOOTSTRAP_HPC_VALIDATION.md).
 
 ### Submit many TE categories
 
@@ -375,7 +386,7 @@ while IFS=$'\t' read -r label positions prelim mask target matches work seed; do
   mask_job=$(sbatch --parsable \
     --job-name="mask-${label}" \
     --export=ALL,PROJECT="$PROJECT",STORE="$STORE",TARGET="$prelim",OUTPUT="$mask" \
-    run_te_polarity_mask.sbatch)
+    slurm/run_te_polarity_mask.sbatch)
   mask_job=${mask_job%%;*}
 
   match_job=$(sbatch --parsable \
@@ -385,7 +396,7 @@ while IFS=$'\t' read -r label positions prelim mask target matches work seed; do
 TE_POSITIONS="$positions",OUTPUT="$matches",CANDIDATE_ROWS="$CANDIDATES",\
 WORK_DIR="$work",TE_POLARITY_MASK="$mask",MAX_FLIPPED_FRACTION=0.5,\
 REPLICATES=100,RESTARTS=3,SEED="$seed",SCRATCH_HEADROOM_GB=32 \
-    run_bootstrap_matching.sbatch)
+    slurm/run_bootstrap_matching.sbatch)
   match_job=${match_job%%;*}
 
   printf '%s\tmask=%s\tmatch=%s\n' "$label" "$mask_job" "$match_job"
@@ -418,7 +429,7 @@ Before accepting the results:
    retained and endpoint fractions before interpreting Phi.
 
 The exact acceptance criteria and the tests supporting them are in
-[BOOTSTRAP_HPC_VALIDATION.md](BOOTSTRAP_HPC_VALIDATION.md).
+[BOOTSTRAP_HPC_VALIDATION.md](docs/BOOTSTRAP_HPC_VALIDATION.md).
 
 ## Outputs
 
@@ -439,16 +450,16 @@ interpretation of their spread.
 
 ## Methods and validation
 
-- [BOOTSTRAP_HPC_VALIDATION.md](BOOTSTRAP_HPC_VALIDATION.md) — production settings,
+- [BOOTSTRAP_HPC_VALIDATION.md](docs/BOOTSTRAP_HPC_VALIDATION.md) — production settings,
   validation tests, measured resources, decision evidence, and acceptance criteria.
-- [BOOTSTRAP_TARGET_MATCHING_PLAN.md](BOOTSTRAP_TARGET_MATCHING_PLAN.md) — bootstrap
+- [BOOTSTRAP_TARGET_MATCHING_PLAN.md](docs/BOOTSTRAP_TARGET_MATCHING_PLAN.md) — bootstrap
   target and matching design.
-- [PHI_SFS_IMPLEMENTATION_PLAN.md](PHI_SFS_IMPLEMENTATION_PLAN.md) — SFS projection,
+- [PHI_SFS_IMPLEMENTATION_PLAN.md](docs/PHI_SFS_IMPLEMENTATION_PLAN.md) — SFS projection,
   polarization mixture, and Phi-SFS definition.
-- [BOOTSTRAP_DISCARDED_APPROACHES.md](BOOTSTRAP_DISCARDED_APPROACHES.md) — evaluated
+- [BOOTSTRAP_DISCARDED_APPROACHES.md](docs/BOOTSTRAP_DISCARDED_APPROACHES.md) — evaluated
   approaches that are not part of the production route.
-- [CHANGELOG.md](CHANGELOG.md) — release-level behavior changes.
-- [CODE_REVIEW_ROUND9.md](CODE_REVIEW_ROUND9.md) — latest implementation review.
+- [CHANGELOG.md](docs/CHANGELOG.md) — release-level behavior changes.
+- [CODE_REVIEW_ROUND9.md](docs/CODE_REVIEW_ROUND9.md) — latest implementation review.
 
 Historical `INTERVAL_STORE_*`, `GLOBAL_QUANTILE_*`, sampler plans, and older code
 reviews document development history; they are not operator instructions.
