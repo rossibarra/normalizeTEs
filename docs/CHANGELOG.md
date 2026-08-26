@@ -10,8 +10,9 @@
   `AGENTS.md` remain at repository root.
 - Supported Python commands now use module entry points such as
   `python -m normalize_tes.build_snp_interval_store`. SLURM launchers and
-  manifest-spawned subprocesses use the same entry points, avoiding dependence
-  on the caller's Python import path.
+  manifest-spawned subprocesses use the same entry points. Module entry points
+  resolve the package from the working directory, so these commands must be run
+  from the repository root; every launcher changes into the checkout first.
 - Updates package imports, tests, source-digest provenance, documentation links,
   and scheduler paths for the new layout. Direct root-level script paths from
   v0.5.1 and earlier are no longer supported.

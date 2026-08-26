@@ -19,6 +19,9 @@ readonly source_dir=/quobyte/jrigrp/beil/te_evo/singer_analysis/argtest/results/
 readonly output_dir="${source_dir}/age_store"
 readonly scratch_dir="${TMPDIR:-/tmp}"
 
+# `python -m normalize_tes.*` resolves the package from the working directory,
+# so the job must run from the checkout rather than wherever it was submitted.
+cd "$PROJECT"
 # Batch jobs get a non-login shell, where `module` does not exist.
 . "$PROJECT/slurm/slurm_conda_bootstrap.sh"
 
