@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.5.1 — 2026-08-25
+
+### Sites with multiple ARG mutations are excluded from age analyses
+
+- During age-store construction, each posterior draw is checked for genomic
+  positions carrying more than one mutation record. If any draw has multiple
+  mutations at a position, that site is ineligible for both TE age targets and
+  SNP control sets; the pipeline no longer averages the competing branch-age
+  intervals.
+- Stores record `multiple_mutation_draw_count.npy`, giving the number of draws
+  that triggered the exclusion for each catalog row, and stamp the exclusion
+  policy in `metadata.json`. Catalog rows and their raw intervals are retained
+  for audit, but downstream eligibility filtering excludes them from analysis.
+- Both the production interval-store builder and the legacy dense age-store
+  builder enforce the rule. Existing stores predate the new count array and
+  must be rebuilt for the exclusion to take effect.
+
 ## v0.5.0 — 2026-08-25
 
 TE age targets can exclude posterior draws that mis-polarized a site, and the

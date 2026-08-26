@@ -1,4 +1,4 @@
-# normalizeTE v0.5.0
+# normalizeTE v0.5.1
 
 normalizeTE builds SNP control sets matched to the posterior ages of a TE category,
 then compares the unfolded site-frequency spectra of the TEs and controls. The
