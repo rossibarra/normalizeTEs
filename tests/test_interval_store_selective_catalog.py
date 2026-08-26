@@ -2,8 +2,8 @@ import numpy as np
 import tskit
 import tszip
 
-import build_snp_interval_store as builder
-from snp_interval_dataset import SNPAgeIntervalDataset
+import normalize_tes.build_snp_interval_store as builder
+from normalize_tes.snp_interval_dataset import SNPAgeIntervalDataset
 
 
 def _write_tree(path):

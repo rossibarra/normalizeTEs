@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from phi_sfs import (
+from normalize_tes.phi_sfs import (
     SiteCount,
     accumulate_spectrum,
     hypergeometric_projection,
@@ -14,7 +14,7 @@ from phi_sfs import (
     phi_sfs,
     project_sites,
 )
-from sample_age_matched_controls import _sha256_arrays
+from normalize_tes.sample_age_matched_controls import _sha256_arrays
 
 
 # ---------------------------------------------------------------- projection

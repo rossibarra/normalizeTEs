@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from sample_age_matched_syn import (
+from normalize_tes.sample_age_matched_syn import (
     SamplingError,
     build_candidate_weights,
     draw_stratified_set,
@@ -14,7 +14,7 @@ from sample_age_matched_syn import (
     wasserstein_1,
     write_result,
 )
-from snp_interval_dataset import INTERVAL_SCHEMA_VERSION, interval_cdf
+from normalize_tes.snp_interval_dataset import INTERVAL_SCHEMA_VERSION, interval_cdf
 
 
 class FakeStore:

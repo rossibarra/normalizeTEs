@@ -6,8 +6,8 @@ import pytest
 import tskit
 import tszip
 
-from build_snp_age_store import build_store, inspect_inputs, load_chrom_offsets
-from snp_age_dataset import SNPAgeDataset, validate_store
+from normalize_tes.build_snp_age_store import build_store, inspect_inputs, load_chrom_offsets
+from normalize_tes.snp_age_dataset import SNPAgeDataset, validate_store
 
 
 def _write_ts(path, sites, *, sequence_length=100, chrom_offsets=None):
@@ -136,7 +136,7 @@ def test_minimum_usable_fraction_filters_sparse_posterior_coverage(tmp_path):
 
 
 def test_builder_loads_each_draw_twice_independent_of_blocks(tmp_path, monkeypatch):
-    import build_snp_age_store as builder
+    import normalize_tes.build_snp_age_store as builder
 
     draws = []
     for index in range(2):
@@ -242,7 +242,7 @@ def test_chrom_offsets_file_rejects_malformed_input(tmp_path):
 
 
 def test_accumulator_uses_requested_scratch_directory(tmp_path, monkeypatch):
-    import build_snp_age_store as builder
+    import normalize_tes.build_snp_age_store as builder
 
     tree = tmp_path / "draw.trees"
     scratch = tmp_path / "scratch"

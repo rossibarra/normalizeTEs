@@ -5,7 +5,7 @@ import pytest
 import tskit
 import tszip
 
-import benchmark_interval_store_gate2 as gate2
+import tools.benchmark_interval_store_gate2 as gate2
 
 
 def _write_fixture(path):

@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from bootstrap_target_matcher import (
+from normalize_tes.bootstrap_target_matcher import (
     OptimizerConfig,
     bootstrap_cdf,
     bootstrap_counts,
@@ -16,8 +16,8 @@ from bootstrap_target_matcher import (
     optimize_restart,
     validate_restart_result,
 )
-from snp_age_store import open_snp_age_store
-from swap_control_sampler import analysis_points, eligible_candidates, search_grid
+from normalize_tes.snp_age_store import open_snp_age_store
+from normalize_tes.swap_control_sampler import analysis_points, eligible_candidates, search_grid
 from test_swap_control_sampler import _interval_store, _target
 
 
@@ -110,8 +110,8 @@ def test_bootstrap_bundle_is_consumable_by_phi_sfs(tmp_path):
     over different arrays than phi_sfs recomputes, and missing per-replicate
     identifier arrays. Both were invisible to every other test.
     """
-    import phi_sfs
-    from snp_age_store import open_snp_age_store
+    from normalize_tes import phi_sfs
+    from normalize_tes.snp_age_store import open_snp_age_store
 
     store = _interval_store(tmp_path / "store")
     target = _target(tmp_path / "target", store)
@@ -289,7 +289,7 @@ def test_resume_rejects_a_different_dirty_source_state(tmp_path, monkeypatch):
     modules a long job could resume across an implementation change and mix
     replicate bundles from two versions of the code.
     """
-    import release_provenance
+    from normalize_tes import release_provenance
 
     first = release_provenance.loaded_source_digest()
     assert first["sha256"] and first["modules"]
@@ -298,17 +298,20 @@ def test_resume_rejects_a_different_dirty_source_state(tmp_path, monkeypatch):
     # the repo whose matcher source differs by a single byte.
     shadow = tmp_path / "shadow"
     shadow.mkdir()
-    root = Path(release_provenance.__file__).resolve().parent
+    root = Path(release_provenance.__file__).resolve().parent.parent
     for name in first["modules"]:
-        (shadow / name).write_bytes((root / name).read_bytes())
-    target = shadow / "bootstrap_target_matcher.py"
+        destination = shadow / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes((root / name).read_bytes())
+    target = shadow / "normalize_tes/bootstrap_target_matcher.py"
     target.write_bytes(target.read_bytes() + b"\n# one byte of drift\n")
 
-    real_modules = {
-        name: sys.modules[stem]
-        for stem, name in ((Path(n).stem, n) for n in first["modules"])
-        if stem in sys.modules
-    }
+    real_modules = {}
+    for name in first["modules"]:
+        stem = Path(name).stem
+        module_name = "normalize_tes" if stem == "__init__" else f"normalize_tes.{stem}"
+        if module_name in sys.modules:
+            real_modules[name] = sys.modules[module_name]
     for name, module in real_modules.items():
         monkeypatch.setattr(module, "__file__", str(shadow / name), raising=False)
     second = release_provenance.loaded_source_digest(shadow)

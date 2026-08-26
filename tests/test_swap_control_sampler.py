@@ -3,10 +3,10 @@ import json
 import numpy as np
 import pytest
 
-from distributed_age_match import main as distributed_main
-from sample_age_matched_controls import _atomic_copy_file, main
-from snp_interval_dataset import INTERVAL_SCHEMA_VERSION, pack_status
-from swap_control_sampler import (
+from normalize_tes.distributed_age_match import main as distributed_main
+from normalize_tes.sample_age_matched_controls import _atomic_copy_file, main
+from normalize_tes.snp_interval_dataset import INTERVAL_SCHEMA_VERSION, pack_status
+from normalize_tes.swap_control_sampler import (
     SwapSamplingError,
     SwapConfig,
     derive_chain_seed,
@@ -57,8 +57,8 @@ def _interval_store(path):
 
 
 def _target(path, store_path, *, rows=None, threshold=1_000.0):
-    from snp_interval_dataset import SNPAgeIntervalDataset
-    from te_age_target import (
+    from normalize_tes.snp_interval_dataset import SNPAgeIntervalDataset
+    from normalize_tes.te_age_target import (
         analysis_grid_edges,
         equal_mass_boundaries,
         largest_remainder_quotas,
@@ -266,7 +266,7 @@ def test_cli_writes_four_exact_sets_atomically(tmp_path):
     assert metadata["complete"] is True
     assert metadata["sets"] == 4
     assert metadata["software"]["name"] == "normalizeTE"
-    assert metadata["software"]["version"] == "0.5.1"
+    assert metadata["software"]["version"] == "0.5.2"
     assert metadata["algorithm_version"] == (
         "swap-age-controls-v2.1-adaptive-construction"
     )

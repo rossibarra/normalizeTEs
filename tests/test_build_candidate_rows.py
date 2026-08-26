@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from build_candidate_rows import _publish
+from normalize_tes.build_candidate_rows import _publish
 
 
 def test_publish_exposes_rows_only_after_report(tmp_path):

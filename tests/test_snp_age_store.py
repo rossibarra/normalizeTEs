@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from snp_age_store import open_snp_age_store
+from normalize_tes.snp_age_store import open_snp_age_store
 
 
 def test_dispatch_rejects_missing_and_unknown_metadata(tmp_path):

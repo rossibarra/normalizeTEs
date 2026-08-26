@@ -3,7 +3,7 @@ import json
 import numpy as np
 import pytest
 
-from snp_interval_dataset import (
+from normalize_tes.snp_interval_dataset import (
     INTERVAL_SCHEMA_VERSION,
     SNPAgeIntervalDataset,
     interval_cdf,
