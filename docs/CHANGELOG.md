@@ -1,5 +1,59 @@
 # Changelog
 
+## v0.6.0 — 2026-09-01
+
+### Per-individual derived-allele age distributions
+
+Adds a side pipeline that estimates, for each individual in a VCF, the combined
+posterior distribution of the ages of the derived alleles that individual
+carries. It reads the interval store and changes nothing in the TE/control
+matching workflow: no existing module, launcher, or published artifact is
+modified, and nothing it produces feeds Phi-SFS.
+
+- `normalize_tes.build_draw_polarity` publishes a `(store rows) x (posterior
+  draws)` table of ancestral base indices, aligned to the store's row order and
+  `draw_id` numbering so an interval's `draw_id` indexes its own polarity
+  column. `build_ancestral_states` records only how many draws called each base
+  ancestral, which is sufficient for Phi-SFS but cannot pair a mutation's age
+  with the polarity of the same draw. Supports `--draws` array slices and
+  `--merge`, with parts holding only their own columns.
+- `normalize_tes.individual_age_spectrum` reads that table, the store, and one
+  or more biallelic VCFs, and publishes a binned, unnormalized age mixture per
+  individual plus an exactly computed weighted mean age and bin-interpolated
+  quantiles. Supports `--merge` of per-chromosome parts, which is exact because
+  the mixture is a sum over sites.
+- Weighting: within one draw a biallelic SNP has one mutation age and one
+  derived allele, so each draw either does or does not put a derived allele in
+  an individual. Each contributing draw enters at `1 / (usable draws)`, making a
+  site's mass the posterior probability that the individual carries a derived
+  allele there. A homozygote takes `P(its allele derived)`; a heterozygote takes
+  1, at whichever allele each draw calls derived. `--allele-weighting dosage`
+  counts carried copies instead of sites.
+- A draw is usable at a row only when it contributes exactly one age interval
+  and names one of the two observed alleles ancestral. Draws with several
+  mutations at the site have no single age or derived allele; draws naming a
+  third base cannot orient the site. Both are dropped from the row's
+  denominator. This is stricter than the store's `eligible` mask, which cannot
+  see per-draw mutation counts on a store built before they were recorded.
+- Default binning is piecewise-constant in generations: 100 across the first
+  10,000, then 1,000, 5,000, 10,000, and 100,000, closed by an unbounded bin —
+  501 bins, overridable with `--bin-steps WIDTH:LIMIT ...`. The first bin starts
+  at 0 because mutations on terminal branches genuinely have intervals starting
+  there. `--bin-scale log` and `linear` remain available.
+- `--ancestral-table` accepts the existing marginal table as an explicitly
+  approximate alternative that needs no new artifact. It applies the correct
+  per-site weight to the row's marginal age distribution; the weights are right
+  and the ages are not, because the draws in which a chosen allele is derived
+  are not an unbiased sample of that row's ages.
+- Adds `slurm/run_draw_polarity.sbatch` and
+  `slurm/run_individual_age_spectrum.sbatch`, the operator guide
+  `derived_distribution_readme.md`, and the method record
+  `docs/INDIVIDUAL_AGE_SPECTRUM.md`. `README.md` links to the new guide.
+- Adds 34 tests covering the weighting rule, per-draw versus marginal polarity,
+  dosage weighting, uncallable genotypes, the usable-draw floor, third-base
+  ancestral calls, store-identity refusals, merge validation, exact interval
+  integration against direct computation, and the piecewise bin construction.
+
 ## v0.5.2 — 2026-08-25
 
 ### Repository layout and module entry points
