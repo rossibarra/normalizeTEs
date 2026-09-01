@@ -1,6 +1,7 @@
 """Per-individual derived-allele age spectra, checked against hand computation."""
 
 import json
+import shutil
 
 import numpy as np
 import pytest
@@ -122,12 +123,12 @@ def _ancestral_table(path, digest):
     return path
 
 
-def _vcf(path, genotypes=("1/1", "0/1", "0/0")):
+def _vcf(path, genotypes=("1/1", "0/1", "0/0"), positions=(5, 9, 20)):
     lines = [
         "##fileformat=VCFv4.2",
         "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\thomalt\thet\thomref",
     ]
-    for position in (5, 9, 20):
+    for position in positions:
         lines.append("\t".join(
             ["chr1", str(position), ".", "A", "C", ".", "PASS", ".", "GT",
              *genotypes]))
@@ -315,25 +316,33 @@ def test_existing_output_is_never_overwritten(tmp_path):
 
 
 def test_merge_sums_parts_and_refuses_a_repeated_vcf(tmp_path):
-    first = _run(tmp_path, output="part-a")
     store, digest = _store(tmp_path / "store")
     polarity = _polarity(tmp_path / "polarity", digest)
-    second_vcf = _vcf(tmp_path / "second.vcf")
-    second = tmp_path / "part-b"
-    assert ias.main([
-        "--store", str(store), "--draw-polarity", str(polarity),
-        "--vcf", str(second_vcf), "--output", str(second),
-        "--min-usable-draws", "1", "--quiet",
-    ]) == 0
+    # Parts must hold different data, the way per-chromosome parts do. Two
+    # byte-identical VCFs are the double-counting the merge now refuses.
+    first_vcf = _vcf(tmp_path / "first.vcf", positions=(5, 9))
+    second_vcf = _vcf(tmp_path / "second.vcf", positions=(20,))
+    first, second = tmp_path / "part-a", tmp_path / "part-b"
+    for source, output in ((first_vcf, first), (second_vcf, second)):
+        assert ias.main([
+            "--store", str(store), "--draw-polarity", str(polarity),
+            "--vcf", str(source), "--output", str(output),
+            "--min-usable-draws", "1", "--quiet",
+        ]) == 0
     merged = tmp_path / "merged"
     assert ias.main(["--store", str(store), "--output", str(merged),
                      "--merge", str(first), str(second), "--quiet"]) == 0
-    combined = _summary(merged)
-    single = _summary(first)
-    assert float(combined["het"]["total_weight"]) == pytest.approx(
-        2 * float(single["het"]["total_weight"]))
+    combined, part_a, part_b = (_summary(x) for x in (merged, first, second))
+    for sample in ("homalt", "het", "homref"):
+        assert float(combined[sample]["total_weight"]) == pytest.approx(
+            float(part_a[sample]["total_weight"])
+            + float(part_b[sample]["total_weight"]))
+        assert int(combined[sample]["sites_used"]) == (
+            int(part_a[sample]["sites_used"]) + int(part_b[sample]["sites_used"]))
+    # Summing parts must equal one whole-VCF run over the same sites.
+    whole = _summary(_run(tmp_path, output="whole"))
     assert float(combined["het"]["mean_age"]) == pytest.approx(
-        float(single["het"]["mean_age"]))
+        float(whole["het"]["mean_age"]))
     merged_metadata = json.loads((merged / "metadata.json").read_text())
     expected_vcfs = {
         (entry["path"], entry["sha256"])
@@ -438,3 +447,75 @@ def test_default_binning_places_a_young_site_in_its_100_generation_bin(tmp_path)
     # which the 100-generation resolution keeps separate from the younger sites.
     assert homalt[1] == pytest.approx(0.5)
     assert homalt[2] == pytest.approx(0.0)
+
+
+# --------------------------------------------------- merge input identity
+
+
+def _part_with_vcf_metadata(part, entries):
+    """Copy a published part and rewrite the input VCFs it claims to cover."""
+    copy = part.with_name(part.name + "-edited")
+    shutil.copytree(part, copy)
+    metadata = json.loads((copy / "metadata.json").read_text())
+    metadata["vcfs"] = entries
+    (copy / "metadata.json").write_text(json.dumps(metadata))
+    return copy
+
+
+def _merge_parts(tmp_path, store, *parts, output):
+    return ias.main(["--store", str(store), "--output", str(tmp_path / output),
+                     "--merge", *[str(part) for part in parts], "--quiet"])
+
+
+def test_merge_refuses_one_file_gathered_under_two_paths(tmp_path):
+    """A copy or symlink of an already-gathered VCF would double every site."""
+    store, digest = _store(tmp_path / "store")
+    polarity = _polarity(tmp_path / "polarity", digest)
+    original = _vcf(tmp_path / "in.vcf")
+    alias = tmp_path / "alias.vcf"
+    shutil.copy(original, alias)
+    parts = []
+    for source, name in ((original, "part-a"), (alias, "part-b")):
+        output = tmp_path / name
+        assert ias.main([
+            "--store", str(store), "--draw-polarity", str(polarity),
+            "--vcf", str(source), "--output", str(output),
+            "--min-usable-draws", "1", "--quiet",
+        ]) == 0
+        parts.append(output)
+    with pytest.raises(SystemExit, match="same bytes as"):
+        _merge_parts(tmp_path, store, *parts, output="merged")
+
+
+def test_merge_refuses_a_part_whose_file_changed_between_runs(tmp_path):
+    first = _run(tmp_path, output="part-a")
+    store, _ = _store(tmp_path / "store")
+    entries = json.loads((first / "metadata.json").read_text())["vcfs"]
+    moved = _part_with_vcf_metadata(
+        first, [{"path": entries[0]["path"], "sha256": "b" * 64}])
+    with pytest.raises(SystemExit, match="different contents"):
+        _merge_parts(tmp_path, store, first, moved, output="merged")
+
+
+@pytest.mark.parametrize("digest", [None, "", "not-a-digest", "A" * 64])
+def test_merge_refuses_an_unusable_input_digest(tmp_path, digest):
+    first = _run(tmp_path, output="part-a")
+    store, _ = _store(tmp_path / "store")
+    entries = json.loads((first / "metadata.json").read_text())["vcfs"]
+    broken = _part_with_vcf_metadata(
+        first, [{"path": entries[0]["path"], "sha256": digest}])
+    with pytest.raises(SystemExit, match="usable path and sha256"):
+        _merge_parts(tmp_path, store, broken, output="merged")
+
+
+def test_merge_refuses_one_part_naming_two_paths_for_one_file(tmp_path):
+    first = _run(tmp_path, output="part-a")
+    store, _ = _store(tmp_path / "store")
+    entries = json.loads((first / "metadata.json").read_text())["vcfs"]
+    same = entries[0]["sha256"]
+    doubled = _part_with_vcf_metadata(first, [
+        {"path": entries[0]["path"], "sha256": same},
+        {"path": entries[0]["path"] + ".copy", "sha256": same},
+    ])
+    with pytest.raises(SystemExit, match="one file under two paths"):
+        _merge_parts(tmp_path, store, doubled, output="merged")

@@ -290,8 +290,12 @@ list), and `BIN_MIN`/`BIN_MAX`/`N_BINS` for the log and linear scales.
 Merging is exact, not an approximation: the mixture is a sum over sites, so
 summing per-chromosome parts gives the same numbers as one whole-genome run. A
 merge refuses parts that disagree on store, polarity table, weighting,
-`--min-usable-draws`, bin edges, or sample order, and refuses to count the same
-VCF twice.
+`--min-usable-draws`, bin edges, or sample order. It also refuses to count the
+same input twice, identifying a VCF by its recorded SHA-256 as well as its path,
+so a copy, a symlink, or an absolute-versus-relative spelling of an
+already-gathered file is caught instead of silently doubling every site it
+holds. A path gathered twice with different contents is reported as the file
+having changed between the runs, which is a different problem from a repeat.
 
 ## Output
 
