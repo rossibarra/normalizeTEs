@@ -215,6 +215,24 @@ def test_marginal_source_loses_the_age_polarity_pairing(tmp_path):
         float(marginal["homalt"]["mean_age"]))
 
 
+def test_marginal_source_applies_draw_floor_to_orienting_calls(tmp_path):
+    store, digest = _store(tmp_path / "store")
+    table = _ancestral_table(tmp_path / "ancestral", digest)
+    counts = np.load(table / "ancestral_counts.npy")
+    # Row 0 has four dated draws but only one call naming REF or ALT. It must
+    # not pass a floor of two merely because its age marginal is well sampled.
+    counts[0] = [1, 0, 3, 0]
+    np.save(table / "ancestral_counts.npy", counts)
+    result = tmp_path / "marginal"
+    assert ias.main([
+        "--store", str(store), "--ancestral-table", str(table),
+        "--vcf", str(_vcf(tmp_path / "in.vcf")), "--output", str(result),
+        "--min-usable-draws", "2", "--quiet",
+    ]) == 0
+    summary = _summary(result)
+    assert int(summary["homalt"]["sites_used"]) == 2
+
+
 def test_dosage_weighting_doubles_homozygotes_only(tmp_path):
     site = _summary(_run(tmp_path, output="site"))
     dosage = _summary(_run(tmp_path, "--allele-weighting", "dosage",
@@ -316,6 +334,14 @@ def test_merge_sums_parts_and_refuses_a_repeated_vcf(tmp_path):
         2 * float(single["het"]["total_weight"]))
     assert float(combined["het"]["mean_age"]) == pytest.approx(
         float(single["het"]["mean_age"]))
+    merged_metadata = json.loads((merged / "metadata.json").read_text())
+    expected_vcfs = {
+        (entry["path"], entry["sha256"])
+        for part in (first, second)
+        for entry in json.loads((part / "metadata.json").read_text())["vcfs"]
+    }
+    assert {(entry["path"], entry["sha256"])
+            for entry in merged_metadata["vcfs"]} == expected_vcfs
     with pytest.raises(SystemExit, match="more than once"):
         ias.main(["--store", str(store), "--output", str(tmp_path / "again"),
                   "--merge", str(first), str(first)])

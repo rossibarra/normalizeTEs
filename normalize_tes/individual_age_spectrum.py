@@ -272,6 +272,7 @@ def row_spectra(store, rows: np.ndarray, ref_index: np.ndarray,
                 alt_index: np.ndarray, binning: AgeBinning, *,
                 polarity: np.ndarray | None,
                 marginal_alt: np.ndarray | None,
+                marginal_oriented_draws: np.ndarray | None,
                 min_usable_draws: int) -> RowSpectra:
     """Split each row's posterior age mass into ALT-derived and REF-derived parts.
 
@@ -308,7 +309,13 @@ def row_spectra(store, rows: np.ndarray, ref_index: np.ndarray,
         ref_mass = np.where(ref_derived & valid[interval_row], share[interval_row], 0.0)
     else:
         usable_draws = np.bincount(interval_row[single], minlength=n_rows)
-        valid = (usable_draws >= min_usable_draws) & np.isfinite(marginal_alt)
+        # The marginal table cannot identify the intersection of draws that
+        # both date and orient a row. Still require each marginal separately to
+        # meet the requested floor; otherwise a row with many age intervals but
+        # only one orienting call would pass --min-usable-draws.
+        valid = ((usable_draws >= min_usable_draws)
+                 & (marginal_oriented_draws >= min_usable_draws)
+                 & np.isfinite(marginal_alt))
         share = np.zeros(n_rows, dtype=np.float64)
         np.divide(1.0, usable_draws, out=share, where=valid)
         base = np.where(single & valid[interval_row], share[interval_row], 0.0)
@@ -735,7 +742,7 @@ def _merge(args: argparse.Namespace) -> tuple[Accumulator, dict]:
     accumulator: Accumulator | None = None
     detail: list[dict] = []
     seen_paths: set[Path] = set()
-    seen_vcfs: set[str] = set()
+    seen_vcfs: dict[str, str] = {}
     reference: dict | None = None
     for part in args.merge:
         resolved = part.resolve()
@@ -772,10 +779,19 @@ def _merge(args: argparse.Namespace) -> tuple[Accumulator, dict]:
                 raise SystemExit(f"{part}: sample set or order differs")
             if not np.array_equal(edges, reference["edges"]):
                 raise SystemExit(f"{part}: bin edges differ")
-        vcfs = [entry["path"] for entry in meta.get("vcfs", [])]
-        if not vcfs:
+        vcf_entries = meta.get("vcfs", [])
+        if not vcf_entries:
             raise SystemExit(f"{part}: records no input VCF")
-        overlap = seen_vcfs.intersection(vcfs)
+        try:
+            vcfs = {str(entry["path"]): str(entry["sha256"])
+                    for entry in vcf_entries}
+        except (KeyError, TypeError):
+            raise SystemExit(
+                f"{part}: each input VCF must record path and sha256") from None
+        if len(vcfs) != len(vcf_entries) or any(not path or not digest
+                                                for path, digest in vcfs.items()):
+            raise SystemExit(f"{part}: invalid or duplicate input VCF metadata")
+        overlap = set(seen_vcfs).intersection(vcfs)
         if overlap:
             raise SystemExit(
                 f"{part}: VCFs already counted by an earlier part: "
@@ -786,12 +802,13 @@ def _merge(args: argparse.Namespace) -> tuple[Accumulator, dict]:
         accumulator.mean_numerator += np.load(part / "mean_numerator.npy",
                                               allow_pickle=False)
         accumulator.sites_used += np.load(part / "sites_used.npy", allow_pickle=False)
-        detail.append({"path": str(resolved), "vcfs": vcfs})
+        detail.append({"path": str(resolved), "vcfs": vcf_entries})
     report = {**{k: reference[k] for k in
                  ("store_content_sha256", "polarity_source", "polarity_table",
                   "allele_weighting", "min_usable_draws")},
               "merged": detail, "merged_parts": len(detail),
-              "vcfs": [{"path": path} for path in sorted(seen_vcfs)]}
+              "vcfs": [{"path": path, "sha256": seen_vcfs[path]}
+                       for path in sorted(seen_vcfs)]}
     return accumulator, report
 
 
@@ -1011,6 +1028,7 @@ def _accumulate_chunk(chunk: VcfChunk, store, positions: np.ndarray,
     ref_index = chunk.ref_index[selection].astype(np.int64)
     alt_index = chunk.alt_index[selection].astype(np.int64)
     marginal_alt = None
+    marginal_oriented_draws = None
     if marginal is not None:
         counts = np.asarray(marginal[rows], dtype=np.float64)
         take = np.arange(rows.size)
@@ -1021,9 +1039,11 @@ def _accumulate_chunk(chunk: VcfChunk, store, positions: np.ndarray,
         # the draws that named one of the two observed alleles.
         marginal_alt = np.where(oriented > 0, ref_calls / np.maximum(oriented, 1),
                                 np.nan)
+        marginal_oriented_draws = oriented
 
     spectra = row_spectra(store, rows, ref_index, alt_index, binning,
                           polarity=polarity_table, marginal_alt=marginal_alt,
+                          marginal_oriented_draws=marginal_oriented_draws,
                           min_usable_draws=args.min_usable_draws)
     stats["rows_below_min_usable_draws"] += int(np.count_nonzero(~spectra.valid))
     stats["rows_used"] += int(np.count_nonzero(spectra.valid))
