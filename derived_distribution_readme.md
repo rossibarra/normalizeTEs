@@ -4,6 +4,10 @@ A side pipeline of normalizeTE. Given VCFs and the posterior ARG draws, it
 builds, for each individual, the combined distribution of the ages of the
 derived alleles that individual carries.
 
+It does not separate SNPs from TEs. Every biallelic record in the VCF that
+resolves to a store row is treated the same way, and the result is one
+distribution per individual over everything in the file.
+
 It shares the interval store with the TE/control matching workflow and changes
 nothing in it. No production module, launcher, or artifact of that workflow is
 touched, and nothing here feeds Phi-SFS. The method rationale and the recorded
@@ -13,7 +17,7 @@ the operator guide.
 
 ## What a site contributes
 
-Within one posterior draw, a biallelic SNP with a single mutation has exactly one
+Within one posterior draw, a biallelic variant with a single mutation has exactly one
 age interval — the branch the mutation sits on — and exactly one derived allele,
 the one that branch's descendants carry. So each draw either does or does not put
 a derived allele in a given individual:
@@ -40,6 +44,34 @@ the individual carries a derived allele, so individuals stay comparable in scale
 `spectrum.tsv` also carries the normalized probability per bin.
 
 Ages are in ARG generations throughout.
+
+## Every variant is treated the same
+
+There is no variant-class logic anywhere in this pipeline. It does not know what
+a TE is, and it does not read the TE position lists the matching workflow uses.
+Every VCF record that is biallelic, has A/C/G/T for both REF and ALT, and
+resolves to a store row contributes, whatever kind of variant it represents. The
+production store is built from a combined SNP+TE dataset, so TE presence/absence
+records carry age intervals and ancestral calls just as SNPs do, and they enter
+the mixture on the same terms.
+
+One consequence is worth stating, because it differs from Phi-SFS. Phi-SFS
+polarizes TE sites by biology — an insertion is the derived state, so its weight
+is exactly 1 — and uses the ARG only for control SNPs. This pipeline uses the
+ARG's per-draw ancestral call for *everything*, TE records included. That is the
+right choice for a uniform per-individual age distribution, and it means a TE's
+polarity here carries the ARG's uncertainty rather than the biological
+convention. If you want the two classes handled differently, split the VCF with
+`--include-positions` and `--exclude-positions` and run the pipeline twice.
+
+Records the pipeline skips, all counted in `metadata.json`:
+
+| skipped | count field | why |
+|---|---|---|
+| multiallelic records | `multiallelic_skipped` | an error by default; pass `--multiallelic skip` |
+| non-A/C/G/T REF or ALT | `non_acgt_skipped` | cannot be matched against an ancestral base call |
+| positions absent from the store | `unresolved` | no posterior age exists for them |
+| rows below the draw floor | `rows_below_min_usable_draws` | too few draws both date and orient them |
 
 ## Draws that are excluded
 
@@ -104,8 +136,8 @@ step 1 below.
   against the store's recorded `inputs`, so a different set of tree files of the
   right cardinality is rejected instead of silently accepted;
 - one or more biallelic VCFs whose CHROM labels match the store's chromosomes;
-- optionally, the TE position list the main workflow uses, if you want
-  `--exclude-positions` to restrict the analysis to non-TE SNPs;
+- optionally, a `chrom position` list, if you want to analyse only part of the
+  VCF — see below;
 - an output location on durable storage. Every published path must be new — both
   commands refuse to overwrite, and the spectrum checks its output path *before*
   the VCF scan rather than after it.
@@ -150,7 +182,7 @@ indexes the matching polarity column directly, whatever order the tree files wer
 listed in. For the 75-draw production store that is about 2.2 GB.
 
 `255` covers both a draw lacking the site and a draw annotating it with something
-that cannot polarize a biallelic SNP. The two are deliberately not
+that cannot polarize a biallelic variant. The two are deliberately not
 distinguished: neither can orient a site, and treating them differently would be
 conditioning on missingness.
 
@@ -169,12 +201,12 @@ python -m normalize_tes.individual_age_spectrum \
 
 | flag | purpose |
 |---|---|
-| `--store` | interval store supplying posterior SNP ages |
+| `--store` | interval store supplying posterior variant ages |
 | `--draw-polarity` | per-draw polarity table from step 1 |
 | `--vcf` | one or more biallelic VCFs holding the genotypes |
 | `--output` | new result directory |
 | `--samples` / `--samples-file` | individuals to analyse; default every VCF sample |
-| `--include-positions` / `--exclude-positions` | `chrom position` file to restrict to, or to subtract — e.g. all TE positions |
+| `--include-positions` / `--exclude-positions` | `chrom position` file to restrict to, or to subtract; the only way to split the VCF into groups |
 | `--min-usable-draws` | minimum draws that both date and orient a site (default 8) |
 | `--allele-weighting` | `site` (default) or `dosage` |
 | `--bin-scale` | `steps` (default), `log`, or `linear` |

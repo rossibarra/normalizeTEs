@@ -21,6 +21,7 @@ results/interval-gate3-3draw-store/
 results/ancestral-75draw/*.npy
 results/ancestral-smoke-1draw/
 results/work-*/
+results/*
 
 # Large result arrays: row indices, CDFs, per-site ancestral counts.
 # JSON provenance and metadata beside them are kept.
