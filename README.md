@@ -1,9 +1,12 @@
-# normalizeTE v0.5.2
+# normalizeTE v0.6.0
 
 normalizeTE builds SNP control sets matched to the posterior ages of a TE category,
 then compares the unfolded site-frequency spectra of the TEs and controls. The
 production workflow uses posterior ARG draws, SNP and TE position lists, and a
 genome-wide biallelic VCF.
+
+The alternative pipeline for estimating the PDF of derived allele ages for a
+sample is found [here](derived_distribution_readme.md).
 
 This README is the operator guide. Method definitions and the evidence behind the
 production settings are linked under [Methods and validation](#methods-and-validation).
