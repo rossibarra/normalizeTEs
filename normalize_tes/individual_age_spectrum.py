@@ -81,6 +81,7 @@ import csv
 import json
 import math
 import os
+import re
 import shutil
 import sys
 from dataclasses import dataclass
@@ -96,6 +97,7 @@ from .snp_age_store import open_snp_age_store, store_schema
 
 
 SCHEMA_VERSION = "individual-age-spectrum-v1"
+_SHA256 = re.compile(r"[0-9a-f]{64}")
 BASES = "ACGT"
 _BASE_INDEX = {base: index for index, base in enumerate(BASES)}
 PROGRESS_RECORDS = 1_000_000
@@ -743,6 +745,7 @@ def _merge(args: argparse.Namespace) -> tuple[Accumulator, dict]:
     detail: list[dict] = []
     seen_paths: set[Path] = set()
     seen_vcfs: dict[str, str] = {}
+    seen_digests: dict[str, str] = {}
     reference: dict | None = None
     for part in args.merge:
         resolved = part.resolve()
@@ -788,15 +791,46 @@ def _merge(args: argparse.Namespace) -> tuple[Accumulator, dict]:
         except (KeyError, TypeError):
             raise SystemExit(
                 f"{part}: each input VCF must record path and sha256") from None
-        if len(vcfs) != len(vcf_entries) or any(not path or not digest
-                                                for path, digest in vcfs.items()):
-            raise SystemExit(f"{part}: invalid or duplicate input VCF metadata")
-        overlap = set(seen_vcfs).intersection(vcfs)
-        if overlap:
+        # Require a real digest rather than merely a non-empty field: a null
+        # sha256 stringifies to "None", which passes an emptiness test and
+        # would let an unidentifiable input through the checks below.
+        bad = [path for path, digest in vcfs.items()
+               if not path or not _SHA256.fullmatch(digest)]
+        if bad:
+            raise SystemExit(
+                f"{part}: input VCF metadata lacks a usable path and sha256: "
+                + ", ".join(sorted(bad)[:3]))
+        if len(vcfs) != len(vcf_entries):
+            raise SystemExit(f"{part}: records the same VCF path more than once")
+        if len(set(vcfs.values())) != len(vcfs):
+            raise SystemExit(
+                f"{part}: records one file under two paths; merging it would "
+                "count those sites twice")
+        # Two checks, because a path and its contents fail in different ways.
+        # The same path in two parts is a repeated input. The same *bytes* under
+        # two paths -- a symlink, a copy, an absolute and a relative spelling --
+        # is the same input wearing a disguise, and summing it would double every
+        # site it holds. Neither is visible to the other check.
+        repeated = sorted(set(seen_vcfs).intersection(vcfs))
+        if repeated:
+            changed = [path for path in repeated if seen_vcfs[path] != vcfs[path]]
+            if changed:
+                raise SystemExit(
+                    f"{part}: {changed[0]} was already gathered with different "
+                    "contents; the file changed between the runs being merged")
             raise SystemExit(
                 f"{part}: VCFs already counted by an earlier part: "
-                + ", ".join(sorted(overlap)[:3]))
+                + ", ".join(repeated[:3]))
+        aliased = sorted((path, seen_digests[digest])
+                         for path, digest in vcfs.items() if digest in seen_digests)
+        if aliased:
+            here, before = aliased[0]
+            raise SystemExit(
+                f"{part}: {here} holds the same bytes as {before}, already "
+                "gathered from an earlier part; merging both would count those "
+                "sites twice")
         seen_vcfs.update(vcfs)
+        seen_digests.update({digest: path for path, digest in vcfs.items()})
         accumulator.mass += np.load(part / "mass.npy", allow_pickle=False)
         accumulator.weight += np.load(part / "total_weight.npy", allow_pickle=False)
         accumulator.mean_numerator += np.load(part / "mean_numerator.npy",
