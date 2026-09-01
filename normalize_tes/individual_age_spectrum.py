@@ -2,12 +2,19 @@
 """Combined posterior age distribution of the derived alleles one individual carries.
 
 This is a per-individual analysis, not part of the TE/control matching workflow.
-It answers: across every SNP an individual is genotyped at, how old are the
+It answers: across every variant an individual is genotyped at, how old are the
 derived alleles that individual carries?
+
+There is no variant-class logic here. SNPs and TEs are not separated: every
+biallelic VCF record with A/C/G/T alleles that resolves to a store row enters the
+mixture on the same terms, and polarity for all of them comes from the ARG's
+per-draw ancestral call. That differs from `phi_sfs`, which polarizes TE sites by
+biology instead. Split the VCF with `--include-positions`/`--exclude-positions`
+if the classes need different handling.
 
 What one site contributes
 -------------------------
-Within a single posterior draw, a biallelic SNP with one mutation has one age
+Within a single posterior draw, a biallelic variant with one mutation has one age
 interval -- the branch the mutation sits on -- and one derived allele, the one
 that branch's descendants carry. The draw therefore either does or does not put
 a derived allele in a given individual:

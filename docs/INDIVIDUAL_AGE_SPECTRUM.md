@@ -6,13 +6,15 @@ artifact of that workflow is touched, and nothing here is an input to Phi-SFS.
 
 ## The question
 
-For one individual, across every SNP it is genotyped at, how old are the derived
-alleles it carries? The answer is a single distribution per individual, pooled
+For one individual, across every variant it is genotyped at, how old are the
+derived alleles it carries? SNPs and TEs are not separated — every biallelic
+record that resolves to a store row is treated identically, and polarity for all
+of them comes from the ARG rather than, as in Phi-SFS, from TE biology. The answer is a single distribution per individual, pooled
 over sites.
 
 ## What one site contributes
 
-Within one posterior draw, a biallelic SNP with a single mutation has exactly one
+Within one posterior draw, a biallelic variant with a single mutation has exactly one
 age interval — the branch the mutation sits on — and exactly one derived allele,
 the one that branch's descendants carry. So a draw either does or does not put a
 derived allele in a given individual:
@@ -51,7 +53,7 @@ store's row order and `draw_id` numbering, so an interval's `draw_id` indexes th
 matching polarity column directly. `0=A 1=C 2=G 3=T`, and `255` for a draw that
 gave the row no usable single-character A/C/G/T state — which covers both a draw
 lacking the site and a draw annotating it with something that cannot polarize a
-biallelic SNP. The two are not distinguished on purpose: neither can orient a
+biallelic variant. The two are not distinguished on purpose: neither can orient a
 site, and treating them differently would be conditioning on missingness.
 
 `--ancestral-table` is offered as an explicitly approximate alternative. It
