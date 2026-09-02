@@ -266,7 +266,7 @@ def test_cli_writes_four_exact_sets_atomically(tmp_path):
     assert metadata["complete"] is True
     assert metadata["sets"] == 4
     assert metadata["software"]["name"] == "normalizeTE"
-    assert metadata["software"]["version"] == "0.6.0"
+    assert metadata["software"]["version"] == "0.7.0"
     assert metadata["algorithm_version"] == (
         "swap-age-controls-v2.1-adaptive-construction"
     )

@@ -7,13 +7,14 @@ import pytest
 import normalize_tes.build_ancestral_states as builder
 
 
-def _store(digest="store-digest"):
+def _store(digest="store-digest", inputs=None):
     return SimpleNamespace(
         positions=np.arange(3, dtype=np.float64),
         metadata={
             "content_sha256": digest,
             "chromosomes": [],
             "sequence_length": 0,
+            "inputs": inputs if inputs is not None else [],
         },
     )
 
@@ -43,7 +44,9 @@ def test_merge_requires_expected_draw_count(tmp_path, monkeypatch):
 
 
 def test_merge_rejects_duplicate_draw_inside_one_part(tmp_path, monkeypatch):
-    monkeypatch.setattr(builder, "open_snp_age_store", lambda _: _store())
+    inputs = [{"draw_id": 0, "path": str(tmp_path / "a.tsz")}]
+    monkeypatch.setattr(builder, "open_snp_age_store",
+                        lambda _: _store(inputs=inputs))
     draw = {"path": str(tmp_path / "a.tsz"), "sites": 4}
     part = tmp_path / "part"
     _part(part, [draw, draw])
@@ -55,7 +58,9 @@ def test_merge_rejects_duplicate_draw_inside_one_part(tmp_path, monkeypatch):
 
 
 def test_merge_detects_same_path_even_if_site_metadata_differs(tmp_path, monkeypatch):
-    monkeypatch.setattr(builder, "open_snp_age_store", lambda _: _store())
+    inputs = [{"draw_id": 0, "path": str(tmp_path / "a.tsz")}]
+    monkeypatch.setattr(builder, "open_snp_age_store",
+                        lambda _: _store(inputs=inputs))
     draw_path = str(tmp_path / "a.tsz")
     first = tmp_path / "first"
     second = tmp_path / "second"

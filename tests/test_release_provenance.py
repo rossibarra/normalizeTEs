@@ -3,7 +3,7 @@ from normalize_tes.release_provenance import PROJECT_VERSION, software_provenanc
 
 def test_release_provenance_identifies_checkout():
     provenance = software_provenance()
-    assert PROJECT_VERSION == "0.6.0"
+    assert PROJECT_VERSION == "0.7.0"
     assert provenance["name"] == "normalizeTE"
     assert provenance["version"] == PROJECT_VERSION
     assert len(provenance["git_commit"]) == 40

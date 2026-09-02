@@ -29,6 +29,7 @@ from .build_snp_age_store import (
     _chromosome_table,
     load_chrom_offsets,
 )
+from .draw_identity import draw_identity
 from .snp_interval_dataset import compute_interval_store_content_sha256
 
 
@@ -296,13 +297,18 @@ def audit_mutation_parent_lookup(
 
 def _inspect_inputs(
     paths: Sequence[Path], chrom_offsets: Path | None
-) -> tuple[np.ndarray, list[dict[str, int | str]], float, list[str]]:
+) -> tuple[np.ndarray, list[dict[str, int | str]], float, list[str], list[dict]]:
     supplied = load_chrom_offsets(chrom_offsets) if chrom_offsets is not None else None
     positions = np.empty(0, dtype=np.float64)
     chromosomes: list[dict[str, int | str]] | None = None
     sequence_length: float | None = None
     access_methods: list[str] = []
+    # Every consumer has to prove it was handed these same draws. Recording a
+    # content identity now is what lets it check that against the files it is
+    # given, instead of against the paths they happened to occupy today.
+    identities: list[dict] = []
     for path in paths:
+        identities.append(draw_identity(path))
         current_positions, metadata, current_sequence_length, method = _catalog_header(path)
         access_methods.append(method)
         _integral_int64(current_positions, f"{path} site positions")
@@ -347,7 +353,8 @@ def _inspect_inputs(
             raise ValueError("all tree sequences must have identical chromosome offsets")
         elif current_sequence_length != sequence_length:
             raise ValueError("all tree sequences must have the same sequence length")
-    return positions, chromosomes or [], float(sequence_length or 0), access_methods
+    return (positions, chromosomes or [], float(sequence_length or 0),
+            access_methods, identities)
 
 
 def _add_row_counts(target: np.ndarray, rows: np.ndarray, n_snps: int) -> None:
@@ -502,8 +509,8 @@ def build_interval_store(
     scratch: Path | None = None
     handles: list[object] = []
     try:
-        positions, chromosomes, sequence_length, catalog_access = _inspect_inputs(
-            paths, chrom_offsets
+        positions, chromosomes, sequence_length, catalog_access, identities = (
+            _inspect_inputs(paths, chrom_offsets)
         )
         if positions.size == 0:
             raise ValueError("input tree sequences contain no sites")
@@ -699,7 +706,9 @@ def build_interval_store(
             "multiple_mutation_policy": "exclude site if any draw has multiple mutation records",
             "interval_weighting": "equal per usable mutation interval",
             "creation_command": " ".join(sys.argv),
-            "inputs": [{"draw_id": i, "path": str(path)} for i, path in enumerate(paths)],
+            "inputs": [{"draw_id": i, "path": str(path), **identity}
+                       for i, (path, identity)
+                       in enumerate(zip(paths, identities))],
             "extraction_totals": {name: int(values.sum(dtype=np.uint64)) for name, values in counts.items()},
             "bucket_counts": [int(value) for value in bucket_counts],
             "record_dtype": record_dtype.descr,

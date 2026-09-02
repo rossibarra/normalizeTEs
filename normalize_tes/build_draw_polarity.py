@@ -46,8 +46,8 @@ from .build_ancestral_states import (
     BASES,
     _ancestral_indices,
     _global_positions,
-    store_input_paths,
 )
+from .draw_identity import DrawIndex
 from .release_provenance import software_provenance
 from .snp_age_store import open_snp_age_store, store_schema
 
@@ -75,22 +75,16 @@ def accumulate(
 
     catalog = np.asarray(store.positions)
     n_rows = int(catalog.size)
-    known = store_input_paths(store)
-    unknown = [str(p) for p in tree_files
-               if str(Path(p).resolve()) not in known]
-    if unknown:
-        raise SystemExit(
-            f"{len(unknown)} of {len(tree_files)} supplied tree files are not "
-            f"among the store's {len(known)} source draws, so the table would "
-            "carry the store's digest without having been computed from it: "
-            + ", ".join(unknown[:3]) + ("..." if len(unknown) > 3 else "")
-        )
-    draw_ids = np.array(
-        [known[str(Path(p).resolve())] for p in tree_files], dtype=np.uint16
-    )
+    # Authenticate on content before decompressing anything: the table is
+    # published under the store's digest, and a draw that has merely moved
+    # since the store was built is still the draw the store was built from.
+    index = DrawIndex.from_store(store)
+    assigned, identities = index.assign_files(list(tree_files))
+    draw_ids = np.asarray(assigned, dtype=np.uint16)
     order = np.argsort(draw_ids, kind="stable")
     draw_ids = draw_ids[order]
     ordered_files = [tree_files[int(i)] for i in order]
+    ordered_identities = [identities[int(i)] for i in order]
 
     table = np.full((n_rows, len(ordered_files)), NO_CALL, dtype=np.uint8)
     report: list[dict] = []
@@ -117,6 +111,7 @@ def accumulate(
         entry = {
             "path": str(Path(path).resolve()),
             "draw_id": int(draw_ids[column]),
+            **ordered_identities[column],
             "sites": int(ts.num_sites),
             "resolved": int(np.count_nonzero(resolved)),
             "unusable_ancestral": int(np.count_nonzero(resolved & ~usable)),
@@ -232,11 +227,12 @@ def _merge(args: argparse.Namespace, store: object, n_rows: int,
     mean what the metadata says.
     """
     store_metadata = getattr(store, "metadata", {}) or {}
+    index = DrawIndex.from_store(store)
     table = np.full((n_rows, n_draws), NO_CALL, dtype=np.uint8)
     filled = np.zeros(n_draws, dtype=bool)
     detail: list[dict] = []
     seen_paths: set[Path] = set()
-    seen_draws: set[str] = set()
+    seen_draws: set[int] = set()
     for part in args.merge:
         resolved_part = part.resolve()
         if resolved_part in seen_paths:
@@ -260,17 +256,20 @@ def _merge(args: argparse.Namespace, store: object, n_rows: int,
             raise SystemExit(
                 f"{part}: already a merged table; merging it again cannot add "
                 "columns and hides which parts were actually gathered")
-        draws = [str(Path(entry["path"]).resolve())
-                 for entry in part_meta.get("draws", [])]
-        if not draws:
+        entries = part_meta.get("draws", [])
+        if not entries:
             raise SystemExit(f"{part}: records no contributing draws")
+        # Identify each recorded draw by the store draw it is, not by the
+        # string it was written down as: one file recorded from two locations
+        # would otherwise pass a coverage check it should fail.
+        draws = index.assign_recorded(entries, str(part))
         if len(set(draws)) != len(draws):
             raise SystemExit(f"{part}: records the same draw more than once")
         overlap = seen_draws.intersection(draws)
         if overlap:
             raise SystemExit(
                 f"{part}: draws already gathered from an earlier part: "
-                + ", ".join(sorted(overlap)[:3])
+                + ", ".join(str(draw) for draw in sorted(overlap)[:3])
             )
         seen_draws.update(draws)
         part_table = np.load(part / "ancestral_base.npy", mmap_mode="r",
@@ -284,9 +283,12 @@ def _merge(args: argparse.Namespace, store: object, n_rows: int,
             raise SystemExit(
                 f"{part}: ancestral_base.npy has dtype {part_table.dtype}, "
                 "expected uint8")
-        if part_ids.size != len(draws):
+        if sorted(int(value) for value in part_ids) != sorted(draws):
             raise SystemExit(
-                f"{part}: {part_ids.size} columns but {len(draws)} draws recorded")
+                f"{part}: its {part_ids.size} columns are draw ids "
+                f"{sorted(int(value) for value in part_ids)[:3]}..., which are "
+                f"not the {len(draws)} draws its metadata records; the columns "
+                "would be filed under the wrong draws")
         columns = np.asarray(part_ids, dtype=np.int64)
         if columns.min(initial=0) < 0 or columns.max(initial=-1) >= n_draws:
             raise SystemExit(f"{part}: draw ids fall outside the store's range")
@@ -296,20 +298,12 @@ def _merge(args: argparse.Namespace, store: object, n_rows: int,
         filled[columns] = True
         detail.append({"path": str(resolved_part), "draws": len(draws)})
 
-    known = set(store_input_paths(store))
-    if seen_draws != known:
-        missing = sorted(known - seen_draws)
-        extra = sorted(seen_draws - known)
-        pieces = []
-        if missing:
-            pieces.append(f"{len(missing)} of the store's draws are absent "
-                          f"(e.g. {Path(missing[0]).name})")
-        if extra:
-            pieces.append(f"{len(extra)} gathered draws are not the store's "
-                          f"(e.g. {Path(extra[0]).name})")
+    if seen_draws != index.all_ids:
+        missing = sorted(index.all_ids - seen_draws)
         raise SystemExit(
             "merged parts do not cover exactly the store's source draws: "
-            + "; ".join(pieces))
+            f"{len(missing)} of the store's draws are absent (e.g. draw "
+            f"{missing[0]}, {Path(index.recorded_path(missing[0])).name})")
     if not filled.all():
         raise SystemExit(
             f"{int((~filled).sum())} draw columns were never filled; the gather "

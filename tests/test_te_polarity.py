@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 from normalize_tes import build_ancestral_states
+from normalize_tes.draw_identity import DrawIndex
 from normalize_tes import build_te_polarity_mask as maskbuilder
 from normalize_tes import te_age_target
 from normalize_tes.snp_interval_dataset import IntervalBatch
@@ -182,7 +183,7 @@ def test_mask_columns_follow_store_draw_ids_not_argument_order(tmp_path):
 def test_mask_builder_rejects_a_tree_the_store_does_not_know(tmp_path):
     store = _interval_store({0: []}, n_draws=1)
     store.metadata["inputs"] = [{"draw_id": 0, "path": str(tmp_path / "known.tsz")}]
-    with pytest.raises(SystemExit, match="not one of the store's"):
+    with pytest.raises(SystemExit, match="not among the store's"):
         maskbuilder.store_draw_columns(store, [tmp_path / "stranger.tsz"])
 
 
@@ -211,10 +212,10 @@ def test_ancestral_accumulate_rejects_foreign_draws(tmp_path):
         )
 
 
-def test_store_input_paths_requires_recorded_inputs():
+def test_draw_index_requires_recorded_inputs():
     store = SimpleNamespace(metadata={"content_sha256": "x"})
     with pytest.raises(SystemExit, match="records no 'inputs'"):
-        build_ancestral_states.store_input_paths(store)
+        DrawIndex.from_store(store)
 
 
 # --- finding 4: candidate rows must be authenticated against their report ---

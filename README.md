@@ -1,4 +1,4 @@
-# normalizeTE v0.6.0
+# normalizeTE v0.7.0
 
 normalizeTE builds SNP control sets matched to the posterior ages of a TE category,
 then compares the unfolded site-frequency spectra of the TEs and controls. The
@@ -113,7 +113,24 @@ python -m normalize_tes.build_snp_interval_store \
 | `--scratch-dir` | temporary bucket location; use node-local scratch |
 
 Omit `--chrom-offsets` only when every draw contains compatible chromosome metadata.
-The completed store records a content digest used by downstream identity checks.
+The completed store records a content digest used by downstream identity checks, and a
+content identity for each source draw so that later steps can prove they were handed the
+same posterior, wherever those files now live.
+
+A store built before v0.7.0 records only a path per draw, so moving the draws makes every
+later step reject them. Record their identities in place -- this does not change the
+store's content digest, and leaves artifacts already stamped with it valid:
+
+```bash
+python -m normalize_tes.record_draw_identities \
+  --store "$STORE" \
+  "$POSTERIOR_DIR"/*.tsz
+```
+
+Pass `--dry-run` first to see what it would change. The files are matched to the store's
+recorded draws by name, one to one, because an unauthenticated store offers nothing
+better; where the store already carries identities, the content must match and only the
+path moves.
 
 ### 2. Build the candidate control universe
 
@@ -269,6 +286,10 @@ python -m normalize_tes.build_ancestral_states \
 | `--store` | store whose rows and source draws the table must match |
 | `--output` | new ancestral-state table directory |
 | `trees` | the store's complete posterior draw set |
+
+Each draw is authenticated against the store before anything is decompressed, by
+content rather than by path, so relocated draws are accepted and a different draw
+sitting at a recorded path is not.
 
 For an array build, use `--draws START:STOP` for each part and merge the parts with
 `--merge ... --expect-draws N`. The production launcher example below shows this
