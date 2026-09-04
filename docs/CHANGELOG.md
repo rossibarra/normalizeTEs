@@ -1,5 +1,60 @@
 # Changelog
 
+## v0.7.0 — 2026-09-01
+
+### Draws are authenticated by content, not by file path
+
+An ancestral-state, per-draw polarity, or TE polarity mask table is published
+under the interval store's `content_sha256`, which asserts it was computed from
+that store's posterior draws. Every consumer checked that assertion by
+comparing the resolved paths of the files it was handed against the paths
+recorded in the store's `metadata["inputs"]`.
+
+That test was wrong in both directions. Moving the draws into a subdirectory
+made every consumer reject a set of files byte-identical to the ones the store
+was built from, while any file with the right name at the recorded path passed.
+Path equality authenticates a location; it is the content that matters. The
+store's own `content_sha256` cannot do this job -- it hashes the store's arrays
+and the metadata keys that affect their interpretation, so it identifies the
+store already in hand and says nothing about the supplied tree files -- and
+hashing the draws themselves means a full extra read of the whole posterior
+(77 GB in the pilot) at build time and again at every consumer.
+
+- `normalize_tes.draw_identity` derives a draw's identity from what it already
+  exposes cheaply: its provenance chain, which every SINGER, tskit, and tszip
+  operation appends to, plus its table cardinalities and sequence length. For a
+  TSZ archive this is read through zarr without decompressing anything, at
+  roughly a third of a second per draw, so the check stays where it belongs:
+  up front, before hours of accumulation rather than after them. The digest is
+  defined over decoded provenance strings, so a `.tsz` archive and the `.trees`
+  file it was compressed from have one identity.
+- `build_snp_interval_store` records that identity per draw in
+  `metadata["inputs"]`. `inputs` is not among the keys that enter
+  `content_sha256`, so this changes no store's published identity and the
+  interval-store schema version is unchanged.
+- `build_ancestral_states`, `build_draw_polarity`, and
+  `build_te_polarity_mask` now match supplied files on identity through one
+  shared `DrawIndex`, which replaces three copies of the path comparison.
+  Duplicate detection is on the resolved draw rather than the path, so two
+  filenames naming one physical draw are caught.
+- Both `--merge` paths compare each part's recorded draws to the store's draw
+  *ids* rather than to path strings, so a gather also survives relocation. A
+  part's column ids must now agree with the draws its metadata records, which
+  was previously checked only by count.
+- This is a strong quasi-identity, not a proof: a file whose provenance chain
+  and table shapes match the recorded draw but whose payload has been altered
+  passes where a hash of the file would not. It is chosen because it is cheap
+  enough to run in every consumer on every run.
+- Stores built before this release record no identity and fall back to the
+  historical path comparison, with an error message that says so, because there
+  is nothing in an old store to authenticate against.
+  `normalize_tes.record_draw_identities` upgrades one in place: it records an
+  identity per draw and corrects the recorded paths, leaving `content_sha256`
+  and every artifact already stamped with it valid. Files are matched to the
+  store's recorded draws by name, one to one, which is the only correspondence
+  an unauthenticated store offers; where a store already carries identities the
+  command verifies content instead and only moves the path.
+
 ## v0.6.0 — 2026-09-01
 
 ### Per-individual derived-allele age distributions

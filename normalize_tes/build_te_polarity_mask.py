@@ -26,6 +26,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .draw_identity import DrawIndex
 from .release_provenance import software_provenance
 from .snp_age_store import open_snp_age_store
 
@@ -38,31 +39,18 @@ def store_draw_columns(store: object, tree_files: list[Path]) -> tuple[int, list
     the order the files happen to be listed here would agree with the store only
     by luck, and a mask whose columns are permuted relative to `draw_id` masks
     each site with another draw's polarity while looking entirely healthy. So
-    the mapping is taken from the store rather than assumed.
+    the mapping is taken from the store rather than assumed, and each file is
+    matched to its draw by content, so relocating the draws does not break it.
     """
     metadata = getattr(store, "metadata", {}) or {}
-    inputs = metadata.get("inputs")
     n_draws = metadata.get("n_posterior_draws")
-    if not inputs or n_draws is None:
+    if not metadata.get("inputs") or n_draws is None:
         raise SystemExit(
             "store metadata has no 'inputs'/'n_posterior_draws' draw mapping, so "
             "tree files cannot be matched to draw ids. Rebuild the store with "
             "normalize_tes.build_snp_interval_store."
         )
-    by_path = {str(Path(entry["path"]).resolve()): int(entry["draw_id"])
-               for entry in inputs}
-    columns: list[int] = []
-    for path in tree_files:
-        resolved = str(Path(path).resolve())
-        if resolved not in by_path:
-            raise SystemExit(
-                f"{path} is not one of the store's {len(by_path)} source trees, "
-                "so it has no draw id. Pass the same tsz files the store was "
-                "built from."
-            )
-        columns.append(by_path[resolved])
-    if len(set(columns)) != len(columns):
-        raise SystemExit("the same tree file was passed more than once")
+    columns, _ = DrawIndex.from_store(store).assign_files(list(tree_files))
     return int(n_draws), columns
 
 

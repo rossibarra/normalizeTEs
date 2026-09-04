@@ -45,6 +45,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .draw_identity import DrawIndex
 from .release_provenance import software_provenance
 from .snp_age_store import open_snp_age_store, store_schema
 
@@ -96,27 +97,6 @@ def _ancestral_indices(ts: object) -> tuple[np.ndarray, np.ndarray]:
     return indices, indices >= 0
 
 
-def store_input_paths(store: object) -> dict[str, int]:
-    """Map each of the store's recorded source draws to its draw id.
-
-    The table is stamped with the store's content digest, which asserts that it
-    was computed from that store's posterior draws. Nothing else establishes it:
-    an arbitrary set of tree files of the right cardinality accumulates happily
-    and publishes under the store's identity. Checking the paths against the
-    store's own `metadata["inputs"]` is what makes the stamp mean something.
-    """
-    metadata = getattr(store, "metadata", {}) or {}
-    inputs = metadata.get("inputs")
-    if not inputs:
-        raise SystemExit(
-            "store metadata records no 'inputs', so the supplied draws cannot be "
-            "authenticated against it. Rebuild the store with "
-            "normalize_tes.build_snp_interval_store."
-        )
-    return {str(Path(entry["path"]).resolve()): int(entry["draw_id"])
-            for entry in inputs}
-
-
 def accumulate(store: object, tree_files: list[Path], *, chromosome: str | None,
                offsets: dict[str, int], sequence_length: float,
                counts: np.ndarray, present: np.ndarray,
@@ -125,18 +105,14 @@ def accumulate(store: object, tree_files: list[Path], *, chromosome: str | None,
     import tszip
 
     catalog = np.asarray(store.positions)
-    known = store_input_paths(store)
-    unknown = [str(p) for p in tree_files
-               if str(Path(p).resolve()) not in known]
-    if unknown:
-        raise SystemExit(
-            f"{len(unknown)} of {len(tree_files)} supplied tree files are not "
-            f"among the store's {len(known)} source draws, so the table would "
-            "carry the store's digest without having been computed from it: "
-            + ", ".join(unknown[:3]) + ("..." if len(unknown) > 3 else "")
-        )
+    # Authenticate every draw before decompressing any of it: the table is
+    # published under the store's digest, so a foreign draw has to be caught
+    # here rather than after an hour of accumulation. Matching is on content,
+    # so draws that have been moved since the store was built still pass.
+    index = DrawIndex.from_store(store)
+    draw_ids, identities = index.assign_files(list(tree_files))
     report: list[dict] = []
-    for path in tree_files:
+    for position, path in enumerate(tree_files):
         ts = tszip.decompress(str(path))
         positions = _global_positions(ts, offsets, chromosome, sequence_length)
         indices, usable = _ancestral_indices(ts)
@@ -160,6 +136,8 @@ def accumulate(store: object, tree_files: list[Path], *, chromosome: str | None,
 
         entry = {
             "path": str(path.resolve()),
+            "draw_id": int(draw_ids[position]),
+            **identities[position],
             "sites": int(ts.num_sites),
             "resolved": int(np.count_nonzero(resolved)),
             "unusable_ancestral": int(np.count_nonzero(resolved & ~usable)),
@@ -264,7 +242,8 @@ def main(argv: list[str] | None = None) -> int:
         # parts have to agree on identity and contribute a disjoint draw set.
         detail: list[dict] = []
         seen_paths: set[Path] = set()
-        seen_draws: set[str] = set()
+        seen_draws: set[int] = set()
+        index = DrawIndex.from_store(store)
         total = np.zeros((n_rows, 4), dtype=np.uint64)
         total_present = np.zeros(n_rows, dtype=np.uint64)
         for part in args.merge:
@@ -288,24 +267,21 @@ def main(argv: list[str] | None = None) -> int:
                 raise SystemExit(
                     f"{part}: already a merged table; merging it again would "
                     "double-count every draw it contains")
-            # Identify draws by resolved path rather than the recorded string:
-            # two aliases of one file (a symlink, a relative and an absolute
-            # spelling) would otherwise look like two draws. Site count is not
-            # part of identity: inconsistent metadata must not make the same
-            # physical draw appear distinct.
-            draws = [
-                str(Path(entry["path"]).resolve())
-                for entry in part_meta.get("draws", [])
-            ]
-            if not draws:
+            # Identify each recorded draw by the store draw it *is*, not by
+            # the string it was written down as. Two aliases of one file, or
+            # one file recorded from two locations, would otherwise look like
+            # two draws and pass a coverage check they should fail.
+            entries = part_meta.get("draws", [])
+            if not entries:
                 raise SystemExit(f"{part}: records no contributing draws")
+            draws = index.assign_recorded(entries, str(part))
             if len(set(draws)) != len(draws):
                 raise SystemExit(f"{part}: records the same draw more than once")
             overlap = seen_draws.intersection(draws)
             if overlap:
                 raise SystemExit(
                     f"{part}: draws already counted by an earlier part: "
-                    + ", ".join(sorted(overlap)[:3])
+                    + ", ".join(str(draw) for draw in sorted(overlap)[:3])
                 )
             seen_draws.update(draws)
             # Accumulate in uint64: uint16 parts wrap at 65,536, which a large or
@@ -342,22 +318,12 @@ def main(argv: list[str] | None = None) -> int:
         # Cardinality is not identity: the expected number of distinct but
         # wrong draws passes the count check and publishes under the store's
         # digest. Require the gathered set to be exactly the store's draws.
-        known = set(store_input_paths(store))
-        if seen_draws != known:
-            missing = sorted(known - seen_draws)
-            extra = sorted(seen_draws - known)
-            detail_parts = []
-            if missing:
-                detail_parts.append(
-                    f"{len(missing)} of the store's draws are absent "
-                    + f"(e.g. {Path(missing[0]).name})")
-            if extra:
-                detail_parts.append(
-                    f"{len(extra)} gathered draws are not the store's "
-                    + f"(e.g. {Path(extra[0]).name})")
+        if seen_draws != index.all_ids:
+            missing = sorted(index.all_ids - seen_draws)
             raise SystemExit(
                 "merged parts do not cover exactly the store's source draws: "
-                + "; ".join(detail_parts)
+                f"{len(missing)} of the store's draws are absent (e.g. draw "
+                f"{missing[0]}, {Path(index.recorded_path(missing[0])).name})"
             )
         if args.expect_draws is not None and len(seen_draws) != args.expect_draws:
             raise SystemExit(
