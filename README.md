@@ -11,6 +11,14 @@ sample is found [here](derived_distribution_readme.md).
 This README is the operator guide. Method definitions and the evidence behind the
 production settings are linked under [Methods and validation](#methods-and-validation).
 
+## Citation
+
+If you use normalizeTE or the Phi-SFS method, please cite:
+
+> Liu, B., Munasinghe, M., Fairbanks, R. A., Hirsch, C. N., and Ross-Ibarra, J. (2025).
+> Genome-wide selection on transposable elements in maize. bioRxiv 2025.09.16.676665.
+> <https://doi.org/10.1101/2025.09.16.676665>
+
 ## Repository layout
 
 - `normalize_tes/` contains the production package and supported command modules.
